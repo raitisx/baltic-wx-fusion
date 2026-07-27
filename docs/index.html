@@ -732,9 +732,16 @@ async function initMapsViewer(){
   const view=document.getElementById("mapView"), miss=document.getElementById("mapMissing");
   if(!MAPS_BASE){ miss.hidden=false; return; }
   const layerSel=document.getElementById("mapLayer");
+  // Manifests: direct bucket first; if r2.dev CORS blocks it, fall back to
+  // the wx-manifest edge function (same JSON, CORS-enabled). Images are
+  // loaded via <img> and never need CORS.
   await Promise.all(Object.entries(MAP_LAYERS).map(async ([key,def])=>{
     try{
       const r=await fetch(`${MAPS_BASE}/${def.manifest}`);
+      if(r.ok){ MV.loaded[key]=await r.json(); return; }
+    }catch(e){}
+    try{
+      const r=await fetch(`${SUPABASE_URL}/functions/v1/wx-manifest?m=${encodeURIComponent(def.manifest)}`);
       if(r.ok) MV.loaded[key]=await r.json();
     }catch(e){}
   }));
