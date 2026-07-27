@@ -51,13 +51,118 @@ def r2_client():
     )
 
 
-def latest_run() -> str:
+def list_runs() -> list[str]:
     r = session().get(CATALOG, timeout=60)
     r.raise_for_status()
     runs = re.findall(r'urlPath="mepslatest/(meps_det_2_5km_\d{8}T\d{2}Z\.ncml)"', r.text)
     if not runs:
         raise RuntimeError("no meps_det datasets in catalog")
-    return sorted(runs)[-1]
+    return sorted(runs)
+
+
+def latest_run() -> str:
+    return list_runs()[-1]
+
+
+def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
+    """Render short-lead frames from PAST runs still on thredds (the catalog
+    keeps roughly the last day of runs) so today's already-passed hours get
+    near-analysis maps. Registers them in maps/meps/archive.json; an hour is
+    only overwritten by a NEWER run (shorter lead = better)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    import netCDF4 as nc
+    from PIL import Image as PILImage
+    from . import proj3059 as P
+
+    s3 = r2_client()
+    try:
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key="maps/meps/archive.json"
+        )["Body"].read())
+    except Exception:
+        arch = {"hours": {}, "thresholds": THRESHOLDS}
+
+    borders = json.load(open(BORDERS_FILE))
+    greens = LinearSegmentedColormap.from_list(
+        "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
+    pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
+    tmp = tempfile.mkdtemp()
+
+    runs = list_runs()[:-1][-max_runs:]  # past runs, oldest -> newest
+    log.info("meps backfill: %d candidate runs", len(runs))
+    for ds_name in runs:
+        run_tag = re.search(r"(\d{8}T\d{2})Z", ds_name).group(1)
+        run_dt = dt.datetime.strptime(run_tag, "%Y%m%dT%H").replace(
+            tzinfo=dt.timezone.utc)
+        hour_keys = [(run_dt + dt.timedelta(hours=h)).strftime("%Y%m%dT%H")
+                     for h in leads]
+        if all(arch["hours"].get(k, "") >= run_tag for k in hour_keys):
+            continue  # newer or same coverage already present
+        try:
+            ds = nc.Dataset(DAP_BASE + ds_name)
+            lat = np.array(ds.variables["latitude"][:])
+            lon = np.array(ds.variables["longitude"][:])
+            m = (lat >= BBOX[0]) & (lat <= BBOX[1]) & \
+                (lon >= BBOX[2]) & (lon <= BBOX[3])
+            ys, xs = np.where(m)
+            y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+            latw = lat[y0:y1 + 1, x0:x1 + 1]
+            lonw = lon[y0:y1 + 1, x0:x1 + 1]
+            n = max(leads) + 1
+            cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            times = nc.num2date(ds.variables["time"][:n], ds.variables["time"].units)
+        except Exception:
+            log.exception("meps backfill: %s failed to open/fetch", ds_name)
+            continue
+        cb = np.where(cb > FILL, np.nan, cb)
+        xw, yw = P.to_xy(lonw, latw)
+        borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
+                       for line in c["lines"]] for c in borders]
+
+        for i in leads:
+            if i >= len(times):
+                continue
+            valid = times[i]
+            vtag = valid.strftime("%Y%m%dT%H")
+            if arch["hours"].get(vtag, "") >= run_tag:
+                continue
+            pr = np.clip(acc[i] - acc[i - 1], 0, None)
+            prm = np.where(pr >= 0.1, pr, np.nan)
+            for thr in THRESHOLDS:
+                fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
+                ax = fig.add_axes([0, 0, 1, 1])
+                ax.set_facecolor("#fbf3de")
+                ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
+                ax.set_aspect("equal"); ax.axis("off")
+                below = np.where(np.isfinite(cb[i]) & (cb[i] < thr), 1.0, np.nan)
+                ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
+                              alpha=0.75, shading="auto")
+                ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
+                              alpha=0.9, shading="auto")
+                for country in borders_xy:
+                    for bx, by in country:
+                        ax.plot(bx, by, color="#f7f1e2", lw=2.2, zorder=9)
+                        ax.plot(bx, by, color="#55503f", lw=0.9, zorder=10)
+                fp = os.path.join(tmp, "f.png")
+                fig.savefig(fp, dpi=100)
+                plt.close(fig)
+                PILImage.open(fp).convert("RGB").quantize(
+                    colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
+                s3.upload_file(fp, config.R2_BUCKET,
+                               f"maps/meps/{run_tag}/{vtag}_alt{thr}.png",
+                               ExtraArgs={"ContentType": "image/png",
+                                          "CacheControl": "public, max-age=604800"})
+            arch["hours"][vtag] = run_tag
+            log.info("meps backfill: %s <- run %s", vtag, run_tag)
+        s3.put_object(Bucket=config.R2_BUCKET, Key="maps/meps/archive.json",
+                      Body=json.dumps(arch).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=300")
+    log.info("meps backfill done: archive now %d hours", len(arch["hours"]))
 
 
 def render_run(max_hours: int = 66) -> None:
