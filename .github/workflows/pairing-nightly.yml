@@ -1,0 +1,21 @@
+name: pairing-nightly
+on:
+  schedule:
+    - cron: "40 2 * * *"   # 02:40 UTC
+  workflow_dispatch:
+
+jobs:
+  pairing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Pair forecasts x observations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_pairing.py

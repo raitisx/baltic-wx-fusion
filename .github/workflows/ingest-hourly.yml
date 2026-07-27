@@ -1,0 +1,25 @@
+name: ingest-hourly
+on:
+  schedule:
+    - cron: "7 * * * *"   # hh:07 UTC — off the top-of-hour GH congestion
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Observations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_observations.py
+      - name: Forecasts
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_forecasts.py
