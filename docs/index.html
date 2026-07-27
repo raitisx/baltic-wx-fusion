@@ -793,11 +793,16 @@ async function initMapsViewer(){
       if(r.ok) MV.loaded[key]=await r.json();
     }catch(e){}
   }));
-  // hour axis: MEPS hours, else UM hours
-  MV.hours=(MV.loaded.meps?.hours)||(MV.loaded.um4?.hours)||(MV.loaded.um1?.hours)||[];
-  if(!MV.hours.length && !MV.loaded.radar){ miss.hidden=false; return; }
-  if(!MV.hours.length && MV.loaded.radar)
-    MV.hours=MV.loaded.radar.frames.map(f=>frameTime(f).toISOString());
+  // hour axis: from today's Riga midnight (same origin as the meteogram, so
+  // the backfilled radar morning is scrubbable) to the last forecast hour
+  const srcHours=(MV.loaded.meps?.hours)||(MV.loaded.um4?.hours)||(MV.loaded.um1?.hours)||[];
+  if(!srcHours.length && !MV.loaded.radar){ miss.hidden=false; return; }
+  const axStart=rigaMidnightToday().getTime();
+  const axEnd=srcHours.length ? Date.parse(srcHours[srcHours.length-1])
+                              : Date.now();
+  MV.hours=[];
+  for(let t=axStart;t<=axEnd;t+=3600e3)
+    MV.hours.push(new Date(t).toISOString().slice(0,19)+"Z");
   view.hidden=false;
   // (no background plate: overlay frames carry their own baked borders —
   // a second border source under them is what caused the ghosting)
@@ -823,7 +828,7 @@ async function initMapsViewer(){
   dg.push("um1: "+(MV.loaded.um1?MV.loaded.um1.hours.length+"h":"not published"));
   dg.push("radar live: "+(MV.loaded.radar?MV.loaded.radar.frames.length+" frames":"NOT LOADED"));
   dg.push("radar archive: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+" hours":"NOT LOADED"));
-  document.getElementById("mapDiag").textContent="page v11 · "+dg.join(" · ");
+  document.getElementById("mapDiag").textContent="page v12 · "+dg.join(" · ");
   const nowIdx=MV.hours.findIndex(h=>Date.parse(h)>=Date.now());
   mapShow(nowIdx<0?0:nowIdx);
   // crosshair sync from the meteogram
