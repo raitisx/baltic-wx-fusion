@@ -3,79 +3,65 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Baltic WX — flight meteogram</title>
+<title>BALTIC_WX — flight meteogram</title>
 <style>
-  .viz-root{
-    color-scheme: light;
-    --surface-1:#fcfcfb; --surface-2:#f0efec;
-    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#8a8880;
-    --grid:#e7e6e2; --hairline:#dddcd7;
-    --temp:#e34948; --dew:#2a78d6; --precip:#008300; --wind:#2a78d6; --gust:#e34948;
-    --cloud:#3a3a38; --threshold:#c22a2a; --belowzone:rgba(227,73,72,.08);
-    --night:rgba(0,0,0,.045);
-    --ok:rgba(0,131,0,.10); --marginal:rgba(237,161,0,.14); --nofly:rgba(227,73,72,.12);
-  }
-  @media (prefers-color-scheme: dark){
-    :root:where(:not([data-theme="light"])) .viz-root{
-      color-scheme: dark;
-      --surface-1:#1a1a19; --surface-2:#242422;
-      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8a8880;
-      --grid:#2e2e2b; --hairline:#3a3a36;
-      --temp:#e66767; --dew:#3987e5; --precip:#199e70; --wind:#3987e5; --gust:#e66767;
-      --cloud:#d8d7d0; --threshold:#e66767; --belowzone:rgba(230,103,103,.10);
-      --night:rgba(255,255,255,.05);
-      --ok:rgba(25,158,112,.12); --marginal:rgba(201,133,0,.16); --nofly:rgba(230,103,103,.14);
-    }
+  :root{
+    --bg:#fbf3de;            /* cream, like meteo.pl */
+    --panel:#fdf9ec;
+    --ink:#1c2c85;           /* navy headings + axis numbers */
+    --text:#333127;
+    --muted:#8a8468;
+    --grid:#e6dec6;
+    --gridday:#c9c0a4;
+    --night:rgba(90,80,50,.13);
+    --temp:#d92f2f; --dew:#2b48d9; --humid:#e07b00; --precip:#1e9e1e;
+    --wind:#2b48d9; --gust:#d92f2f; --cloud:#2b2b28; --fog:#e0a300;
+    --threshold:#cc2222; --belowzone:rgba(217,47,47,.10);
+    --ok:#2e9e2e; --marginal:#e0a300; --nofly:#d92f2f;
   }
   html,body{margin:0;padding:0}
-  .viz-root{
-    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    background:var(--surface-1); color:var(--text-primary);
-    min-height:100vh; padding:20px 16px 40px;
+  body{
+    font-family:"Trebuchet MS",Verdana,-apple-system,"Segoe UI",sans-serif;
+    background:var(--bg); color:var(--text);
+    min-height:100vh; padding:18px 14px 40px;
   }
-  .wrap{max-width:1120px;margin:0 auto}
-  h1{font-size:18px;font-weight:600;margin:0 0 2px}
-  .sub{font-size:12px;color:var(--text-secondary);margin-bottom:14px}
-  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
-  .controls label{font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:6px}
+  .wrap{max-width:1140px;margin:0 auto}
+  h1{font-size:19px;font-weight:700;margin:0 0 10px;color:var(--ink);letter-spacing:.2px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+  .controls label{font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px}
   select,button{
-    font:inherit;font-size:13px;color:var(--text-primary);
-    background:var(--surface-1);border:1px solid var(--hairline);
-    border-radius:6px;padding:4px 8px;
+    font:inherit;font-size:13px;color:var(--text);
+    background:var(--panel);border:1px solid var(--gridday);
+    border-radius:4px;padding:3px 7px;
   }
   button{cursor:pointer}
-  .status{font-size:11px;color:var(--text-muted);margin-left:auto}
-  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--text-secondary);margin:2px 0 6px}
-  .legend .key{display:inline-flex;align-items:center;gap:5px}
-  .key i{display:inline-block;width:14px;height:0;border-top:2px solid;border-radius:1px}
-  .key i.dash{border-top-style:dashed}
-  .key i.blk{width:10px;height:10px;border:0;border-radius:2px}
+  .status{font-size:11px;color:var(--muted);margin-left:auto}
   svg{display:block;width:100%;height:auto}
   svg text{font-family:inherit}
   .tip{
     position:fixed;pointer-events:none;z-index:10;display:none;
-    background:var(--surface-1);border:1px solid var(--hairline);border-radius:8px;
-    box-shadow:0 4px 16px rgba(0,0,0,.14);padding:8px 10px;font-size:12px;min-width:170px;
+    background:#fffdf4;border:1px solid var(--gridday);border-radius:6px;
+    box-shadow:0 4px 16px rgba(60,50,20,.25);padding:8px 10px;font-size:12px;min-width:180px;
   }
-  .tip .th{color:var(--text-secondary);font-size:11px;margin-bottom:4px}
+  .tip .th{color:var(--ink);font-weight:700;font-size:11px;margin-bottom:4px}
   .tip table{border-collapse:collapse}
   .tip td{padding:1px 4px 1px 0;white-space:nowrap}
-  .tip td.v{font-weight:600;text-align:right}
-  .tip td.lbl{color:var(--text-secondary)}
-  .tip i{display:inline-block;width:12px;border-top:2px solid;vertical-align:middle;margin-right:4px;border-radius:1px}
-  details{margin-top:18px;font-size:12px}
-  summary{cursor:pointer;color:var(--text-secondary)}
-  table.data{border-collapse:collapse;margin-top:8px;font-size:11px}
+  .tip td.v{font-weight:700;text-align:right;color:var(--text)}
+  .tip td.lbl{color:#6b6552}
+  .tip i{display:inline-block;width:12px;border-top:2px solid;vertical-align:middle;margin-right:4px}
+  details{margin-top:16px;font-size:12px}
+  summary{cursor:pointer;color:var(--ink)}
+  table.data{border-collapse:collapse;margin-top:8px;font-size:11px;background:var(--panel)}
   table.data th,table.data td{border:1px solid var(--grid);padding:2px 7px;text-align:right;font-variant-numeric:tabular-nums}
-  table.data th{color:var(--text-secondary);font-weight:600}
+  table.data th{color:var(--ink);font-weight:700}
   .err{color:var(--threshold);font-size:13px;margin:12px 0}
-  .foot{margin-top:16px;font-size:10px;color:var(--text-muted);line-height:1.6}
+  .foot{margin-top:14px;font-size:10px;color:var(--muted);line-height:1.6}
+  .foot a{color:var(--ink)}
 </style>
 </head>
-<body class="viz-root">
+<body>
 <div class="wrap">
-  <h1 id="title">Baltic WX · flight meteogram</h1>
-  <div class="sub">Fused ICON + MEPS + IFS + GFS &middot; times in Europe/Riga &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise</div>
+  <h1 id="title">BALTIC_WX · Rīga</h1>
 
   <div class="controls">
     <label>Point <select id="selPoint"></select></label>
@@ -95,16 +81,6 @@
     <span class="status" id="status"></span>
   </div>
 
-  <div class="legend" id="legend">
-    <span class="key"><i style="border-color:var(--temp)"></i>temp °C</span>
-    <span class="key"><i class="dash" style="border-color:var(--dew)"></i>dew pt °C</span>
-    <span class="key"><i class="blk" style="background:var(--precip)"></i>precip mm/h (opacity = model agreement)</span>
-    <span class="key"><i style="border-color:var(--wind)"></i>wind m/s</span>
-    <span class="key"><i class="dash" style="border-color:var(--gust)"></i>gusts m/s</span>
-    <span class="key"><i style="border-color:var(--cloud)"></i>cloud base m</span>
-    <span class="key"><i class="blk" style="background:var(--surface-2);border:1px solid var(--hairline)"></i>past observations = dots</span>
-  </div>
-
   <div id="chart"></div>
   <div class="err" id="err" hidden></div>
   <div class="tip" id="tip"></div>
@@ -112,11 +88,11 @@
   <details id="tableWrap"><summary>Data table (fused hourly values)</summary><div id="tableBox"></div></details>
 
   <div class="foot" id="foot">
-    Forecast data: DWD ICON, MET Norway MEPS, ECMWF IFS, NOAA GFS via
-    <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0). Observations: LVĢMC (data.gov.lv, CC0),
-    Estonian Environment Agency / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
+    Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
+    &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise &middot; times Europe/Riga.
+    Observations (dots): LVĢMC (data.gov.lv, CC0), Keskkonnaagentuur / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
     <a href="https://www.meteo.lt/">LHMT meteo.lt</a> (CC BY-SA 4.0), METAR via Iowa State IEM.
-    Cloud base is model-derived (LCL) verified against METAR ceilings; treat &lt;1 km detail as guidance, not gospel.
+    Cloud base is model-derived (LCL), verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.
   </div>
 </div>
 
@@ -128,7 +104,6 @@ const TZ = "Europe/Riga";
 const MODELS = ["icon","meps","ifs","gfs"];
 const HOURS = 72;
 
-// ---------- utilities ----------
 async function rpc(fn, args){
   const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`,{
     method:"POST",
@@ -143,11 +118,10 @@ const fmtDay  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day
 const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 function rigaHour(d){ return parseInt(fmtHour.format(d),10); }
 function rigaMidnightToday(){
-  // walk back from now to the most recent Riga midnight
   const now = new Date();
   const h = rigaHour(now), m = now.getUTCMinutes(), s = now.getUTCSeconds();
   const t = new Date(now.getTime() - ((h*60+m)*60+s)*1000 - now.getUTCMilliseconds());
-  t.setUTCMinutes(0,0,0); // snap to the hour boundary
+  t.setUTCMinutes(0,0,0);
   return t;
 }
 function wmean(vals, ws){
@@ -161,9 +135,7 @@ function wstd(vals, mean){
   return Math.sqrt(xs.reduce((a,v)=>a+(v-mean)**2,0)/xs.length);
 }
 function leadBin(h){ return h<6?"0-6":h<12?"6-12":h<24?"12-24":h<48?"24-48":h<72?"48-72":"72+"; }
-const esc = s => String(s);
 
-// ---------- state ----------
 let POINTS=[], WEIGHTS=[], FC=[], OBS=[], FUSED=[], usedSkillWeights=false;
 
 function fuse(){
@@ -171,7 +143,6 @@ function fuse(){
   const wIdx = {};
   for(const w of WEIGHTS) wIdx[`${w.m}|${w.p}|${w.lb}`] = w.w;
   usedSkillWeights = WEIGHTS.length>0;
-  // index forecasts: param -> epoch -> model -> value ; and run time per model
   const idx = {}, runs = {};
   for(const e of FC){
     const ts = Date.parse(e.t);
@@ -193,11 +164,11 @@ function fuse(){
       const mean = wmean(vals, ws);
       row[p] = mean;
       row[p+"_sd"] = wstd(vals, mean);
-      row[p+"_models"] = per;
     }
     const pv = (idx["prcp_1h"]||{})[ts] || {};
     const n = MODELS.filter(m=>pv[m]!=null).length;
     row.prcp_prob = n ? MODELS.filter(m=>(pv[m]??0)>=0.1).length/n : null;
+    row.fog = row.rh!=null && row.rh>=97 && (row.cb_lcl??999)<100;
     FUSED.push(row);
   }
 }
@@ -224,13 +195,14 @@ function dayVerdicts(cbLim, wgLim){
   });
 }
 
-// ---------- render ----------
-const P = {left:52,right:14,gapY:14,width:1100};
+// ---------- render (LVM_LIDAR / meteo.pl style) ----------
+const P = {gutter:118, axis:34, right:12, width:1140};
+P.left = P.gutter + P.axis;
 const PANELS = [
-  {id:"temp",  h:120, label:"temperature °C / dew pt"},
-  {id:"prcp",  h:110, label:"precip mm/h"},
-  {id:"wind",  h:110, label:"gusts / wind m/s"},
-  {id:"cloud", h:190, label:"cloud base m"},
+  {id:"temp",  h:130, rows:[["temperature °C","--temp"],["dew pt °C","--dew"]]},
+  {id:"prcp",  h:120, rows:[["precip mm/h","--precip"],["rel.humid. %","--humid"]]},
+  {id:"wind",  h:120, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
+  {id:"cloud", h:200, rows:[["cloud base m","--cloud"],["fog","--fog"]]},
 ];
 function xPos(ts){
   const t0=FUSED[0].ts, t1=t0+HOURS*3600e3;
@@ -248,12 +220,12 @@ function svgEl(name,attrs,parent){
   if(parent) parent.appendChild(el);
   return el;
 }
-function linePath(rows, key, y){
+function linePath(rows, key, y, xkey){
   let d="", pen=false;
   for(const r of rows){
     const v=r[key];
     if(v==null){ pen=false; continue; }
-    d += (pen?"L":"M") + xPos(r.ts).toFixed(1) + " " + y(v).toFixed(1) + " ";
+    d += (pen?"L":"M") + xPos(r[xkey||"ts"]).toFixed(1) + " " + y(v).toFixed(1) + " ";
     pen=true;
   }
   return d;
@@ -266,140 +238,176 @@ function render(){
   const cbLim=+document.getElementById("selCb").value;
   const wgLim=+document.getElementById("selWg").value;
   const verdicts=dayVerdicts(cbLim,wgLim);
-  const totalH = 40 + PANELS.reduce((a,p)=>a+p.h+P.gapY,0) + 18;
+  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  const headerH=34;
+  const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+16,0) + 20;
   const svg=svgEl("svg",{viewBox:`0 0 ${P.width} ${totalH}`, "aria-label":"3-day flight meteogram"});
   chart.appendChild(svg);
-  const css=v=>getComputedStyle(document.body).getPropertyValue(v).trim();
 
-  // Day headers + verdict tint + night shading (shared columns)
-  let yCursor=40;
-  const panelTop={}, panelY={};
-  for(const p of PANELS){ panelTop[p.id]=yCursor; yCursor+=p.h+P.gapY; }
-  const plotBottom = yCursor - P.gapY;
+  let yCursor=headerH;
+  const panelTop={};
+  for(const p of PANELS){ panelTop[p.id]=yCursor; yCursor+=p.h+16; }
+  const plotBottom = yCursor-16;
+  const plotTop = panelTop[PANELS[0].id];
 
+  // panel plate backgrounds
+  for(const p of PANELS)
+    svgEl("rect",{x:P.left,y:panelTop[p.id],width:P.width-P.left-P.right,height:p.h,fill:css("--panel")},svg);
+
+  // night shading 21:00–06:00 (gray, like the mock's day edges)
+  for(const r of FUSED){
+    if(r.hourOfDay>=21 || r.hourOfDay<6){
+      for(const p of PANELS)
+        svgEl("rect",{x:xPos(r.ts),y:panelTop[p.id],width:xPos(r.ts+3600e3)-xPos(r.ts),height:p.h,fill:css("--night")},svg);
+    }
+  }
+
+  // day headers (navy) + thin verdict strip
   for(let d=0;d<3;d++){
     const ts0=FUSED[0].ts + d*86400e3;
     const x0=xPos(ts0), x1=xPos(ts0+86400e3);
-    const tint = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):verdicts[d]==="ok"?css("--ok"):"none";
-    if(tint!=="none") svgEl("rect",{x:x0,y:16,width:x1-x0,height:8,rx:3,fill:tint.replace(/rgba\(([^)]*),[.\d]+\)/,"rgba($1,.9)")},svg);
-    svgEl("rect",{x:x0,y:panelTop[PANELS[0].id],width:x1-x0,height:plotBottom-panelTop[PANELS[0].id],fill:tint==="none"?"transparent":tint},svg);
-    const t=svgEl("text",{x:(x0+x1)/2,y:12,"text-anchor":"middle","font-size":"12","font-weight":"600",fill:css("--text-primary")},svg);
-    t.textContent = fmtDay.format(new Date(ts0+12*3600e3)) + (verdicts[d]==="nofly"?"  ·  NO-FLY":verdicts[d]==="marginal"?"  ·  marginal":"");
-  }
-  // night shading 21:00–06:00
-  for(const r of FUSED){
-    if(r.hourOfDay>=21 || r.hourOfDay<6){
-      svgEl("rect",{x:xPos(r.ts),y:panelTop[PANELS[0].id],width:xPos(r.ts+3600e3)-xPos(r.ts),height:plotBottom-panelTop[PANELS[0].id],fill:css("--night")},svg);
+    const t=svgEl("text",{x:(x0+x1)/2,y:15,"text-anchor":"middle","font-size":"14","font-weight":"700",fill:css("--ink")},svg);
+    t.textContent = fmtDay.format(new Date(ts0+12*3600e3));
+    const vc = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):css("--ok");
+    svgEl("rect",{x:x0+3,y:22,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
+    if(verdicts[d]!=="ok"){
+      const vt=svgEl("text",{x:(x0+x1)/2,y:15,"text-anchor":"middle","font-size":"14","font-weight":"700",fill:vc},svg);
+      vt.textContent="";
     }
   }
 
   const obsIdx={};
   for(const o of OBS){ ((obsIdx[o.p] ||= [])).push({ts:Date.parse(o.t),v:o.v}); }
 
-  // ----- panel scaffold helper -----
-  function panel(p, yMin, yMax, tickN, unit){
+  // left gutter row labels (colored words, like the mock)
+  for(const p of PANELS){
+    let ly=panelTop[p.id]+16;
+    for(const [txt,varName] of p.rows){
+      const t=svgEl("text",{x:10,y:ly,"font-size":"12","font-weight":"700",fill:css(varName)},svg);
+      t.textContent=txt;
+      ly+=17;
+    }
+  }
+
+  function scaffold(p,yMin,yMax,ticks){
     const top=panelTop[p.id], bot=top+p.h;
     const y=v=>bot - (v-yMin)/(yMax-yMin)*p.h;
-    panelY[p.id]={y,top,bot,yMin,yMax};
-    for(const tv of niceTicks(yMin,yMax,tickN)){
-      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      const t=svgEl("text",{x:P.left-6,y:y(tv)+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
-      t.textContent=tv;
+    // hour gridlines (every 3h light, day boundaries darker)
+    for(const r of FUSED){
+      if(r.hourOfDay%3!==0) continue;
+      svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
     }
     for(let d=0;d<=3;d++){
-      const x=xPos(FUSED[0].ts+d*86400e3);
-      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--hairline"),"stroke-width":1},svg);
+      const x=xPos(FUSED[0].ts+Math.min(d*24,HOURS-0.0001)*3600e3);
+      const xx=d<3?xPos(FUSED[0].ts+d*86400e3):P.width-P.right;
+      svgEl("line",{x1:xx,x2:xx,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
     }
-    const lab=svgEl("text",{x:P.left,y:top-3,"font-size":"10",fill:css("--text-muted")},svg);
-    lab.textContent=p.label + (unit?` (${unit})`:"");
+    for(const tv of ticks){
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
+      const t=svgEl("text",{x:P.left-6,y:y(tv)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+      t.textContent=tv;
+    }
+    svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
     return y;
   }
 
-  // ----- temp panel -----
+  // ----- temperature / dew pt -----
   {
     const p=PANELS[0];
     const vals=FUSED.flatMap(r=>[r.t2m,r.td2m]).filter(v=>v!=null)
       .concat((obsIdx.t2m||[]).map(o=>o.v));
-    const lo=Math.floor(Math.min(...vals,-1)/5)*5, hi=Math.ceil(Math.max(...vals,1)/5)*5;
-    const y=panel(p,lo,hi,4);
-    svgEl("path",{d:linePath(FUSED,"td2m",y),fill:"none",stroke:css("--dew"),"stroke-width":2,"stroke-dasharray":"2 4","stroke-linecap":"round"},svg);
-    svgEl("path",{d:linePath(FUSED,"t2m",y),fill:"none",stroke:css("--temp"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    const lo=Math.min(Math.floor(Math.min(...vals)/10)*10,0), hi=Math.ceil((Math.max(...vals)+3)/10)*10;
+    const y=scaffold(p,lo,hi,niceTicks(lo,hi,4));
+    svgEl("path",{d:linePath(FUSED,"td2m",y),fill:"none",stroke:css("--dew"),"stroke-width":2.4,"stroke-dasharray":"2 5","stroke-linecap":"round"},svg);
+    svgEl("path",{d:linePath(FUSED,"t2m",y),fill:"none",stroke:css("--temp"),"stroke-width":2.6,"stroke-linejoin":"round"},svg);
     for(const o of (obsIdx.t2m||[])) if(o.ts>=FUSED[0].ts)
-      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.4,fill:css("--cloud")},svg);
   }
 
-  // ----- precip panel -----
+  // ----- precip + rel humidity (mock style: humid curve, no second axis) -----
   {
     const p=PANELS[1];
-    const maxP=Math.max(2,...FUSED.map(r=>r.prcp_1h??0), ...(obsIdx.prcp_1h||[]).map(o=>o.v));
-    const y=panel(p,0,Math.ceil(maxP),4);
-    const bw=Math.min(10,(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))-2);
+    const top=panelTop[p.id], bot=top+p.h;
+    const maxP=Math.max(2,Math.ceil(Math.max(...FUSED.map(r=>r.prcp_1h??0), ...(obsIdx.prcp_1h||[]).map(o=>o.v))));
+    const y=scaffold(p,0,maxP,niceTicks(0,maxP,4));
+    const yH=v=>bot-(v/100)*p.h*0.96;   // humidity 0–100 mapped to panel, mock-style overlay
+    svgEl("path",{d:linePath(FUSED,"rh",yH),fill:"none",stroke:css("--humid"),"stroke-width":2.4,"stroke-linejoin":"round"},svg);
+    const bw=Math.min(9,(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))-2);
     for(const r of FUSED){
       if((r.prcp_1h??0)<=0.01) continue;
-      const h=panelY[p.id].bot-y(r.prcp_1h);
+      const h=bot-y(r.prcp_1h);
       const op=0.35+0.65*(r.prcp_prob??1);
-      svgEl("rect",{x:xPos(r.ts)+1,y:y(r.prcp_1h),width:bw,height:Math.max(h,2),rx:2,
+      svgEl("rect",{x:xPos(r.ts)+1,y:y(r.prcp_1h),width:bw,height:Math.max(h,2),
         fill:css("--precip"),"fill-opacity":op.toFixed(2)},svg);
     }
     for(const o of (obsIdx.prcp_1h||[])) if(o.ts>=FUSED[0].ts && o.v>0)
-      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:y(Math.min(o.v,maxP)),r:2.4,fill:css("--cloud")},svg);
   }
 
-  // ----- wind panel -----
+  // ----- gusts / wind -----
   {
     const p=PANELS[2];
     const vals=FUSED.flatMap(r=>[r.ws10m,r.wg10m]).filter(v=>v!=null);
     const hi=Math.max(Math.ceil(Math.max(...vals,wgLim+2)/5)*5,10);
-    const y=panel(p,0,hi,4);
-    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1,"stroke-dasharray":"5 4"},svg);
-    // gusts as short dashes (like the mock)
+    const y=scaffold(p,0,hi,niceTicks(0,hi,4));
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
+    // wind as light blue area + line (mock look)
+    let d="M "+xPos(FUSED[0].ts)+" "+y(0)+" ";
+    for(const r of FUSED) if(r.ws10m!=null) d+="L "+xPos(r.ts).toFixed(1)+" "+y(r.ws10m).toFixed(1)+" ";
+    d+="L "+xPos(FUSED[FUSED.length-1].ts)+" "+y(0)+" Z";
+    svgEl("path",{d,fill:css("--wind"),"fill-opacity":.18,stroke:"none"},svg);
+    svgEl("path",{d:linePath(FUSED,"ws10m",y),fill:"none",stroke:css("--wind"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
     for(const r of FUSED) if(r.wg10m!=null)
-      svgEl("line",{x1:xPos(r.ts)-3,x2:xPos(r.ts)+3,y1:y(r.wg10m),y2:y(r.wg10m),stroke:css("--gust"),"stroke-width":2.5,"stroke-linecap":"round"},svg);
-    svgEl("path",{d:linePath(FUSED,"ws10m",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+      svgEl("line",{x1:xPos(r.ts)-3,x2:xPos(r.ts)+3,y1:y(r.wg10m),y2:y(r.wg10m),stroke:css("--gust"),"stroke-width":3,"stroke-linecap":"round"},svg);
     for(const o of (obsIdx.ws10m||[])) if(o.ts>=FUSED[0].ts)
-      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.4,fill:css("--cloud")},svg);
   }
 
-  // ----- cloud panel: 0–1000 m detailed + compressed "1 km+" band -----
+  // ----- cloud base (0–1 km detail + 1 km+ band) + fog -----
   {
     const p=PANELS[3];
     const top=panelTop[p.id], bot=top+p.h;
-    const bandH=44;                       // 1 km+ compressed band
-    const y0=bot, yTopDetail=top+bandH+6; // detail zone 0..1000
+    const bandH=44, fogH=12;
+    const y0=bot-fogH, yTopDetail=top+bandH+4;
     const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
-    panelY[p.id]={y,top,bot,yMin:0,yMax:1000,band:true};
-    for(const tv of [0,150,300,500,700,1000]){
+    // gridlines & ticks
+    for(const r of FUSED){
+      if(r.hourOfDay%3!==0) continue;
+      svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
+    }
+    for(let d=0;d<3;d++){
+      const x=xPos(FUSED[0].ts+d*86400e3);
+      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
+    }
+    for(const tv of [0,150,300,500,1000]){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      const t=svgEl("text",{x:P.left-6,y:y(tv)+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
+      const t=svgEl("text",{x:P.left-6,y:y(tv)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
-    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
-    bt.textContent="1 km+";
-    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--hairline"),"stroke-width":1},svg);
-    for(let d=0;d<=3;d++){
-      const x=xPos(FUSED[0].ts+d*86400e3);
-      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--hairline"),"stroke-width":1},svg);
-    }
-    const lab=svgEl("text",{x:P.left,y:top-3,"font-size":"10",fill:css("--text-muted")},svg);
-    lab.textContent="cloud base m AGL · upper band: low/mid/high cover (opacity = %)";
-
-    // below-threshold tint + threshold line
+    // threshold: red axis number + dashed line + pink zone below (mock style)
     svgEl("rect",{x:P.left,y:y(cbLim),width:P.width-P.left-P.right,height:y0-y(cbLim),fill:css("--belowzone")},svg);
-    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLim),y2:y(cbLim),stroke:css("--threshold"),"stroke-width":1,"stroke-dasharray":"5 4"},svg);
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLim),y2:y(cbLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
+    const tl=svgEl("text",{x:P.left-6,y:y(cbLim)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--threshold")},svg);
+    tl.textContent=cbLim;
+    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+    bt.textContent="1 km+";
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
+    svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
 
-    // low/mid/high cover strips in the compressed band (gap shows as missing strip)
+    // low/mid/high cover strips in 1 km+ band (gaps stay visible)
     const strips=[["cc_high",0],["cc_mid",1],["cc_low",2]];
-    const sh=(bandH-8)/3;
+    const sh=(bandH-10)/3;
     for(const r of FUSED){
       const x=xPos(r.ts), w=xPos(r.ts+3600e3)-x;
       for(const [key,i] of strips){
         const cov=r[key];
         if(cov==null || cov<5) continue;
-        svgEl("rect",{x:x+0.5,y:top+3+i*(sh+2),width:w-1,height:sh,rx:1.5,
-          fill:css("--cloud"),"fill-opacity":(0.10+0.75*cov/100).toFixed(2)},svg);
+        svgEl("rect",{x:x+0.5,y:top+3+i*(sh+2),width:w-1,height:sh,
+          fill:css("--cloud"),"fill-opacity":(0.08+0.72*cov/100).toFixed(2)},svg);
       }
     }
-    // fused cloud base line: only meaningful when there is low/total cloud; cap at band
+    // fused cloud base line (black, like the mock)
     const rows=FUSED.map(r=>({ts:r.ts, cb:(r.cc_total??0)>=25 ? Math.min(r.cb_lcl??1001,1001) : null}));
     let d="",pen=false;
     for(const r of rows){
@@ -408,35 +416,37 @@ function render(){
       d+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+yy.toFixed(1)+" ";
       pen=true;
     }
-    svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.4,"stroke-linejoin":"round"},svg);
     for(const r of rows) if(r.cb!=null && r.cb>1000)
-      svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:1.8,fill:css("--cloud")},svg);
-    // observed ceilings (METAR) as dots
+      svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:2,fill:css("--cloud")},svg);
+    // observed METAR ceilings — red dots
     for(const o of (obsIdx.cb_ceiling||[])) if(o.ts>=FUSED[0].ts)
-      svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:3,fill:css("--threshold"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:3,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1.2},svg);
+    // fog ticks along the bottom
+    for(const r of FUSED) if(r.fog)
+      svgEl("rect",{x:xPos(r.ts)+1,y:bot-fogH+3,width:xPos(r.ts+3600e3)-xPos(r.ts)-2,height:fogH-6,fill:css("--fog"),opacity:.9},svg);
   }
 
-  // hour ticks bottom
+  // hour tick labels
   for(const r of FUSED){
     if(r.hourOfDay%3!==0) continue;
-    const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":"9",fill:css("--text-muted")},svg);
+    const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+14,"text-anchor":"middle","font-size":"10","font-weight":"700",fill:css("--ink")},svg);
     t.textContent=String(r.hourOfDay).padStart(2,"0");
   }
 
   // "now" marker
   const now=Date.now();
   if(now>FUSED[0].ts && now<FUSED[0].ts+HOURS*3600e3){
-    svgEl("line",{x1:xPos(now),x2:xPos(now),y1:panelTop[PANELS[0].id],y2:plotBottom,stroke:css("--text-muted"),"stroke-width":1,"stroke-dasharray":"2 3"},svg);
+    svgEl("line",{x1:xPos(now),x2:xPos(now),y1:plotTop,y2:plotBottom,stroke:"#6b6552","stroke-width":1,"stroke-dasharray":"2 3"},svg);
   }
 
-  // ----- crosshair + tooltip -----
-  const cross=svgEl("line",{x1:0,x2:0,y1:panelTop[PANELS[0].id],y2:plotBottom,stroke:css("--text-secondary"),"stroke-width":1,visibility:"hidden"},svg);
+  // crosshair + tooltip
+  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:plotBottom,stroke:"#6b6552","stroke-width":1,visibility:"hidden"},svg);
   const tip=document.getElementById("tip");
-  const hit=svgEl("rect",{x:P.left,y:panelTop[PANELS[0].id],width:P.width-P.left-P.right,height:plotBottom-panelTop[PANELS[0].id],fill:"transparent"},svg);
+  const hit=svgEl("rect",{x:P.left,y:plotTop,width:P.width-P.left-P.right,height:plotBottom-plotTop,fill:"transparent"},svg);
   hit.addEventListener("pointermove",ev=>{
     const rect=svg.getBoundingClientRect();
     const fx=(ev.clientX-rect.left)/rect.width*P.width;
-    const t0=FUSED[0].ts;
     let h=Math.round((fx-P.left)/((P.width-P.left-P.right)/HOURS));
     h=Math.max(0,Math.min(HOURS-1,h));
     const r=FUSED[h];
@@ -444,8 +454,8 @@ function render(){
     cross.setAttribute("x1",x); cross.setAttribute("x2",x);
     cross.setAttribute("visibility","visible");
     tip.style.display="block";
-    const px=ev.clientX+14, flip=px+230>window.innerWidth;
-    tip.style.left=(flip?ev.clientX-244:px)+"px";
+    const px=ev.clientX+14, flip=px+240>window.innerWidth;
+    tip.style.left=(flip?ev.clientX-254:px)+"px";
     tip.style.top=Math.max(8,ev.clientY-30)+"px";
     const f=(v,d=1)=>v==null?"–":v.toFixed(d);
     tip.innerHTML="";
@@ -456,6 +466,7 @@ function render(){
     const rows=[
       ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
       ["--dew","dew pt",f(r.td2m)+" °C"],
+      ["--humid","rel.humid",f(r.rh,0)+" %"],
       ["--precip","precip",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
@@ -480,14 +491,14 @@ function renderTable(){
   box.textContent="";
   const tb=document.createElement("table"); tb.className="data";
   const hd=document.createElement("tr");
-  for(const h of ["time","t2m °C","dew °C","precip mm","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
+  for(const h of ["time","t2m °C","dew °C","humid %","precip mm","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
     const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
   }
   tb.appendChild(hd);
   for(const r of FUSED){
     const tr=document.createElement("tr");
     const cells=[fmtDT.format(new Date(r.ts)),
-      r.t2m?.toFixed(1)??"", r.td2m?.toFixed(1)??"", r.prcp_1h?.toFixed(1)??"",
+      r.t2m?.toFixed(1)??"", r.td2m?.toFixed(1)??"", r.rh!=null?Math.round(r.rh):"", r.prcp_1h?.toFixed(1)??"",
       r.prcp_prob!=null?Math.round(r.prcp_prob*100):"", r.ws10m?.toFixed(1)??"",
       r.wg10m?.toFixed(1)??"", r.cb_lcl!=null?Math.round(r.cb_lcl):"",
       r.cc_low!=null?Math.round(r.cc_low):"", r.cc_mid!=null?Math.round(r.cc_mid):"", r.cc_high!=null?Math.round(r.cc_high):""];
@@ -510,6 +521,8 @@ async function load(){
       rpc("wx_weights",{}),
     ]);
     FC=fc; OBS=obs; WEIGHTS=w;
+    const pt=POINTS.find(p=>p.point_id===pid);
+    document.getElementById("title").textContent=`BALTIC_WX · ${pt?.name ?? pid}`;
     fuse(); render(); renderTable();
     const runs={}; for(const e of FC) runs[e.m]=e.run;
     const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
