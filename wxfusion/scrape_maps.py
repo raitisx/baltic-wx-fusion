@@ -46,6 +46,14 @@ TILE_SLEEP = 0.3
 RADAR_PAGE = "https://www.meteolapa.lv/radars"
 RADAR_BASE = "https://www.meteolapa.lv"
 
+# Lithuania: LHMT composite (Laukuva + Vilnius), 5-min cadence, UTC stamps.
+# Leaflet imageOverlay bounds from meteo.lt InteractiveMaps config.
+LT_URL = ("https://new.meteo.lt/meteo_jobs/radaru_informacija/"
+          "Header_Radar-composite-{ts}.png")
+LT_SW = (49.876389, 15.618611)
+LT_NE = (59.701667, 34.313611)
+LT_MAXSIZE = 1400  # downscale the 4000px source before classification
+
 # Our precip colours (match maps_meps.py greens)
 GREEN_STEPS = [(200, 230, 176, 150), (137, 199, 116, 190), (87, 182, 71, 220),
                (28, 122, 28, 235), (11, 77, 11, 255), (5, 45, 5, 255)]
@@ -205,8 +213,16 @@ def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     b = arr[..., 2].astype(int)
     a = arr[..., 3]
     echo = a > 60
+    # exclude near-neutral pixels (LT out-of-range gray, basemap tints)
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    echo = echo & ((mx - mn) > 25)
     cls = np.zeros(arr.shape[:2], dtype=np.uint8)
-    blueish = echo & (b > r) & (b > g)
+    # LT teal/cyan (weak-moderate)
+    teal = echo & (r < 100) & (g > 120) & (b > 120)
+    cls[teal & (g >= 185)] = 1
+    cls[teal & (g < 185)] = 2
+    blueish = echo & ~teal & (b > r) & (b > g)
     cls[blueish & (b < 180)] = 2          # darker blue = a bit more
     cls[blueish & (b >= 180)] = 1         # light blue = weak
     greenish = echo & (g >= r) & (g > b)
@@ -243,8 +259,40 @@ def _recolor(cls: np.ndarray) -> Image.Image:
     return Image.fromarray(out, "RGBA")
 
 
+def _lt_frames(newest: dt.datetime, count: int = 3, step_min: int = 5) -> list[dict]:
+    """Recent LT composite frames as overlay dicts (probing 5-min stamps)."""
+    s = session()
+    out = []
+    t = newest.replace(second=0, microsecond=0)
+    t -= dt.timedelta(minutes=t.minute % step_min)
+    tried = 0
+    while len(out) < count and tried < count * 4:
+        url = LT_URL.format(ts=t.strftime("%Y%m%d%H%M"))
+        r = s.head(url, allow_redirects=True, timeout=30)
+        time.sleep(0.15)
+        if r.status_code == 200:
+            out.append({"url": url, "code": "LT", "time": t,
+                        "sw": LT_SW, "ne": LT_NE})
+        t -= dt.timedelta(minutes=step_min)
+        tried += 1
+    return out
+
+
+def _load_and_classify(url: str, s) -> np.ndarray | None:
+    r = s.get(url, allow_redirects=True, timeout=90)
+    time.sleep(0.2)
+    if r.status_code != 200:
+        return None
+    img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+    if max(img.size) > LT_MAXSIZE:
+        sc = LT_MAXSIZE / max(img.size)
+        img = img.resize((int(img.width * sc), int(img.height * sc)),
+                         Image.NEAREST)
+    return _classify_intensity(np.array(img))
+
+
 def radar_composite(frames_back: int = 3) -> None:
-    """Latest LV+EE frames -> cleaned, recoloured Baltic composite in R2."""
+    """Latest LV+EE+LT frames -> cleaned, recoloured Baltic composite in R2."""
     overlays = parse_radar_overlays()
     if not overlays:
         raise RuntimeError("no radar overlays parsed from meteolapa")
@@ -253,6 +301,12 @@ def radar_composite(frames_back: int = 3) -> None:
     by_code: dict[str, list[dict]] = {}
     for o in sorted(overlays, key=lambda o: o["time"], reverse=True):
         by_code.setdefault(o["code"], []).append(o)
+    try:
+        lt = _lt_frames(dt.datetime.now(dt.timezone.utc), count=frames_back)
+        if lt:
+            by_code["LT"] = lt
+    except Exception:
+        log.exception("LT radar fetch failed (continuing with LV+EE)")
 
     # composite on the common EPSG:3059 grid (transparent overlay)
     from . import proj3059 as P
@@ -265,12 +319,9 @@ def radar_composite(frames_back: int = 3) -> None:
         newest = max(newest or use[0]["time"], use[0]["time"])
         cls_stack = []
         for f in use:
-            r = s.get(f["url"], timeout=60)
-            time.sleep(0.2)
-            if r.status_code != 200:
-                continue
-            img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-            cls_stack.append((_classify_intensity(np.array(img)), f))
+            cls = _load_and_classify(f["url"], s)
+            if cls is not None:
+                cls_stack.append((cls, f))
         if not cls_stack:
             continue
         cur, f0 = cls_stack[0]
@@ -326,3 +377,107 @@ def radar_composite(frames_back: int = 3) -> None:
                   }).encode(), ContentType="application/json",
                   CacheControl="public, max-age=120")
     log.info("radar composite %s stored (%d frames in manifest)", vtag, len(frames))
+    _archive_note(s3, vtag)
+
+
+def _archive_note(s3, vtag: str) -> None:
+    """Keep a permanent hourly index: first stored frame of each hour goes
+    into maps/radar/archive.json (frames themselves are never deleted)."""
+    hour = vtag[:11]  # YYYYMMDDTHH
+    try:
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key="maps/radar/archive.json"
+        )["Body"].read())
+    except Exception:
+        arch = {"path": "maps/radar/frames3059", "hours": {}}
+    if hour not in arch["hours"]:
+        arch["hours"][hour] = vtag
+        s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
+                      Body=json.dumps(arch).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=300")
+
+
+def radar_backfill(hours_back: int = 36) -> None:
+    """Grab one frame per hour as far back as the sources still serve
+    (meteolapa & meteo.lt keep roughly the last 24-48 h), process with the
+    same cleaning, and store hourly composites + archive index.
+    Idempotent: hours already in the archive are skipped."""
+    s = session()
+    s3 = r2_client()
+    overlays = parse_radar_overlays()
+    lv = next((o for o in overlays if o["code"] == "LV"), None)
+    ee = next((o for o in overlays if o["code"] == "EE"), None)
+    try:
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key="maps/radar/archive.json"
+        )["Body"].read())
+    except Exception:
+        arch = {"path": "maps/radar/frames3059", "hours": {}}
+
+    from . import proj3059 as P
+    from PIL import ImageDraw
+    borders = json.load(open(os.path.join(
+        os.path.dirname(__file__), "assets", "borders_baltic.json")))
+
+    now = dt.datetime.now(dt.timezone.utc).replace(
+        minute=0, second=0, microsecond=0)
+    done = 0
+    for h in range(2, hours_back + 1):
+        target = now - dt.timedelta(hours=h)
+        hour_key = target.strftime("%Y%m%dT%H")
+        if hour_key in arch["hours"]:
+            continue
+        canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+        got = False
+        # meteolapa LV/EE: frames land at unpredictable minutes; probe 0-11
+        for tmpl in (ee, lv):
+            if tmpl is None:
+                continue
+            for m in range(12):
+                t = target + dt.timedelta(minutes=m)
+                url = (f"{RADAR_BASE}/radari/arhivs/{t:%Y/%m/%d}/"
+                       f"{t:%Y%m%d%H%M}{tmpl['code']}.png")
+                cls = _load_and_classify(url, s)
+                if cls is None:
+                    continue
+                warped = P.resample_mercator_image(
+                    np.array(_recolor(_despeckle(cls))),
+                    tmpl["sw"], tmpl["ne"])
+                canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
+                got = True
+                break
+        # LT: 5-min UTC stamps
+        for m in (0, 5, 10):
+            t = target + dt.timedelta(minutes=m)
+            cls = _load_and_classify(LT_URL.format(ts=t.strftime("%Y%m%d%H%M")), s)
+            if cls is not None:
+                warped = P.resample_mercator_image(
+                    np.array(_recolor(_despeckle(cls))), LT_SW, LT_NE)
+                canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
+                got = True
+                break
+        if not got:
+            log.info("backfill %s: no frames available (source horizon)", hour_key)
+            continue
+        draw = ImageDraw.Draw(canvas)
+        for c in borders:
+            for line in c["lines"]:
+                px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
+                draw.line(list(zip(px.tolist(), py.tolist())),
+                          fill=(107, 101, 82, 255), width=1)
+        vtag = target.strftime("%Y%m%dT%H%M")
+        buf = io.BytesIO()
+        canvas.save(buf, "PNG", optimize=True)
+        s3.put_object(Bucket=config.R2_BUCKET,
+                      Key=f"maps/radar/frames3059/{vtag}.png",
+                      Body=buf.getvalue(), ContentType="image/png",
+                      CacheControl="public, max-age=604800")
+        arch["hours"][hour_key] = vtag
+        done += 1
+    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
+                  Body=json.dumps(arch).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("radar backfill: %d hourly composites added (archive now %d h)",
+             done, len(arch["hours"]))
