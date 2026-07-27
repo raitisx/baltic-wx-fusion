@@ -707,7 +707,12 @@ function initSelectorMap(){
 const MAP_MANIFESTS={
   meps:"maps/meps/latest.json", um4:"maps/um4/latest.json",
   um1:"maps/um1/latest.json", radar:"maps/radar/latest.json",
+  radarArchive:"maps/radar/archive.json",
 };
+// Cache-buster: frame URLs repeat across runs (same run-tag folder), but the
+// browser/CDN may hold day-old copies — key every image by its manifest's
+// generation stamp.
+function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
 function frameTime(f){
   if(f.includes("-")) return new Date(f);
@@ -730,7 +735,7 @@ function mapShow(i){
     const thr=meps.thresholds.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
     const has=meps.hours.includes(iso);
     document.getElementById("imgMeps").style.opacity=has?"1":"0.15";
-    if(has) document.getElementById("imgMeps").src=`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png`;
+    if(has) document.getElementById("imgMeps").src=`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`;
   }
   // UM column: frames come ~2-hourly — for hours without a frame, retain
   // the nearest earlier one (up to 3 h back) instead of dimming/breaking
@@ -743,19 +748,23 @@ function mapShow(i){
   }
   if(umHour){
     umImg.style.opacity="1";
-    umImg.src=`${MAPS_BASE}/${um.path}/${vtagOf(umHour)}.png`;
+    umImg.src=`${MAPS_BASE}/${um.path}/${vtagOf(umHour)}.png${vq(um)}`;
   }else umImg.style.opacity="0.12";
-  // Radar column: nearest past frame within 40 min of the selected hour
+  // Radar column: nearest frame within 40 min — from the live manifest AND
+  // the permanent hourly archive (backfilled history)
   const rad=MV.loaded.radar, radImg=document.getElementById("imgRadar");
   const radLbl=document.getElementById("radarTime");
+  const cands=new Set(rad?.frames||[]);
+  const archHours=MV.loaded.radarArchive?.hours||{};
+  for(const k in archHours) cands.add(archHours[k]);
   let best=null, bd=1e15;
-  if(rad) for(const f of rad.frames){
+  for(const f of cands){
     const d=Math.abs(frameTime(f).getTime()-ts);
     if(d<bd){bd=d;best=f;}
   }
   if(rad && best && bd<=40*60e3){
     radImg.style.opacity="1";
-    radImg.src=`${MAPS_BASE}/${rad.path}/${best}.png`;
+    radImg.src=`${MAPS_BASE}/${rad.path}/${best}.png${vq(rad)}`;
     radLbl.textContent=fmtDT.format(frameTime(best));
   }else{
     radImg.style.opacity="0.12";
@@ -791,7 +800,7 @@ async function initMapsViewer(){
   view.hidden=false;
   // shared background plate for overlay columns
   for(const id of ["imgUmBg","imgRadarBg"])
-    document.getElementById(id).src=`${MAPS_BASE}/maps/bg_3059.png`;
+    document.getElementById(id).src=`${MAPS_BASE}/maps/bg_3059.png${vq(MV.loaded.meps)}`;
   if(!MV.loaded.um1) document.querySelector('#umRes option[value="um1"]')?.remove();
   if(!MV.loaded.um4 && MV.loaded.um1) document.getElementById("umRes").value="um1";
   const sl=document.getElementById("mapSlider");

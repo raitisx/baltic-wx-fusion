@@ -404,8 +404,11 @@ def radar_composite(frames_back: int = 3) -> None:
         old = json.loads(s3.get_object(
             Bucket=config.R2_BUCKET, Key="maps/radar/latest.json"
         )["Body"].read())
+        # v2: frame tags derive from createdAt (UTC); older tags were built
+        # from local-time filenames and are mislabeled — drop them.
         frames = old.get("frames", []) \
-            if old.get("path") == "maps/radar/frames3059" else []
+            if old.get("path") == "maps/radar/frames3059" and old.get("v") == 2 \
+            else []
     except Exception:
         frames = []
     if vtag not in frames:
@@ -414,7 +417,7 @@ def radar_composite(frames_back: int = 3) -> None:
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/latest.json",
                   Body=json.dumps({
                       "path": "maps/radar/frames3059", "frames": frames,
-                      "proj": "epsg3059", "overlay": True,
+                      "v": 2, "proj": "epsg3059", "overlay": True,
                       "bbox": BBOX,
                       "credit": "LVGMC + Keskkonnaagentuur radar via meteolapa.lv, "
                                 "recoloured & despeckled",
