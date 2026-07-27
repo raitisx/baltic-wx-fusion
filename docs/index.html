@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baltic WX — flight meteogram</title>
+<style>
+  .viz-root{
+    color-scheme: light;
+    --surface-1:#fcfcfb; --surface-2:#f0efec;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#8a8880;
+    --grid:#e7e6e2; --hairline:#dddcd7;
+    --temp:#e34948; --dew:#2a78d6; --precip:#008300; --wind:#2a78d6; --gust:#e34948;
+    --cloud:#3a3a38; --threshold:#c22a2a; --belowzone:rgba(227,73,72,.08);
+    --night:rgba(0,0,0,.045);
+    --ok:rgba(0,131,0,.10); --marginal:rgba(237,161,0,.14); --nofly:rgba(227,73,72,.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])) .viz-root{
+      color-scheme: dark;
+      --surface-1:#1a1a19; --surface-2:#242422;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8a8880;
+      --grid:#2e2e2b; --hairline:#3a3a36;
+      --temp:#e66767; --dew:#3987e5; --precip:#199e70; --wind:#3987e5; --gust:#e66767;
+      --cloud:#d8d7d0; --threshold:#e66767; --belowzone:rgba(230,103,103,.10);
+      --night:rgba(255,255,255,.05);
+      --ok:rgba(25,158,112,.12); --marginal:rgba(201,133,0,.16); --nofly:rgba(230,103,103,.14);
+    }
+  }
+  html,body{margin:0;padding:0}
+  .viz-root{
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--surface-1); color:var(--text-primary);
+    min-height:100vh; padding:20px 16px 40px;
+  }
+  .wrap{max-width:1120px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 2px}
+  .sub{font-size:12px;color:var(--text-secondary);margin-bottom:14px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+  .controls label{font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:6px}
+  select,button{
+    font:inherit;font-size:13px;color:var(--text-primary);
+    background:var(--surface-1);border:1px solid var(--hairline);
+    border-radius:6px;padding:4px 8px;
+  }
+  button{cursor:pointer}
+  .status{font-size:11px;color:var(--text-muted);margin-left:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--text-secondary);margin:2px 0 6px}
+  .legend .key{display:inline-flex;align-items:center;gap:5px}
+  .key i{display:inline-block;width:14px;height:0;border-top:2px solid;border-radius:1px}
+  .key i.dash{border-top-style:dashed}
+  .key i.blk{width:10px;height:10px;border:0;border-radius:2px}
+  svg{display:block;width:100%;height:auto}
+  svg text{font-family:inherit}
+  .tip{
+    position:fixed;pointer-events:none;z-index:10;display:none;
+    background:var(--surface-1);border:1px solid var(--hairline);border-radius:8px;
+    box-shadow:0 4px 16px rgba(0,0,0,.14);padding:8px 10px;font-size:12px;min-width:170px;
+  }
+  .tip .th{color:var(--text-secondary);font-size:11px;margin-bottom:4px}
+  .tip table{border-collapse:collapse}
+  .tip td{padding:1px 4px 1px 0;white-space:nowrap}
+  .tip td.v{font-weight:600;text-align:right}
+  .tip td.lbl{color:var(--text-secondary)}
+  .tip i{display:inline-block;width:12px;border-top:2px solid;vertical-align:middle;margin-right:4px;border-radius:1px}
+  details{margin-top:18px;font-size:12px}
+  summary{cursor:pointer;color:var(--text-secondary)}
+  table.data{border-collapse:collapse;margin-top:8px;font-size:11px}
+  table.data th,table.data td{border:1px solid var(--grid);padding:2px 7px;text-align:right;font-variant-numeric:tabular-nums}
+  table.data th{color:var(--text-secondary);font-weight:600}
+  .err{color:var(--threshold);font-size:13px;margin:12px 0}
+  .foot{margin-top:16px;font-size:10px;color:var(--text-muted);line-height:1.6}
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+  <h1 id="title">Baltic WX · flight meteogram</h1>
+  <div class="sub">Fused ICON + MEPS + IFS + GFS &middot; times in Europe/Riga &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise</div>
+
+  <div class="controls">
+    <label>Point <select id="selPoint"></select></label>
+    <label>Cloud-base limit <select id="selCb">
+      <option value="100">100 m AGL</option>
+      <option value="300">300 m AGL</option>
+      <option value="700" selected>700 m AGL</option>
+      <option value="1000">1000 m AGL</option>
+    </select></label>
+    <label>Gust limit <select id="selWg">
+      <option value="8">8 m/s</option>
+      <option value="10" selected>10 m/s</option>
+      <option value="12">12 m/s</option>
+      <option value="15">15 m/s</option>
+    </select></label>
+    <button id="btnReload">Reload</button>
+    <span class="status" id="status"></span>
+  </div>
+
+  <div class="legend" id="legend">
+    <span class="key"><i style="border-color:var(--temp)"></i>temp °C</span>
+    <span class="key"><i class="dash" style="border-color:var(--dew)"></i>dew pt °C</span>
+    <span class="key"><i class="blk" style="background:var(--precip)"></i>precip mm/h (opacity = model agreement)</span>
+    <span class="key"><i style="border-color:var(--wind)"></i>wind m/s</span>
+    <span class="key"><i class="dash" style="border-color:var(--gust)"></i>gusts m/s</span>
+    <span class="key"><i style="border-color:var(--cloud)"></i>cloud base m</span>
+    <span class="key"><i class="blk" style="background:var(--surface-2);border:1px solid var(--hairline)"></i>past observations = dots</span>
+  </div>
+
+  <div id="chart"></div>
+  <div class="err" id="err" hidden></div>
+  <div class="tip" id="tip"></div>
+
+  <details id="tableWrap"><summary>Data table (fused hourly values)</summary><div id="tableBox"></div></details>
+
+  <div class="foot" id="foot">
+    Forecast data: DWD ICON, MET Norway MEPS, ECMWF IFS, NOAA GFS via
+    <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0). Observations: LVĢMC (data.gov.lv, CC0),
+    Estonian Environment Agency / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
+    <a href="https://www.meteo.lt/">LHMT meteo.lt</a> (CC BY-SA 4.0), METAR via Iowa State IEM.
+    Cloud base is model-derived (LCL) verified against METAR ceilings; treat &lt;1 km detail as guidance, not gospel.
+  </div>
+</div>
+
+<script>
+"use strict";
+const SUPABASE_URL = "https://xxxywjxmdpildafzbnpj.supabase.co";
+const SUPABASE_KEY = "sb_publishable_rzlQRVBrD-u8RhNRbX3yEw_5UtRy6j-";
+const TZ = "Europe/Riga";
+const MODELS = ["icon","meps","ifs","gfs"];
+const HOURS = 72;
+
+// ---------- utilities ----------
+async function rpc(fn, args){
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`,{
+    method:"POST",
+    headers:{apikey:SUPABASE_KEY, Authorization:`Bearer ${SUPABASE_KEY}`, "Content-Type":"application/json"},
+    body: JSON.stringify(args||{})
+  });
+  if(!r.ok) throw new Error(`${fn}: HTTP ${r.status}`);
+  return r.json();
+}
+const fmtHour = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,hour:"2-digit",hour12:false});
+const fmtDay  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit"});
+const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+function rigaHour(d){ return parseInt(fmtHour.format(d),10); }
+function rigaMidnightToday(){
+  // walk back from now to the most recent Riga midnight
+  const now = new Date();
+  const h = rigaHour(now), m = now.getUTCMinutes(), s = now.getUTCSeconds();
+  const t = new Date(now.getTime() - ((h*60+m)*60+s)*1000 - now.getUTCMilliseconds());
+  t.setUTCMinutes(0,0,0); // snap to the hour boundary
+  return t;
+}
+function wmean(vals, ws){
+  let sv=0, sw=0;
+  for(let i=0;i<vals.length;i++){ if(vals[i]==null) continue; const w=ws[i]??1; sv+=vals[i]*w; sw+=w; }
+  return sw>0 ? sv/sw : null;
+}
+function wstd(vals, mean){
+  const xs = vals.filter(v=>v!=null);
+  if(xs.length<2 || mean==null) return null;
+  return Math.sqrt(xs.reduce((a,v)=>a+(v-mean)**2,0)/xs.length);
+}
+function leadBin(h){ return h<6?"0-6":h<12?"6-12":h<24?"12-24":h<48?"24-48":h<72?"48-72":"72+"; }
+const esc = s => String(s);
+
+// ---------- state ----------
+let POINTS=[], WEIGHTS=[], FC=[], OBS=[], FUSED=[], usedSkillWeights=false;
+
+function fuse(){
+  const t0 = rigaMidnightToday().getTime();
+  const wIdx = {};
+  for(const w of WEIGHTS) wIdx[`${w.m}|${w.p}|${w.lb}`] = w.w;
+  usedSkillWeights = WEIGHTS.length>0;
+  // index forecasts: param -> epoch -> model -> value ; and run time per model
+  const idx = {}, runs = {};
+  for(const e of FC){
+    const ts = Date.parse(e.t);
+    runs[e.m] = Date.parse(e.run);
+    ((idx[e.p] ||= {})[ts] ||= {})[e.m] = e.v;
+  }
+  FUSED = [];
+  for(let h=0; h<HOURS; h++){
+    const ts = t0 + h*3600e3;
+    const row = {ts, hourOfDay: rigaHour(new Date(ts))};
+    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","pres_msl"]){
+      const per = (idx[p]||{})[ts] || {};
+      const vals = MODELS.map(m=>per[m] ?? null);
+      const ws = MODELS.map(m=>{
+        if(per[m]==null) return 0;
+        const lead = Math.max(0, Math.round((ts - (runs[m]||ts))/3600e3));
+        return wIdx[`${m}|${p==="cb_lcl"?"cb":p}|${leadBin(lead)}`] ?? 1;
+      });
+      const mean = wmean(vals, ws);
+      row[p] = mean;
+      row[p+"_sd"] = wstd(vals, mean);
+      row[p+"_models"] = per;
+    }
+    const pv = (idx["prcp_1h"]||{})[ts] || {};
+    const n = MODELS.filter(m=>pv[m]!=null).length;
+    row.prcp_prob = n ? MODELS.filter(m=>(pv[m]??0)>=0.1).length/n : null;
+    FUSED.push(row);
+  }
+}
+
+function dayVerdicts(cbLim, wgLim){
+  const days=[[],[],[]];
+  for(const r of FUSED){
+    const d = Math.floor((r.ts - FUSED[0].ts)/86400e3);
+    if(d<0||d>2) continue;
+    if(r.hourOfDay>=6 && r.hourOfDay<=20) days[d].push(r);
+  }
+  return days.map(rows=>{
+    if(!rows.length) return "unknown";
+    let bad=0, iffy=0;
+    for(const r of rows){
+      const cbBad = r.cb_lcl!=null && r.cb_lcl < cbLim && (r.cc_low??0) >= 40;
+      const wgBad = r.wg10m!=null && r.wg10m > wgLim;
+      const prBad = (r.prcp_1h??0) >= 0.2 || (r.prcp_prob??0) >= 0.6;
+      if(cbBad||wgBad||prBad) bad++;
+      else if((r.prcp_prob??0)>=0.3 || (r.wg10m??0)>wgLim-2) iffy++;
+    }
+    const f = bad/rows.length, g=(bad+iffy)/rows.length;
+    return f>0.35?"nofly": g>0.25?"marginal":"ok";
+  });
+}
+
+// ---------- render ----------
+const P = {left:52,right:14,gapY:14,width:1100};
+const PANELS = [
+  {id:"temp",  h:120, label:"temperature °C / dew pt"},
+  {id:"prcp",  h:110, label:"precip mm/h"},
+  {id:"wind",  h:110, label:"gusts / wind m/s"},
+  {id:"cloud", h:190, label:"cloud base m"},
+];
+function xPos(ts){
+  const t0=FUSED[0].ts, t1=t0+HOURS*3600e3;
+  return P.left + (ts-t0)/(t1-t0)*(P.width-P.left-P.right);
+}
+function niceTicks(min,max,n){
+  const span=max-min, step0=span/n, mag=10**Math.floor(Math.log10(step0));
+  const step=[1,2,2.5,5,10].map(k=>k*mag).find(s=>span/s<=n)||mag*10;
+  const t=[]; for(let v=Math.ceil(min/step)*step; v<=max+1e-9; v+=step) t.push(+v.toFixed(6));
+  return t;
+}
+function svgEl(name,attrs,parent){
+  const el=document.createElementNS("http://www.w3.org/2000/svg",name);
+  for(const k in attrs) el.setAttribute(k,attrs[k]);
+  if(parent) parent.appendChild(el);
+  return el;
+}
+function linePath(rows, key, y){
+  let d="", pen=false;
+  for(const r of rows){
+    const v=r[key];
+    if(v==null){ pen=false; continue; }
+    d += (pen?"L":"M") + xPos(r.ts).toFixed(1) + " " + y(v).toFixed(1) + " ";
+    pen=true;
+  }
+  return d;
+}
+
+function render(){
+  const chart=document.getElementById("chart");
+  chart.textContent="";
+  if(!FUSED.length) return;
+  const cbLim=+document.getElementById("selCb").value;
+  const wgLim=+document.getElementById("selWg").value;
+  const verdicts=dayVerdicts(cbLim,wgLim);
+  const totalH = 40 + PANELS.reduce((a,p)=>a+p.h+P.gapY,0) + 18;
+  const svg=svgEl("svg",{viewBox:`0 0 ${P.width} ${totalH}`, "aria-label":"3-day flight meteogram"});
+  chart.appendChild(svg);
+  const css=v=>getComputedStyle(document.body).getPropertyValue(v).trim();
+
+  // Day headers + verdict tint + night shading (shared columns)
+  let yCursor=40;
+  const panelTop={}, panelY={};
+  for(const p of PANELS){ panelTop[p.id]=yCursor; yCursor+=p.h+P.gapY; }
+  const plotBottom = yCursor - P.gapY;
+
+  for(let d=0;d<3;d++){
+    const ts0=FUSED[0].ts + d*86400e3;
+    const x0=xPos(ts0), x1=xPos(ts0+86400e3);
+    const tint = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):verdicts[d]==="ok"?css("--ok"):"none";
+    if(tint!=="none") svgEl("rect",{x:x0,y:16,width:x1-x0,height:8,rx:3,fill:tint.replace(/rgba\(([^)]*),[.\d]+\)/,"rgba($1,.9)")},svg);
+    svgEl("rect",{x:x0,y:panelTop[PANELS[0].id],width:x1-x0,height:plotBottom-panelTop[PANELS[0].id],fill:tint==="none"?"transparent":tint},svg);
+    const t=svgEl("text",{x:(x0+x1)/2,y:12,"text-anchor":"middle","font-size":"12","font-weight":"600",fill:css("--text-primary")},svg);
+    t.textContent = fmtDay.format(new Date(ts0+12*3600e3)) + (verdicts[d]==="nofly"?"  ·  NO-FLY":verdicts[d]==="marginal"?"  ·  marginal":"");
+  }
+  // night shading 21:00–06:00
+  for(const r of FUSED){
+    if(r.hourOfDay>=21 || r.hourOfDay<6){
+      svgEl("rect",{x:xPos(r.ts),y:panelTop[PANELS[0].id],width:xPos(r.ts+3600e3)-xPos(r.ts),height:plotBottom-panelTop[PANELS[0].id],fill:css("--night")},svg);
+    }
+  }
+
+  const obsIdx={};
+  for(const o of OBS){ ((obsIdx[o.p] ||= [])).push({ts:Date.parse(o.t),v:o.v}); }
+
+  // ----- panel scaffold helper -----
+  function panel(p, yMin, yMax, tickN, unit){
+    const top=panelTop[p.id], bot=top+p.h;
+    const y=v=>bot - (v-yMin)/(yMax-yMin)*p.h;
+    panelY[p.id]={y,top,bot,yMin,yMax};
+    for(const tv of niceTicks(yMin,yMax,tickN)){
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
+      const t=svgEl("text",{x:P.left-6,y:y(tv)+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
+      t.textContent=tv;
+    }
+    for(let d=0;d<=3;d++){
+      const x=xPos(FUSED[0].ts+d*86400e3);
+      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--hairline"),"stroke-width":1},svg);
+    }
+    const lab=svgEl("text",{x:P.left,y:top-3,"font-size":"10",fill:css("--text-muted")},svg);
+    lab.textContent=p.label + (unit?` (${unit})`:"");
+    return y;
+  }
+
+  // ----- temp panel -----
+  {
+    const p=PANELS[0];
+    const vals=FUSED.flatMap(r=>[r.t2m,r.td2m]).filter(v=>v!=null)
+      .concat((obsIdx.t2m||[]).map(o=>o.v));
+    const lo=Math.floor(Math.min(...vals,-1)/5)*5, hi=Math.ceil(Math.max(...vals,1)/5)*5;
+    const y=panel(p,lo,hi,4);
+    svgEl("path",{d:linePath(FUSED,"td2m",y),fill:"none",stroke:css("--dew"),"stroke-width":2,"stroke-dasharray":"2 4","stroke-linecap":"round"},svg);
+    svgEl("path",{d:linePath(FUSED,"t2m",y),fill:"none",stroke:css("--temp"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    for(const o of (obsIdx.t2m||[])) if(o.ts>=FUSED[0].ts)
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+  }
+
+  // ----- precip panel -----
+  {
+    const p=PANELS[1];
+    const maxP=Math.max(2,...FUSED.map(r=>r.prcp_1h??0), ...(obsIdx.prcp_1h||[]).map(o=>o.v));
+    const y=panel(p,0,Math.ceil(maxP),4);
+    const bw=Math.min(10,(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))-2);
+    for(const r of FUSED){
+      if((r.prcp_1h??0)<=0.01) continue;
+      const h=panelY[p.id].bot-y(r.prcp_1h);
+      const op=0.35+0.65*(r.prcp_prob??1);
+      svgEl("rect",{x:xPos(r.ts)+1,y:y(r.prcp_1h),width:bw,height:Math.max(h,2),rx:2,
+        fill:css("--precip"),"fill-opacity":op.toFixed(2)},svg);
+    }
+    for(const o of (obsIdx.prcp_1h||[])) if(o.ts>=FUSED[0].ts && o.v>0)
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+  }
+
+  // ----- wind panel -----
+  {
+    const p=PANELS[2];
+    const vals=FUSED.flatMap(r=>[r.ws10m,r.wg10m]).filter(v=>v!=null);
+    const hi=Math.max(Math.ceil(Math.max(...vals,wgLim+2)/5)*5,10);
+    const y=panel(p,0,hi,4);
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1,"stroke-dasharray":"5 4"},svg);
+    // gusts as short dashes (like the mock)
+    for(const r of FUSED) if(r.wg10m!=null)
+      svgEl("line",{x1:xPos(r.ts)-3,x2:xPos(r.ts)+3,y1:y(r.wg10m),y2:y(r.wg10m),stroke:css("--gust"),"stroke-width":2.5,"stroke-linecap":"round"},svg);
+    svgEl("path",{d:linePath(FUSED,"ws10m",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    for(const o of (obsIdx.ws10m||[])) if(o.ts>=FUSED[0].ts)
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2.6,fill:css("--cloud"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+  }
+
+  // ----- cloud panel: 0–1000 m detailed + compressed "1 km+" band -----
+  {
+    const p=PANELS[3];
+    const top=panelTop[p.id], bot=top+p.h;
+    const bandH=44;                       // 1 km+ compressed band
+    const y0=bot, yTopDetail=top+bandH+6; // detail zone 0..1000
+    const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
+    panelY[p.id]={y,top,bot,yMin:0,yMax:1000,band:true};
+    for(const tv of [0,150,300,500,700,1000]){
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
+      const t=svgEl("text",{x:P.left-6,y:y(tv)+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
+      t.textContent=tv;
+    }
+    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+3,"text-anchor":"end","font-size":"10",fill:css("--text-secondary")},svg);
+    bt.textContent="1 km+";
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--hairline"),"stroke-width":1},svg);
+    for(let d=0;d<=3;d++){
+      const x=xPos(FUSED[0].ts+d*86400e3);
+      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--hairline"),"stroke-width":1},svg);
+    }
+    const lab=svgEl("text",{x:P.left,y:top-3,"font-size":"10",fill:css("--text-muted")},svg);
+    lab.textContent="cloud base m AGL · upper band: low/mid/high cover (opacity = %)";
+
+    // below-threshold tint + threshold line
+    svgEl("rect",{x:P.left,y:y(cbLim),width:P.width-P.left-P.right,height:y0-y(cbLim),fill:css("--belowzone")},svg);
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLim),y2:y(cbLim),stroke:css("--threshold"),"stroke-width":1,"stroke-dasharray":"5 4"},svg);
+
+    // low/mid/high cover strips in the compressed band (gap shows as missing strip)
+    const strips=[["cc_high",0],["cc_mid",1],["cc_low",2]];
+    const sh=(bandH-8)/3;
+    for(const r of FUSED){
+      const x=xPos(r.ts), w=xPos(r.ts+3600e3)-x;
+      for(const [key,i] of strips){
+        const cov=r[key];
+        if(cov==null || cov<5) continue;
+        svgEl("rect",{x:x+0.5,y:top+3+i*(sh+2),width:w-1,height:sh,rx:1.5,
+          fill:css("--cloud"),"fill-opacity":(0.10+0.75*cov/100).toFixed(2)},svg);
+      }
+    }
+    // fused cloud base line: only meaningful when there is low/total cloud; cap at band
+    const rows=FUSED.map(r=>({ts:r.ts, cb:(r.cc_total??0)>=25 ? Math.min(r.cb_lcl??1001,1001) : null}));
+    let d="",pen=false;
+    for(const r of rows){
+      if(r.cb==null){pen=false;continue;}
+      const yy=r.cb>1000? top+bandH : y(r.cb);
+      d+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+yy.toFixed(1)+" ";
+      pen=true;
+    }
+    svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    for(const r of rows) if(r.cb!=null && r.cb>1000)
+      svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:1.8,fill:css("--cloud")},svg);
+    // observed ceilings (METAR) as dots
+    for(const o of (obsIdx.cb_ceiling||[])) if(o.ts>=FUSED[0].ts)
+      svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:3,fill:css("--threshold"),stroke:css("--surface-1"),"stroke-width":1.5},svg);
+  }
+
+  // hour ticks bottom
+  for(const r of FUSED){
+    if(r.hourOfDay%3!==0) continue;
+    const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":"9",fill:css("--text-muted")},svg);
+    t.textContent=String(r.hourOfDay).padStart(2,"0");
+  }
+
+  // "now" marker
+  const now=Date.now();
+  if(now>FUSED[0].ts && now<FUSED[0].ts+HOURS*3600e3){
+    svgEl("line",{x1:xPos(now),x2:xPos(now),y1:panelTop[PANELS[0].id],y2:plotBottom,stroke:css("--text-muted"),"stroke-width":1,"stroke-dasharray":"2 3"},svg);
+  }
+
+  // ----- crosshair + tooltip -----
+  const cross=svgEl("line",{x1:0,x2:0,y1:panelTop[PANELS[0].id],y2:plotBottom,stroke:css("--text-secondary"),"stroke-width":1,visibility:"hidden"},svg);
+  const tip=document.getElementById("tip");
+  const hit=svgEl("rect",{x:P.left,y:panelTop[PANELS[0].id],width:P.width-P.left-P.right,height:plotBottom-panelTop[PANELS[0].id],fill:"transparent"},svg);
+  hit.addEventListener("pointermove",ev=>{
+    const rect=svg.getBoundingClientRect();
+    const fx=(ev.clientX-rect.left)/rect.width*P.width;
+    const t0=FUSED[0].ts;
+    let h=Math.round((fx-P.left)/((P.width-P.left-P.right)/HOURS));
+    h=Math.max(0,Math.min(HOURS-1,h));
+    const r=FUSED[h];
+    const x=xPos(r.ts);
+    cross.setAttribute("x1",x); cross.setAttribute("x2",x);
+    cross.setAttribute("visibility","visible");
+    tip.style.display="block";
+    const px=ev.clientX+14, flip=px+230>window.innerWidth;
+    tip.style.left=(flip?ev.clientX-244:px)+"px";
+    tip.style.top=Math.max(8,ev.clientY-30)+"px";
+    const f=(v,d=1)=>v==null?"–":v.toFixed(d);
+    tip.innerHTML="";
+    const th=document.createElement("div"); th.className="th";
+    th.textContent=fmtDT.format(new Date(r.ts));
+    tip.appendChild(th);
+    const tb=document.createElement("table");
+    const rows=[
+      ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
+      ["--dew","dew pt",f(r.td2m)+" °C"],
+      ["--precip","precip",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
+      ["--wind","wind",f(r.ws10m)+" m/s"],
+      ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
+      ["--cloud","cloud base",(r.cb_lcl!=null?Math.round(r.cb_lcl)+" m":"–")+(r.cb_lcl_sd!=null?` ±${Math.round(r.cb_lcl_sd)}`:"")],
+      ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
+    ];
+    for(const [c,l,v] of rows){
+      const tr=document.createElement("tr");
+      const td1=document.createElement("td"); td1.className="lbl";
+      const key=document.createElement("i"); key.style.borderColor=`var(${c})`;
+      td1.appendChild(key); td1.appendChild(document.createTextNode(l));
+      const td2=document.createElement("td"); td2.className="v"; td2.textContent=v;
+      tr.appendChild(td1); tr.appendChild(td2); tb.appendChild(tr);
+    }
+    tip.appendChild(tb);
+  });
+  hit.addEventListener("pointerleave",()=>{cross.setAttribute("visibility","hidden");tip.style.display="none";});
+}
+
+function renderTable(){
+  const box=document.getElementById("tableBox");
+  box.textContent="";
+  const tb=document.createElement("table"); tb.className="data";
+  const hd=document.createElement("tr");
+  for(const h of ["time","t2m °C","dew °C","precip mm","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
+    const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
+  }
+  tb.appendChild(hd);
+  for(const r of FUSED){
+    const tr=document.createElement("tr");
+    const cells=[fmtDT.format(new Date(r.ts)),
+      r.t2m?.toFixed(1)??"", r.td2m?.toFixed(1)??"", r.prcp_1h?.toFixed(1)??"",
+      r.prcp_prob!=null?Math.round(r.prcp_prob*100):"", r.ws10m?.toFixed(1)??"",
+      r.wg10m?.toFixed(1)??"", r.cb_lcl!=null?Math.round(r.cb_lcl):"",
+      r.cc_low!=null?Math.round(r.cc_low):"", r.cc_mid!=null?Math.round(r.cc_mid):"", r.cc_high!=null?Math.round(r.cc_high):""];
+    for(const c of cells){ const td=document.createElement("td"); td.textContent=c; tr.appendChild(td); }
+    tb.appendChild(tr);
+  }
+  box.appendChild(tb);
+}
+
+async function load(){
+  const status=document.getElementById("status");
+  const err=document.getElementById("err");
+  err.hidden=true;
+  status.textContent="loading…";
+  try{
+    const pid=document.getElementById("selPoint").value || "EVRA";
+    const [fc,obs,w]=await Promise.all([
+      rpc("wx_point_forecast",{p_point_id:pid}),
+      rpc("wx_point_obs",{p_point_id:pid}),
+      rpc("wx_weights",{}),
+    ]);
+    FC=fc; OBS=obs; WEIGHTS=w;
+    fuse(); render(); renderTable();
+    const runs={}; for(const e of FC) runs[e.m]=e.run;
+    const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
+    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"} · runs: ${runTxt}`;
+  }catch(e){
+    err.hidden=false;
+    err.textContent="Failed to load data: "+e.message+" — check network / Supabase availability.";
+    status.textContent="error";
+  }
+}
+
+async function init(){
+  try{
+    POINTS=await rpc("wx_points_list",{});
+  }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl"}]; }
+  const sel=document.getElementById("selPoint");
+  for(const p of POINTS){
+    const o=document.createElement("option");
+    o.value=p.point_id; o.textContent=`${p.point_id} — ${p.name??""}`;
+    sel.appendChild(o);
+  }
+  sel.value="EVRA";
+  sel.addEventListener("change",load);
+  document.getElementById("selCb").addEventListener("change",()=>{render();});
+  document.getElementById("selWg").addEventListener("change",()=>{render();});
+  document.getElementById("btnReload").addEventListener("click",load);
+  await load();
+}
+init();
+</script>
+</body>
+</html>
