@@ -120,7 +120,7 @@
     <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
     <div class="mapcols">
       <div class="mapcol" id="colMeps">
-        <div class="mapcolhead">MEPS fused 2.5 km <span class="mapsub">base&lt;limit pink · precip green</span></div>
+        <div class="mapcolhead">MEPS fused 2.5 km <span class="mapsub" id="mepsTime">base&lt;limit pink · precip green</span></div>
         <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
       </div>
       <div class="mapcol" id="colUm">
@@ -720,6 +720,32 @@ function frameTime(f){
   return new Date(`${f.slice(0,4)}-${f.slice(4,6)}-${f.slice(6,8)}T${f.slice(9,11)}:${f.slice(11,13)||"00"}:00Z`);
 }
 function vtagOf(iso){ return iso.replace(/[-:]/g,"").slice(0,11); }  // YYYYMMDDTHH
+function mepsThr(){
+  const meps=MV.loaded.meps;
+  const want=+document.getElementById("selCb").value;
+  return meps.thresholds.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
+}
+function mepsUrl(iso,thr){ return `${MAPS_BASE}/${MV.loaded.meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(MV.loaded.meps)}`; }
+function umUrl(um,iso){ return `${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`; }
+// Preload adjacent frames so scrubbing/play doesn't wait on the network
+// (r2.dev is rate-limited; warmed frames come from browser/CDN cache).
+const PRELOADED=new Set();
+function preloadAround(idx){
+  const meps=MV.loaded.meps, um=MV.loaded[document.getElementById("umRes").value];
+  const thr=meps?mepsThr():null;
+  for(const off of [1,2,3,-1,4,5]){
+    const iso=MV.hours[idx+off];
+    if(!iso) continue;
+    if(meps && meps.hours.includes(iso)){
+      const u=mepsUrl(iso,thr);
+      if(!PRELOADED.has(u)){ PRELOADED.add(u); new Image().src=u; }
+    }
+    if(um && um.hours.includes(iso)){
+      const u=umUrl(um,iso);
+      if(!PRELOADED.has(u)){ PRELOADED.add(u); new Image().src=u; }
+    }
+  }
+}
 function mapShow(i){
   if(!MV.hours.length) return;
   MV.idx=Math.max(0,Math.min(MV.hours.length-1,i));
@@ -732,11 +758,11 @@ function mapShow(i){
   // MEPS column
   const meps=MV.loaded.meps;
   if(meps){
-    const want=+document.getElementById("selCb").value;
-    const thr=meps.thresholds.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
+    const thr=mepsThr();
     const has=meps.hours.includes(iso);
     document.getElementById("imgMeps").style.opacity=has?"1":"0.15";
-    if(has) document.getElementById("imgMeps").src=`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`;
+    document.getElementById("mepsTime").textContent=has?"base<limit pink · precip green":"before this run — no frame";
+    if(has) document.getElementById("imgMeps").src=mepsUrl(iso,thr);
   }
   // UM column: frames come ~2-hourly — for hours without a frame, retain
   // the nearest earlier one (up to 3 h back) instead of dimming/breaking
@@ -749,8 +775,9 @@ function mapShow(i){
   }
   if(umHour){
     umImg.style.opacity="1";
-    umImg.src=`${MAPS_BASE}/${um.path}/${vtagOf(umHour)}.png${vq(um)}`;
+    umImg.src=umUrl(um,umHour);
   }else umImg.style.opacity="0.12";
+  preloadAround(MV.idx);
   // Radar column: nearest frame within 40 min — from the live manifest AND
   // the permanent hourly archive (backfilled history)
   const rad=MV.loaded.radar, radImg=document.getElementById("imgRadar");
@@ -828,7 +855,7 @@ async function initMapsViewer(){
   dg.push("um1: "+(MV.loaded.um1?MV.loaded.um1.hours.length+"h":"not published"));
   dg.push("radar live: "+(MV.loaded.radar?MV.loaded.radar.frames.length+" frames":"NOT LOADED"));
   dg.push("radar archive: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+" hours":"NOT LOADED"));
-  document.getElementById("mapDiag").textContent="page v12 · "+dg.join(" · ");
+  document.getElementById("mapDiag").textContent="page v13 · "+dg.join(" · ");
   const nowIdx=MV.hours.findIndex(h=>Date.parse(h)>=Date.now());
   mapShow(nowIdx<0?0:nowIdx);
   // crosshair sync from the meteogram

@@ -142,6 +142,11 @@ def render_run(max_hours: int = 66) -> None:
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
             fig.savefig(fp, dpi=100)
             plt.close(fig)
+            # palette-quantize: ~60% smaller files, visually identical at
+            # these soft fills — matters because r2.dev is rate-limited
+            from PIL import Image as PILImage
+            PILImage.open(fp).convert("RGB").quantize(
+                colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
             key = f"maps/meps/{run_tag}/{vtag}_alt{thr}.png"
             s3.upload_file(fp, config.R2_BUCKET, key, ExtraArgs={
                 "ContentType": "image/png",
