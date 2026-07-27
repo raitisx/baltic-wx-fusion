@@ -8,7 +8,6 @@ jobs:
   radar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true   # experimental — never page on ORD hiccups
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

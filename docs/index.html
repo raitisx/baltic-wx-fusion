@@ -127,11 +127,11 @@
         <div class="mapcolhead">UM (meteo.pl)
           <select id="umRes"><option value="um4">4 km</option><option value="um1">1.5 km</option></select>
         </div>
-        <div class="stack"><img class="mimg mbg" id="imgUmBg" alt=""><img class="mimg mover" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
+        <div class="stack"><img class="mimg mover" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
       </div>
       <div class="mapcol" id="colRadar">
         <div class="mapcolhead">Radar LV+EE <span class="mapsub" id="radarTime"></span></div>
-        <div class="stack"><img class="mimg mbg" id="imgRadarBg" alt=""><img class="mimg mover" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
+        <div class="stack"><img class="mimg mover" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
       </div>
     </div>
     <div class="mapctl">
@@ -798,9 +798,8 @@ async function initMapsViewer(){
   if(!MV.hours.length && MV.loaded.radar)
     MV.hours=MV.loaded.radar.frames.map(f=>frameTime(f).toISOString());
   view.hidden=false;
-  // shared background plate for overlay columns
-  for(const id of ["imgUmBg","imgRadarBg"])
-    document.getElementById(id).src=`${MAPS_BASE}/maps/bg_3059.png${vq(MV.loaded.meps)}`;
+  // (no background plate: overlay frames carry their own baked borders —
+  // a second border source under them is what caused the ghosting)
   if(!MV.loaded.um1) document.querySelector('#umRes option[value="um1"]')?.remove();
   if(!MV.loaded.um4 && MV.loaded.um1) document.getElementById("umRes").value="um1";
   const sl=document.getElementById("mapSlider");
