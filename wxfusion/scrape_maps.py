@@ -280,6 +280,51 @@ def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     return cls
 
 
+def _remove_spikes(cls: np.ndarray) -> np.ndarray:
+    """Kill interference beams (thin straight rays, often dashed).
+
+    Method: 'thin residue' = echo minus a 3x3 morphological opening (anything
+    <3 px thick). Probabilistic Hough finds straight lines in the residue —
+    which connects dashed beam segments — and each candidate segment is kept
+    only if its path is NOT mostly inside thick (real) echo. Only thin pixels
+    near validated lines are removed, so storm cores and cell edges survive.
+    """
+    try:
+        from scipy import ndimage
+        from skimage.transform import probabilistic_hough_line
+        from skimage.draw import line as skline
+    except ImportError:
+        log.warning("scipy/skimage missing — beam removal skipped")
+        return cls
+    echo = cls > 0
+    if not echo.any():
+        return cls
+    opened = ndimage.binary_opening(echo, structure=np.ones((3, 3)))
+    thick = ndimage.binary_dilation(opened, structure=np.ones((3, 3)))
+    thin = echo & ~opened
+    if thin.sum() < 30:
+        return cls
+    segs = probabilistic_hough_line(thin, threshold=15, line_length=35, line_gap=8)
+    if not segs:
+        return cls
+    kill = np.zeros_like(echo)
+    kept = 0
+    for (x0, y0), (x1, y1) in segs:
+        rr, cc = skline(y0, x0, y1, x1)
+        rr = np.clip(rr, 0, echo.shape[0] - 1)
+        cc = np.clip(cc, 0, echo.shape[1] - 1)
+        if thick[rr, cc].mean() < 0.25:
+            kill[rr, cc] = True
+            kept += 1
+    if not kept:
+        return cls
+    kill = ndimage.binary_dilation(kill, structure=np.ones((5, 5)))
+    out = cls.copy()
+    out[kill & thin] = 0
+    log.info("beam removal: %d segments, %d px", kept, int((kill & thin).sum()))
+    return out
+
+
 def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
     """Remove isolated pixels & thin spikes (cone-beam artifacts):
     keep an echo pixel only if enough of its 8 neighbours also have echo."""
@@ -376,7 +421,7 @@ def radar_composite(frames_back: int = 3) -> None:
             votes = sum((c[0] > 0).astype(np.uint8) for c in cls_stack
                         if c[0].shape == cur.shape)
             cur = np.where(votes >= 2, cur, 0).astype(np.uint8)
-        cur = _despeckle(cur)
+        cur = _remove_spikes(_despeckle(cur))
         colored = np.array(_recolor(cur))
         warped = P.resample_mercator_image(colored, f0["sw"], f0["ne"])
         canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
@@ -474,6 +519,9 @@ def radar_backfill(hours_back: int = 168) -> None:
                 d.line(pts, fill=(247, 241, 226, 230), width=3)
                 d.line(pts, fill=(85, 80, 63, 255), width=1)
 
+    force = os.environ.get("BACKFILL_FORCE", "") == "1"
+    if force:
+        log.info("FORCE mode: re-rendering hours already in the archive")
     now = dt.datetime.now(dt.timezone.utc).replace(
         minute=0, second=0, microsecond=0)
     done = 0
@@ -484,7 +532,7 @@ def radar_backfill(hours_back: int = 168) -> None:
         t_lo = now - dt.timedelta(hours=min(w0 + win - 1, hours_back))
         hours_needed = [t_lo + dt.timedelta(hours=k)
                         for k in range(int((t_hi - t_lo).total_seconds() // 3600) + 1)]
-        if all(h.strftime("%Y%m%dT%H") in arch["hours"] for h in hours_needed):
+        if not force and all(h.strftime("%Y%m%dT%H") in arch["hours"] for h in hours_needed):
             continue
         try:
             overlays = fetch_overlays_window(t_lo, t_hi + dt.timedelta(minutes=30))
@@ -494,7 +542,7 @@ def radar_backfill(hours_back: int = 168) -> None:
         time.sleep(0.5)
         for target in hours_needed:
             hour_key = target.strftime("%Y%m%dT%H")
-            if hour_key in arch["hours"]:
+            if hour_key in arch["hours"] and not force:
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             got = False
@@ -510,7 +558,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                 if cls is None:
                     continue
                 warped = P.resample_mercator_image(
-                    np.array(_recolor(_despeckle(cls))),
+                    np.array(_recolor(_remove_spikes(_despeckle(cls)))),
                     best["sw"], best["ne"])
                 canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
                 got = True

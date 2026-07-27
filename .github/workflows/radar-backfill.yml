@@ -6,6 +6,10 @@ on:
         description: "How many hours back (meteolapa S3 archive reaches back months)"
         type: string
         default: "168"
+      force:
+        description: "Re-render hours already archived (apply new styling/cleaning)"
+        type: boolean
+        default: false
 
 jobs:
   backfill:
@@ -17,7 +21,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt && pip install pillow numpy pyproj
+      - run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image
       - name: Hourly radar backfill -> R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -25,4 +29,5 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           BACKFILL_HOURS: ${{ inputs.hours }}
+          BACKFILL_FORCE: ${{ inputs.force && '1' || '0' }}
         run: python jobs/run_radar_backfill.py
