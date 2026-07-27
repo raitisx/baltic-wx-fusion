@@ -121,17 +121,17 @@
     <div class="mapcols">
       <div class="mapcol" id="colMeps">
         <div class="mapcolhead">MEPS fused 2.5 km <span class="mapsub">base&lt;limit pink · precip green</span></div>
-        <div class="stack"><img class="mimg" id="imgMeps" alt="MEPS flight map"></div>
+        <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
       </div>
       <div class="mapcol" id="colUm">
         <div class="mapcolhead">UM (meteo.pl)
           <select id="umRes"><option value="um4">4 km</option><option value="um1">1.5 km</option></select>
         </div>
-        <div class="stack"><img class="mimg mbg" id="imgUmBg" alt=""><img class="mimg mover" id="imgUm" alt="UM map"></div>
+        <div class="stack"><img class="mimg mbg" id="imgUmBg" alt=""><img class="mimg mover" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
       </div>
       <div class="mapcol" id="colRadar">
         <div class="mapcolhead">Radar LV+EE <span class="mapsub" id="radarTime"></span></div>
-        <div class="stack"><img class="mimg mbg" id="imgRadarBg" alt=""><img class="mimg mover" id="imgRadar" alt="radar composite"></div>
+        <div class="stack"><img class="mimg mbg" id="imgRadarBg" alt=""><img class="mimg mover" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
       </div>
     </div>
     <div class="mapctl">
@@ -732,12 +732,18 @@ function mapShow(i){
     document.getElementById("imgMeps").style.opacity=has?"1":"0.15";
     if(has) document.getElementById("imgMeps").src=`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png`;
   }
-  // UM column
+  // UM column: frames come ~2-hourly — for hours without a frame, retain
+  // the nearest earlier one (up to 3 h back) instead of dimming/breaking
   const um=MV.loaded[document.getElementById("umRes").value];
   const umImg=document.getElementById("imgUm");
-  if(um && um.hours.includes(iso)){
+  let umHour=null;
+  if(um) for(const h of um.hours){
+    const d=ts-Date.parse(h);
+    if(d>=0 && d<=3*3600e3 && (umHour===null || Date.parse(h)>Date.parse(umHour))) umHour=h;
+  }
+  if(umHour){
     umImg.style.opacity="1";
-    umImg.src=`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png`;
+    umImg.src=`${MAPS_BASE}/${um.path}/${vtagOf(umHour)}.png`;
   }else umImg.style.opacity="0.12";
   // Radar column: nearest past frame within 40 min of the selected hour
   const rad=MV.loaded.radar, radImg=document.getElementById("imgRadar");

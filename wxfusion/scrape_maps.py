@@ -151,9 +151,20 @@ def um_run(hours: list[int] | None = None) -> None:
                 continue
             # reproject the mercator-stitched canvas onto the common
             # EPSG:3059 grid (transparent overlay; client stacks it on
-            # maps/bg_3059.png)
+            # maps/bg_3059.png) and bake borders ON TOP — the UM cloud
+            # layer is opaque, so background borders would be hidden.
             arr = P.resample_mercator_image(np.array(img), sw, ne)
             img = Image.fromarray(arr, "RGBA")
+            from PIL import ImageDraw
+            borders = json.load(open(os.path.join(
+                os.path.dirname(__file__), "assets", "borders_baltic.json")))
+            d = ImageDraw.Draw(img)
+            for c in borders:
+                for line in c["lines"]:
+                    px, py = P.to_px([la for _, la in line],
+                                     [lo for lo, _ in line])
+                    d.line(list(zip(px.tolist(), py.tolist())),
+                           fill=(90, 85, 70, 255), width=1)
             valid = run + dt.timedelta(hours=h)
             vtag = valid.strftime("%Y%m%dT%H")
             buf = io.BytesIO()
@@ -178,6 +189,8 @@ def um_run(hours: list[int] | None = None) -> None:
 
 # ---------------------------------------------------------------- radar
 def parse_radar_overlays() -> list[dict]:
+    """Live page overlays (LV, EE, LT2). Frame time comes from the createdAt
+    epoch — the FILENAME timestamps are Riga local time, do not parse them."""
     r = session().get(RADAR_PAGE, timeout=60)
     r.raise_for_status()
     out = []
@@ -187,16 +200,46 @@ def parse_radar_overlays() -> list[dict]:
     for m in pat.finditer(r.text):
         bounds = json.loads(m.group(1))
         meta = json.loads(m.group(3))
-        ts = re.search(r"(\d{12})([A-Z]{2})\.png", m.group(2))
-        if not ts:
+        code = meta.get("code")
+        created = meta.get("createdAt")
+        if not code or not created:
             continue
         out.append({
-            "url": RADAR_BASE + m.group(2),
-            "code": meta.get("code", ts.group(2)),
-            "time": dt.datetime.strptime(ts.group(1), "%Y%m%d%H%M").replace(
-                tzinfo=dt.timezone.utc),  # verify: assumed UTC in filename
+            "url": m.group(2) if m.group(2).startswith("http")
+                   else RADAR_BASE + m.group(2),
+            "code": code,
+            "time": dt.datetime.fromtimestamp(int(created), tz=dt.timezone.utc),
             "sw": (bounds["sw"]["lat"], bounds["sw"]["lng"]),
             "ne": (bounds["ne"]["lat"], bounds["ne"]["lng"]),
+        })
+    return out
+
+
+def fetch_overlays_window(t_from: dt.datetime, t_to: dt.datetime) -> list[dict]:
+    """Historical overlays via the site's own /radari/get endpoint (epoch
+    range). Returns the same dict shape as parse_radar_overlays; URLs point
+    at their S3 archive, which reaches back months."""
+    r = session().get(
+        f"{RADAR_BASE}/radari/get",
+        params={"from": int(t_from.timestamp()), "to": int(t_to.timestamp())},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        timeout=90,
+    )
+    r.raise_for_status()
+    d = r.json()
+    out = []
+    for o in d.get("overlays") or []:
+        b = o.get("mapBounds") or {}
+        if "sw" not in b:
+            continue
+        out.append({
+            "url": o["url"] if o["url"].startswith("http")
+                   else RADAR_BASE + o["url"],
+            "code": o.get("code", "?"),
+            "time": dt.datetime.fromtimestamp(int(o["createdAt"]),
+                                              tz=dt.timezone.utc),
+            "sw": (b["sw"]["lat"], b["sw"]["lng"]),
+            "ne": (b["ne"]["lat"], b["ne"]["lng"]),
         })
     return out
 
@@ -301,12 +344,14 @@ def radar_composite(frames_back: int = 3) -> None:
     by_code: dict[str, list[dict]] = {}
     for o in sorted(overlays, key=lambda o: o["time"], reverse=True):
         by_code.setdefault(o["code"], []).append(o)
-    try:
-        lt = _lt_frames(dt.datetime.now(dt.timezone.utc), count=frames_back)
-        if lt:
-            by_code["LT"] = lt
-    except Exception:
-        log.exception("LT radar fetch failed (continuing with LV+EE)")
+    # meteolapa carries LT2 itself; direct meteo.lt only as fallback
+    if "LT2" not in by_code:
+        try:
+            lt = _lt_frames(dt.datetime.now(dt.timezone.utc), count=frames_back)
+            if lt:
+                by_code["LT"] = lt
+        except Exception:
+            log.exception("LT radar fallback failed (continuing without LT)")
 
     # composite on the common EPSG:3059 grid (transparent overlay)
     from . import proj3059 as P
@@ -398,16 +443,12 @@ def _archive_note(s3, vtag: str) -> None:
                       CacheControl="public, max-age=300")
 
 
-def radar_backfill(hours_back: int = 36) -> None:
-    """Grab one frame per hour as far back as the sources still serve
-    (meteolapa & meteo.lt keep roughly the last 24-48 h), process with the
-    same cleaning, and store hourly composites + archive index.
-    Idempotent: hours already in the archive are skipped."""
+def radar_backfill(hours_back: int = 168) -> None:
+    """One composite per hour from meteolapa's /radari/get archive (their S3
+    store reaches back months, all three feeds). Idempotent: hours already in
+    the archive index are skipped."""
     s = session()
     s3 = r2_client()
-    overlays = parse_radar_overlays()
-    lv = next((o for o in overlays if o["code"] == "LV"), None)
-    ee = next((o for o in overlays if o["code"] == "EE"), None)
     try:
         arch = json.loads(s3.get_object(
             Bucket=config.R2_BUCKET, Key="maps/radar/archive.json"
@@ -420,64 +461,71 @@ def radar_backfill(hours_back: int = 36) -> None:
     borders = json.load(open(os.path.join(
         os.path.dirname(__file__), "assets", "borders_baltic.json")))
 
+    def draw_borders(canvas):
+        d = ImageDraw.Draw(canvas)
+        for c in borders:
+            for line in c["lines"]:
+                px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
+                d.line(list(zip(px.tolist(), py.tolist())),
+                       fill=(107, 101, 82, 255), width=1)
+
     now = dt.datetime.now(dt.timezone.utc).replace(
         minute=0, second=0, microsecond=0)
     done = 0
-    for h in range(2, hours_back + 1):
-        target = now - dt.timedelta(hours=h)
-        hour_key = target.strftime("%Y%m%dT%H")
-        if hour_key in arch["hours"]:
+    # walk backwards in 6 h windows; one /radari/get call per window
+    win = 6
+    for w0 in range(2, hours_back + 1, win):
+        t_hi = now - dt.timedelta(hours=w0 - 1)
+        t_lo = now - dt.timedelta(hours=min(w0 + win - 1, hours_back))
+        hours_needed = [t_lo + dt.timedelta(hours=k)
+                        for k in range(int((t_hi - t_lo).total_seconds() // 3600) + 1)]
+        if all(h.strftime("%Y%m%dT%H") in arch["hours"] for h in hours_needed):
             continue
-        canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
-        got = False
-        # meteolapa LV/EE: frames land at unpredictable minutes; probe 0-11
-        for tmpl in (ee, lv):
-            if tmpl is None:
+        try:
+            overlays = fetch_overlays_window(t_lo, t_hi + dt.timedelta(minutes=30))
+        except Exception:
+            log.exception("window %s..%s failed", t_lo, t_hi)
+            continue
+        time.sleep(0.5)
+        for target in hours_needed:
+            hour_key = target.strftime("%Y%m%dT%H")
+            if hour_key in arch["hours"]:
                 continue
-            for m in range(12):
-                t = target + dt.timedelta(minutes=m)
-                url = (f"{RADAR_BASE}/radari/arhivs/{t:%Y/%m/%d}/"
-                       f"{t:%Y%m%d%H%M}{tmpl['code']}.png")
-                cls = _load_and_classify(url, s)
+            canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+            got = False
+            for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
+                cands = [o for o in overlays if o["code"] == code]
+                if not cands:
+                    continue
+                best = min(cands,
+                           key=lambda o: abs((o["time"] - target).total_seconds()))
+                if abs((best["time"] - target).total_seconds()) > 40 * 60:
+                    continue
+                cls = _load_and_classify(best["url"], s)
                 if cls is None:
                     continue
                 warped = P.resample_mercator_image(
                     np.array(_recolor(_despeckle(cls))),
-                    tmpl["sw"], tmpl["ne"])
+                    best["sw"], best["ne"])
                 canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
                 got = True
-                break
-        # LT: 5-min UTC stamps
-        for m in (0, 5, 10):
-            t = target + dt.timedelta(minutes=m)
-            cls = _load_and_classify(LT_URL.format(ts=t.strftime("%Y%m%d%H%M")), s)
-            if cls is not None:
-                warped = P.resample_mercator_image(
-                    np.array(_recolor(_despeckle(cls))), LT_SW, LT_NE)
-                canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
-                got = True
-                break
-        if not got:
-            log.info("backfill %s: no frames available (source horizon)", hour_key)
-            continue
-        draw = ImageDraw.Draw(canvas)
-        for c in borders:
-            for line in c["lines"]:
-                px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
-                draw.line(list(zip(px.tolist(), py.tolist())),
-                          fill=(107, 101, 82, 255), width=1)
-        vtag = target.strftime("%Y%m%dT%H%M")
-        buf = io.BytesIO()
-        canvas.save(buf, "PNG", optimize=True)
-        s3.put_object(Bucket=config.R2_BUCKET,
-                      Key=f"maps/radar/frames3059/{vtag}.png",
-                      Body=buf.getvalue(), ContentType="image/png",
-                      CacheControl="public, max-age=604800")
-        arch["hours"][hour_key] = vtag
-        done += 1
-    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
-                  Body=json.dumps(arch).encode(),
-                  ContentType="application/json",
-                  CacheControl="public, max-age=300")
+            if not got:
+                log.info("backfill %s: no frames in archive", hour_key)
+                continue
+            draw_borders(canvas)
+            vtag = target.strftime("%Y%m%dT%H%M")
+            buf = io.BytesIO()
+            canvas.save(buf, "PNG", optimize=True)
+            s3.put_object(Bucket=config.R2_BUCKET,
+                          Key=f"maps/radar/frames3059/{vtag}.png",
+                          Body=buf.getvalue(), ContentType="image/png",
+                          CacheControl="public, max-age=604800")
+            arch["hours"][hour_key] = vtag
+            done += 1
+        # persist index incrementally so an interrupted run keeps progress
+        s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
+                      Body=json.dumps(arch).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=300")
     log.info("radar backfill: %d hourly composites added (archive now %d h)",
              done, len(arch["hours"]))

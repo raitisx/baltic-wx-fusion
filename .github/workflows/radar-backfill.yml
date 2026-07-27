@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       hours:
-        description: "How many hours back to attempt (sources keep ~24-48 h)"
+        description: "How many hours back (meteolapa S3 archive reaches back months)"
         type: string
-        default: "48"
+        default: "168"
 
 jobs:
   backfill:

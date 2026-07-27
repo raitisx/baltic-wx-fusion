@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 
 def main() -> int:
-    hours = int(os.environ.get("BACKFILL_HOURS", "48"))
+    hours = int(os.environ.get("BACKFILL_HOURS", "168"))
     scrape_maps.radar_backfill(hours_back=hours)
     return 0
 
