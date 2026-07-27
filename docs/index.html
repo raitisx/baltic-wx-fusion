@@ -141,6 +141,7 @@
       <input type="range" id="mapSlider" min="0" max="0" value="0">
       <span class="mtime" id="mapTime"></span>
     </div>
+    <div class="mapnote" id="mapDiag"></div>
     <div class="mapnote">One slider drives all three columns (EPSG:3059 / LKS-92, identical extent) · radar shows the frame nearest the selected hour (past only) · hover the meteogram to scrub · MET Norway MEPS (CC-BY) · ICM UW meteo.pl UM (advisory) · LVĢMC + Keskkonnaagentuur radar via meteolapa.lv</div>
   </div>
   <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet — the maps job needs R2 secrets + a public bucket URL (see repo README).</div>
@@ -815,6 +816,14 @@ async function initMapsViewer(){
     MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),600);
   });
   document.getElementById("selCb").addEventListener("change",()=>mapShow(MV.idx));
+  // diagnostics: exactly what this browser managed to load
+  const dg=[];
+  dg.push("meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"NOT LOADED"));
+  dg.push("um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"NOT LOADED"));
+  dg.push("um1: "+(MV.loaded.um1?MV.loaded.um1.hours.length+"h":"not published"));
+  dg.push("radar live: "+(MV.loaded.radar?MV.loaded.radar.frames.length+" frames":"NOT LOADED"));
+  dg.push("radar archive: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+" hours":"NOT LOADED"));
+  document.getElementById("mapDiag").textContent="page v11 · "+dg.join(" · ");
   const nowIdx=MV.hours.findIndex(h=>Date.parse(h)>=Date.now());
   mapShow(nowIdx<0?0:nowIdx);
   // crosshair sync from the meteogram
