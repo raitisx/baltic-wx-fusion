@@ -137,6 +137,64 @@ function wstd(vals, mean){
 function leadBin(h){ return h<6?"0-6":h<12?"6-12":h<24?"12-24":h<48?"24-48":h<72?"48-72":"72+"; }
 
 let POINTS=[], WEIGHTS=[], FC=[], OBS=[], FUSED=[], usedSkillWeights=false;
+let liveSource=null; // "db" | "direct"
+
+// URL contract for embedding (e.g. from the TTA tracker map):
+//   meteogram.html?lat=57.068&lon=24.412&name=LVM_LIDAR&cb=650&wg=10
+//   meteogram.html?point=EVRA
+const QS = new URLSearchParams(location.search);
+const Q = {
+  lat: QS.has("lat") ? +QS.get("lat") : null,
+  lon: QS.has("lon") ? +QS.get("lon") : null,
+  name: QS.get("name"),
+  point: QS.get("point"),
+  cb: QS.has("cb") ? +QS.get("cb") : null,
+  wg: QS.has("wg") ? +QS.get("wg") : null,
+};
+
+// Direct Open-Meteo fetch: instant meteogram for a point the pipeline hasn't
+// ingested yet (same models/vars as the ingest job; DB takes over on later
+// visits once the hourly cron has picked the point up).
+const OM_MODELS = {icon:"icon_seamless", meps:"metno_seamless", ifs:"ecmwf_ifs025", gfs:"gfs_seamless"};
+const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m:"rh",
+  precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
+  wind_direction_10m:"wdir", pressure_msl:"pres_msl", cloud_cover:"cc_total",
+  cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high"};
+async function fetchOpenMeteoDirect(lat, lon){
+  const u = new URL("https://api.open-meteo.com/v1/forecast");
+  u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
+  u.searchParams.set("hourly", Object.keys(OM_VARS).join(","));
+  u.searchParams.set("models", Object.values(OM_MODELS).join(","));
+  u.searchParams.set("forecast_days", "4");
+  u.searchParams.set("windspeed_unit", "ms");
+  u.searchParams.set("timezone", "UTC");
+  const r = await fetch(u);
+  if(!r.ok) throw new Error("open-meteo HTTP "+r.status);
+  const d = await r.json();
+  const hourly = d.hourly || {};
+  const run = new Date(); run.setUTCMinutes(0,0,0);
+  const out=[];
+  for(const [our, om] of Object.entries(OM_MODELS)){
+    const series={};
+    for(const [omv, p] of Object.entries(OM_VARS)){
+      const arr = hourly[`${omv}_${om}`] || hourly[omv];
+      if(arr) series[p]=arr;
+    }
+    for(let i=0;i<(hourly.time||[]).length;i++){
+      const t = hourly.time[i]+":00+00:00";
+      let t2m=null, td2m=null;
+      for(const [p,arr] of Object.entries(series)){
+        const v=arr[i];
+        if(v==null) continue;
+        out.push({m:our, run:run.toISOString(), t, p, v});
+        if(p==="t2m") t2m=v; else if(p==="td2m") td2m=v;
+      }
+      if(t2m!=null && td2m!=null)
+        out.push({m:our, run:run.toISOString(), t, p:"cb_lcl", v:Math.max(0,125*(t2m-td2m))});
+    }
+  }
+  return out;
+}
 
 function fuse(){
   const t0 = rigaMidnightToday().getTime();
@@ -515,18 +573,23 @@ async function load(){
   status.textContent="loading…";
   try{
     const pid=document.getElementById("selPoint").value || "EVRA";
+    const pt=POINTS.find(p=>p.point_id===pid);
     const [fc,obs,w]=await Promise.all([
       rpc("wx_point_forecast",{p_point_id:pid}),
       rpc("wx_point_obs",{p_point_id:pid}),
       rpc("wx_weights",{}),
     ]);
-    FC=fc; OBS=obs; WEIGHTS=w;
-    const pt=POINTS.find(p=>p.point_id===pid);
-    document.getElementById("title").textContent=`BALTIC_WX · ${pt?.name ?? pid}`;
+    FC=fc; OBS=obs; WEIGHTS=w; liveSource="db";
+    // Point not ingested yet (fresh map click)? Fetch models directly.
+    if(FC.length===0 && pt){
+      FC=await fetchOpenMeteoDirect(pt.lat, pt.lon);
+      liveSource="direct";
+    }
+    document.getElementById("title").textContent=`BALTIC_WX · ${Q.name ?? pt?.name ?? pid}`;
     fuse(); render(); renderTable();
     const runs={}; for(const e of FC) runs[e.m]=e.run;
     const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
-    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"} · runs: ${runTxt}`;
+    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="direct"?" · live fetch (point queued for pipeline)":""} · runs: ${runTxt}`;
   }catch(e){
     err.hidden=false;
     err.textContent="Failed to load data: "+e.message+" — check network / Supabase availability.";
@@ -535,16 +598,33 @@ async function load(){
 }
 
 async function init(){
+  // Threshold presets from URL — exact value becomes its own option if missing
+  for(const [qv,selId,unit] of [[Q.cb,"selCb"," m AGL"],[Q.wg,"selWg"," m/s"]]){
+    if(qv==null || !isFinite(qv)) continue;
+    const sel=document.getElementById(selId);
+    if(![...sel.options].some(o=>+o.value===qv)){
+      const o=document.createElement("option");
+      o.value=String(qv); o.textContent=qv+unit;
+      sel.appendChild(o);
+    }
+    sel.value=String(qv);
+  }
+  let startPid = Q.point || "EVRA";
   try{
+    // Map click: register/resolve the virtual point first
+    if(Q.lat!=null && Q.lon!=null)
+      startPid = await rpc("wx_ensure_point",{p_lat:Q.lat, p_lon:Q.lon, p_name:Q.name});
     POINTS=await rpc("wx_points_list",{});
-  }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl"}]; }
+  }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl",lat:56.9236,lon:23.9711}]; }
+  if(Q.lat!=null && !POINTS.some(p=>p.point_id===startPid))
+    POINTS.push({point_id:startPid, name:Q.name??"map point", lat:Q.lat, lon:Q.lon});
   const sel=document.getElementById("selPoint");
   for(const p of POINTS){
     const o=document.createElement("option");
     o.value=p.point_id; o.textContent=`${p.point_id} — ${p.name??""}`;
     sel.appendChild(o);
   }
-  sel.value="EVRA";
+  sel.value = POINTS.some(p=>p.point_id===startPid) ? startPid : "EVRA";
   sel.addEventListener("change",load);
   document.getElementById("selCb").addEventListener("change",()=>{render();});
   document.getElementById("selWg").addEventListener("change",()=>{render();});
