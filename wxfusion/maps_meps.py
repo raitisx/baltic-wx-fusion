@@ -86,44 +86,61 @@ def render_run(max_hours: int = 66) -> None:
     acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     cb = np.where(cb > FILL, np.nan, cb)
 
+    from . import proj3059 as P
+
     borders = json.load(open(BORDERS_FILE))
     greens = LinearSegmentedColormap.from_list(
         "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
 
+    # project the MEPS cell coordinates once (curvilinear mesh in LKS-92)
+    xw, yw = P.to_xy(lonw, latw)
+    borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
+                   for line in c["lines"]] for c in borders]
+
+    def blank_fig():
+        """Full-bleed axes on the fixed EPSG:3059 extent — no text, no
+        margins; timestamps live in the page UI, not in pixels."""
+        fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_facecolor("#fbf3de")
+        ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
+        ax.set_aspect("equal"); ax.axis("off")
+        return fig, ax
+
+    def draw_borders(ax):
+        for country in borders_xy:
+            for bx, by in country:
+                ax.plot(bx, by, color="#6b6552", lw=0.7)
+
     s3 = r2_client()
     hours_out = []
     tmp = tempfile.mkdtemp()
+
+    # shared background plate for overlay layers (UM etc.)
+    fig, ax = blank_fig()
+    draw_borders(ax)
+    bg = os.path.join(tmp, "bg.png")
+    fig.savefig(bg, dpi=100)
+    plt.close(fig)
+    s3.upload_file(bg, config.R2_BUCKET, "maps/bg_3059.png", ExtraArgs={
+        "ContentType": "image/png", "CacheControl": "public, max-age=604800"})
+
     for i in range(1, n):
         valid = times[i]
         vtag = valid.strftime("%Y%m%dT%H")
         pr = np.clip(acc[i] - acc[i - 1], 0, None)
         prm = np.where(pr >= 0.1, pr, np.nan)
         for thr in THRESHOLDS:
-            fig, ax = plt.subplots(
-                figsize=(5.6, 5.6 * ((y1 - y0) / (x1 - x0)) * 0.62), dpi=100)
-            ax.set_facecolor("#fbf3de")
+            fig, ax = blank_fig()
             below = np.where(np.isfinite(cb[i]) & (cb[i] < thr), 1.0, np.nan)
-            ax.pcolormesh(lonw, latw, below, cmap=pink, vmin=0, vmax=1,
+            ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
                           alpha=0.75, shading="auto")
-            ax.pcolormesh(lonw, latw, prm, cmap=greens, vmin=0.1, vmax=4,
+            ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
                           alpha=0.9, shading="auto")
-            for c in borders:
-                for line in c["lines"]:
-                    bx, by = zip(*line)
-                    ax.plot(bx, by, color="#6b6552", lw=0.7)
-            ax.set_xlim(BBOX[2], BBOX[3]); ax.set_ylim(BBOX[0], BBOX[1])
-            ax.set_aspect(1 / np.cos(np.deg2rad(57)))
-            ax.set_xticks([]); ax.set_yticks([])
-            for sp in ax.spines.values():
-                sp.set_color("#c9c0a4")
-            ax.set_title(
-                f"MEPS 2.5 km · {valid:%a %d/%m %H:%M} UTC · "
-                f"base<{thr} m pink · precip mm/h green",
-                fontsize=7, color="#1c2c85")
-            plt.tight_layout(pad=0.3)
+            draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
-            plt.savefig(fp)
+            fig.savefig(fp, dpi=100)
             plt.close(fig)
             key = f"maps/meps/{run_tag}/{vtag}_alt{thr}.png"
             s3.upload_file(fp, config.R2_BUCKET, key, ExtraArgs={
@@ -138,6 +155,7 @@ def render_run(max_hours: int = 66) -> None:
         "run": run_tag,
         "path": f"maps/meps/{run_tag}",
         "hours": hours_out,
+        "proj": "epsg3059",
         "thresholds": THRESHOLDS,
         "credit": "MET Norway MEPS (thredds.met.no), CC-BY 4.0 / NLOD",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),

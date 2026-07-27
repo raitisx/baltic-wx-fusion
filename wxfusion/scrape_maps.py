@@ -84,6 +84,17 @@ def _tile_range(z):
     return (lon2x(BBOX[2]), lon2x(BBOX[3]), lat2y(BBOX[1]), lat2y(BBOX[0]))
 
 
+def _tilegrid_bounds_latlon():
+    """(sw, ne) lat/lon of the stitched tile canvas."""
+    x0, x1, y0, y1 = _tile_range(ZOOM)
+    n = 2 ** ZOOM
+    def x2lon(x): return x / n * 360 - 180
+    def y2lat(y):
+        t = math.pi * (1 - 2 * y / n)
+        return math.degrees(math.atan(math.sinh(t)))
+    return (y2lat(y1 + 1), x2lon(x0)), (y2lat(y0), x2lon(x1 + 1))
+
+
 def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.Image | None:
     """Stitch tile grid for one lead hour. Returns mercator-stitched image."""
     s = session()
@@ -123,11 +134,18 @@ def um_run(hours: list[int] | None = None) -> None:
     for name, layer in [("um4", "um:UM4_CLOUD"), ("um1", "um:UM1_CLOUD")]:
         run_tag = run.strftime("%Y%m%dT%H")
         done = []
+        from . import proj3059 as P
+        sw, ne = _tilegrid_bounds_latlon()
         for h in hours:
             img = fetch_um_frame(layer, run, h)
             if img is None:
                 log.warning("%s: no tiles for +%dh", name, h)
                 continue
+            # reproject the mercator-stitched canvas onto the common
+            # EPSG:3059 grid (transparent overlay; client stacks it on
+            # maps/bg_3059.png)
+            arr = P.resample_mercator_image(np.array(img), sw, ne)
+            img = Image.fromarray(arr, "RGBA")
             valid = run + dt.timedelta(hours=h)
             vtag = valid.strftime("%Y%m%dT%H")
             buf = io.BytesIO()
@@ -142,6 +160,7 @@ def um_run(hours: list[int] | None = None) -> None:
                           Body=json.dumps({
                               "run": run_tag, "path": f"maps/{name}/{run_tag}",
                               "hours": done, "thresholds": None,
+                              "proj": "epsg3059", "overlay": True,
                               "credit": "ICM UW meteo.pl UM (advisory, scraped tiles)",
                               "generated_at": now.isoformat()}).encode(),
                           ContentType="application/json",
@@ -235,16 +254,11 @@ def radar_composite(frames_back: int = 3) -> None:
     for o in sorted(overlays, key=lambda o: o["time"], reverse=True):
         by_code.setdefault(o["code"], []).append(o)
 
-    # canvas in plate carree over BBOX (matches map viewer frames)
-    W, H = 780, 640
-    def to_px(lat, lon):
-        x = (lon - BBOX[2]) / (BBOX[3] - BBOX[2]) * W
-        y = (BBOX[1] - lat) / (BBOX[1] - BBOX[0]) * H
-        return x, y
-
-    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    # composite on the common EPSG:3059 grid (transparent overlay)
+    from . import proj3059 as P
+    canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
     newest = None
-    for code, frames in by_code.items():
+    for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
         use = frames[:frames_back]
         if not use:
             continue
@@ -256,39 +270,37 @@ def radar_composite(frames_back: int = 3) -> None:
             if r.status_code != 200:
                 continue
             img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-            cls_stack.append((_classify_intensity(np.array(img)), img.size, f))
+            cls_stack.append((_classify_intensity(np.array(img)), f))
         if not cls_stack:
             continue
-        cur, size, f0 = cls_stack[0]
+        cur, f0 = cls_stack[0]
         # temporal filter: echo must appear in >=2 of last frames (same feed)
         if len(cls_stack) >= 2:
             votes = sum((c[0] > 0).astype(np.uint8) for c in cls_stack
                         if c[0].shape == cur.shape)
             cur = np.where(votes >= 2, cur, 0).astype(np.uint8)
         cur = _despeckle(cur)
-        colored = _recolor(cur)
-        # place into canvas by bounds
-        x0, y1 = to_px(f0["sw"][0], f0["sw"][1])
-        x1, y0 = to_px(f0["ne"][0], f0["ne"][1])
-        w, h = max(1, int(x1 - x0)), max(1, int(y1 - y0))
-        colored = colored.resize((w, h), Image.BILINEAR)
-        canvas.alpha_composite(colored, (int(x0), int(y0)))
+        colored = np.array(_recolor(cur))
+        warped = P.resample_mercator_image(colored, f0["sw"], f0["ne"])
+        canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
-    # country borders on top (same asset as the MEPS maps)
+    # thin borders on the overlay itself (readable even without background)
     from PIL import ImageDraw
     borders_file = os.path.join(os.path.dirname(__file__), "assets",
                                 "borders_baltic.json")
     draw = ImageDraw.Draw(canvas)
     for c in json.load(open(borders_file)):
         for line in c["lines"]:
-            pts = [to_px(latv, lonv) for lonv, latv in line]
-            draw.line(pts, fill=(107, 101, 82, 255), width=1)
+            px, py = P.to_px([latv for _, latv in line],
+                             [lonv for lonv, _ in line])
+            draw.line(list(zip(px.tolist(), py.tolist())),
+                      fill=(107, 101, 82, 255), width=1)
     vtag = newest.strftime("%Y%m%dT%H%M")
     buf = io.BytesIO()
     canvas.save(buf, "PNG", optimize=True)
-    s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/radar/frames/{vtag}.png",
+    s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/radar/frames3059/{vtag}.png",
                   Body=buf.getvalue(), ContentType="image/png",
                   CacheControl="public, max-age=3600")
     # manifest: keep the trailing 12 frames
@@ -296,7 +308,8 @@ def radar_composite(frames_back: int = 3) -> None:
         old = json.loads(s3.get_object(
             Bucket=config.R2_BUCKET, Key="maps/radar/latest.json"
         )["Body"].read())
-        frames = old.get("frames", [])
+        frames = old.get("frames", []) \
+            if old.get("path") == "maps/radar/frames3059" else []
     except Exception:
         frames = []
     if vtag not in frames:
@@ -304,7 +317,8 @@ def radar_composite(frames_back: int = 3) -> None:
     frames = sorted(frames)[-12:]
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/latest.json",
                   Body=json.dumps({
-                      "path": "maps/radar/frames", "frames": frames,
+                      "path": "maps/radar/frames3059", "frames": frames,
+                      "proj": "epsg3059", "overlay": True,
                       "bbox": BBOX,
                       "credit": "LVGMC + Keskkonnaagentuur radar via meteolapa.lv, "
                                 "recoloured & despeckled",
