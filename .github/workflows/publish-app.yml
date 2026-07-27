@@ -1,0 +1,32 @@
+name: publish-app
+on:
+  push:
+    paths:
+      - "docs/index.html"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install boto3
+      - name: Upload app page to public bucket
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python - <<'EOF'
+          import boto3, os
+          s3 = boto3.client("s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto")
+          s3.upload_file("docs/index.html", "baltic-wx", "app/index.html",
+              ExtraArgs={"ContentType": "text/html; charset=utf-8",
+                         "CacheControl": "public, max-age=120, must-revalidate"})
+          print("published app/index.html")
+          EOF
