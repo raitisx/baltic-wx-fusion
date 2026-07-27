@@ -1,0 +1,43 @@
+name: backfill
+on:
+  workflow_dispatch:
+    inputs:
+      lvgmc:
+        description: "Backfill LVGMC ~365-day archive"
+        type: boolean
+        default: true
+      metar_start:
+        description: "METAR backfill start date (YYYY-MM-DD, empty = skip)"
+        type: string
+        default: ""
+      metar_end:
+        description: "METAR backfill end date (YYYY-MM-DD, empty = today)"
+        type: string
+        default: ""
+      lt_days:
+        description: "meteo.lt days of history (0 = skip; 52 stations x days <= 18000)"
+        type: string
+        default: "0"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Backfill
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.lvgmc }}" = "true" ]; then ARGS="$ARGS --lvgmc"; fi
+          if [ -n "${{ inputs.metar_start }}" ]; then ARGS="$ARGS --metar-start ${{ inputs.metar_start }}"; fi
+          if [ -n "${{ inputs.metar_end }}" ]; then ARGS="$ARGS --metar-end ${{ inputs.metar_end }}"; fi
+          if [ "${{ inputs.lt_days }}" != "0" ]; then ARGS="$ARGS --lt-days ${{ inputs.lt_days }}"; fi
+          echo "Running: python jobs/run_backfill.py $ARGS"
+          python jobs/run_backfill.py $ARGS

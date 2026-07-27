@@ -13,7 +13,9 @@ log = logging.getLogger(__name__)
 def connect() -> psycopg.Connection:
     if not config.DB_URL:
         raise RuntimeError("SUPABASE_DB_URL is not set")
-    return psycopg.connect(config.DB_URL, autocommit=False)
+    # prepare_threshold=None: required through Supabase's transaction pooler
+    # (server-side prepared statements are not supported there).
+    return psycopg.connect(config.DB_URL, autocommit=False, prepare_threshold=None)
 
 
 def upsert_observations(conn: psycopg.Connection, rows: list[tuple]) -> int:

@@ -83,3 +83,51 @@ def fetch_operative() -> list[tuple]:
 
 def fetch_stations() -> list[dict]:
     return _fetch_resource(config.LVGMC_RES_STATIONS, 1000)
+
+
+def _fetch_filtered(resource_id: str, abbreviation: str, limit: int, offset: int) -> list[dict]:
+    import json as _json
+
+    r = session().get(
+        CKAN,
+        params={
+            "resource_id": resource_id,
+            "filters": _json.dumps({"ABBREVIATION": abbreviation}),
+            "limit": limit,
+            "offset": offset,
+        },
+        timeout=120,
+    )
+    r.raise_for_status()
+    d = r.json()
+    if not d.get("success"):
+        raise RuntimeError(f"CKAN error: {d}")
+    return d["result"]["records"]
+
+
+def fetch_archive_batches(batch_size: int = 10000):
+    """Yield canonical-row batches from the 365-day archive resource.
+
+    Iterates one mapped parameter at a time (server-side filter) so we never
+    page through the ~2/3 of records we don't ingest. Idempotent downstream:
+    rows conflict-skip on (source, station_id, time, parameter).
+    """
+    for abbr, (param, scale) in PARAM_MAP.items():
+        offset = 0
+        while True:
+            records = _fetch_filtered(
+                config.LVGMC_RES_ARCHIVE_FAKT, abbr, batch_size, offset
+            )
+            if not records:
+                break
+            rows = [
+                ("lvgmc", rec["STATION_ID"], _parse_time(rec["DATETIME"]),
+                 param, float(rec["VALUE"]) * scale)
+                for rec in records
+                if rec.get("VALUE") is not None
+            ]
+            log.info("lvgmc archive %s: offset %d -> %d rows", abbr, offset, len(rows))
+            yield rows
+            if len(records) < batch_size:
+                break
+            offset += batch_size
