@@ -163,8 +163,9 @@ def um_run(hours: list[int] | None = None) -> None:
                 for line in c["lines"]:
                     px, py = P.to_px([la for _, la in line],
                                      [lo for lo, _ in line])
-                    d.line(list(zip(px.tolist(), py.tolist())),
-                           fill=(90, 85, 70, 255), width=1)
+                    pts = list(zip(px.tolist(), py.tolist()))
+                    d.line(pts, fill=(247, 241, 226, 230), width=3)
+                    d.line(pts, fill=(85, 80, 63, 255), width=1)
             valid = run + dt.timedelta(hours=h)
             vtag = valid.strftime("%Y%m%dT%H")
             buf = io.BytesIO()
@@ -469,8 +470,9 @@ def radar_backfill(hours_back: int = 168) -> None:
         for c in borders:
             for line in c["lines"]:
                 px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
-                d.line(list(zip(px.tolist(), py.tolist())),
-                       fill=(107, 101, 82, 255), width=1)
+                pts = list(zip(px.tolist(), py.tolist()))
+                d.line(pts, fill=(247, 241, 226, 230), width=3)
+                d.line(pts, fill=(85, 80, 63, 255), width=1)
 
     now = dt.datetime.now(dt.timezone.utc).replace(
         minute=0, second=0, microsecond=0)

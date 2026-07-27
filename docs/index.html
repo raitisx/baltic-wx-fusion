@@ -709,6 +709,7 @@ const MAP_MANIFESTS={
   meps:"maps/meps/latest.json", um4:"maps/um4/latest.json",
   um1:"maps/um1/latest.json", radar:"maps/radar/latest.json",
   radarArchive:"maps/radar/archive.json",
+  mepsArchive:"maps/meps/archive.json",
 };
 // Cache-buster: frame URLs repeat across runs (same run-tag folder), but the
 // browser/CDN may hold day-old copies — key every image by its manifest's
@@ -755,14 +756,28 @@ function mapShow(i){
   document.getElementById("mapTime").textContent=label;
   document.getElementById("mapTimeHead").textContent=label;
 
-  // MEPS column
+  // MEPS column: latest run first; for hours it no longer covers, fall back
+  // to the archive index (the run that covered that hour when it was live)
   const meps=MV.loaded.meps;
   if(meps){
     const thr=mepsThr();
-    const has=meps.hours.includes(iso);
-    document.getElementById("imgMeps").style.opacity=has?"1":"0.15";
-    document.getElementById("mepsTime").textContent=has?"base<limit pink · precip green":"before this run — no frame";
-    if(has) document.getElementById("imgMeps").src=mepsUrl(iso,thr);
+    const mImg=document.getElementById("imgMeps");
+    const mLbl=document.getElementById("mepsTime");
+    if(meps.hours.includes(iso)){
+      mImg.style.opacity="1";
+      mLbl.textContent="base<limit pink · precip green";
+      mImg.src=mepsUrl(iso,thr);
+    }else{
+      const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
+      if(archRun){
+        mImg.style.opacity="1";
+        mLbl.textContent="archived · run "+archRun.slice(9);
+        mImg.src=`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`;
+      }else{
+        mImg.style.opacity="0.15";
+        mLbl.textContent="no frame for this hour";
+      }
+    }
   }
   // UM column: frames come ~2-hourly — for hours without a frame, retain
   // the nearest earlier one (up to 3 h back) instead of dimming/breaking
@@ -855,7 +870,7 @@ async function initMapsViewer(){
   dg.push("um1: "+(MV.loaded.um1?MV.loaded.um1.hours.length+"h":"not published"));
   dg.push("radar live: "+(MV.loaded.radar?MV.loaded.radar.frames.length+" frames":"NOT LOADED"));
   dg.push("radar archive: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+" hours":"NOT LOADED"));
-  document.getElementById("mapDiag").textContent="page v13 · "+dg.join(" · ");
+  document.getElementById("mapDiag").textContent="page v14 · "+dg.join(" · ");
   const nowIdx=MV.hours.findIndex(h=>Date.parse(h)>=Date.now());
   mapShow(nowIdx<0?0:nowIdx);
   // crosshair sync from the meteogram

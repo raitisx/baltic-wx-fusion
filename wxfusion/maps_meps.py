@@ -109,9 +109,13 @@ def render_run(max_hours: int = 66) -> None:
         return fig, ax
 
     def draw_borders(ax):
+        # cased line (light halo under dark core), forced above all data
         for country in borders_xy:
             for bx, by in country:
-                ax.plot(bx, by, color="#6b6552", lw=0.7)
+                ax.plot(bx, by, color="#f7f1e2", lw=2.2, zorder=9,
+                        solid_capstyle="round")
+                ax.plot(bx, by, color="#55503f", lw=0.9, zorder=10,
+                        solid_capstyle="round")
 
     s3 = r2_client()
     hours_out = []
@@ -167,6 +171,21 @@ def render_run(max_hours: int = 66) -> None:
     }
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/meps/latest.json",
                   Body=json.dumps(manifest).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    # archive index: hour -> run whose frame covers it (newest run wins).
+    # Keeps past hours viewable after the axis moves on — frames are never
+    # deleted, so yesterday's 09:00 stays reachable forever.
+    try:
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key="maps/meps/archive.json"
+        )["Body"].read())
+    except Exception:
+        arch = {"hours": {}, "thresholds": THRESHOLDS}
+    for h in hours_out:
+        arch["hours"][h.replace("-", "").replace(":", "")[:11]] = run_tag
+    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/meps/archive.json",
+                  Body=json.dumps(arch).encode(),
                   ContentType="application/json",
                   CacheControl="public, max-age=300")
     log.info("manifest written: %d hours, run %s", len(hours_out), run_tag)
