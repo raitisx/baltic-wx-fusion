@@ -15,8 +15,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
-      - name: OPERA composites -> R2
+      - run: pip install -r requirements.txt && pip install pillow numpy
+      - name: Radar composites (meteolapa + OPERA) -> R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

@@ -36,7 +36,13 @@
     border-radius:4px;padding:3px 7px;
   }
   button{cursor:pointer}
-  .status{font-size:11px;color:var(--muted);margin-left:auto}
+  /* fixed-height, non-wrapping status: its content changes on every load and
+     must never reflow the page */
+  .status{
+    flex-basis:100%; display:block; height:15px; line-height:15px;
+    font-size:11px;color:var(--muted); text-align:right;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
   svg{display:block;width:100%;height:auto}
   svg text{font-family:inherit}
   .tip{
@@ -102,8 +108,9 @@
   <div class="tip" id="tip"></div>
 
   <div class="mapview" id="mapView" hidden>
-    <h2>Hourly flight map — MEPS 2.5 km</h2>
+    <h2 id="mapTitle">Hourly flight map</h2>
     <div class="mapctl">
+      <select id="mapLayer"></select>
       <button id="mapPrev">◀</button>
       <button id="mapPlay">▶ play</button>
       <button id="mapNext">▶</button>
@@ -183,8 +190,8 @@ const Q = {
   wg: QS.has("wg") ? +QS.get("wg") : null,
 };
 // Public base URL of the baltic-wx R2 bucket (r2.dev or custom domain).
-// Settable without editing the file: ...&maps=https://pub-xxxx.r2.dev
-const MAPS_BASE = QS.get("maps") || "";
+// Overridable via ...&maps=https://pub-xxxx.r2.dev
+const MAPS_BASE = QS.get("maps") || "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
 
 // Direct Open-Meteo fetch: instant meteogram for a point the pipeline hasn't
 // ingested yet (same models/vars as the ingest job; DB takes over on later
@@ -673,35 +680,74 @@ function initSelectorMap(){
   document.getElementById("mapSelWrap").addEventListener("toggle",()=>setTimeout(()=>map.invalidateSize(),50));
 }
 
-// ---------- hourly maps viewer ----------
-const MV={manifest:null, idx:0, playing:null};
-function mapThr(){
-  if(!MV.manifest) return 650;
-  const want=+document.getElementById("selCb").value;
-  return MV.manifest.thresholds.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
+// ---------- hourly maps viewer (multi-layer) ----------
+const MAP_LAYERS={
+  meps:{label:"MEPS fused 2.5 km", manifest:"maps/meps/latest.json", kind:"forecast"},
+  um4:{label:"UM 4 km (meteo.pl)", manifest:"maps/um4/latest.json", kind:"forecast"},
+  um1:{label:"UM 1.5 km (meteo.pl)", manifest:"maps/um1/latest.json", kind:"forecast"},
+  radar:{label:"Radar (LV+EE, cleaned)", manifest:"maps/radar/latest.json", kind:"past"},
+};
+const MV={loaded:{}, cur:null, idx:0, playing:null};
+function mapFrames(){
+  const man=MV.loaded[MV.cur];
+  return man ? (man.hours || man.frames || []) : [];
+}
+function frameTime(f){
+  // "2026-07-27T14:00:00Z" or "20260727T1405"
+  if(f.includes("-")) return new Date(f);
+  return new Date(`${f.slice(0,4)}-${f.slice(4,6)}-${f.slice(6,8)}T${f.slice(9,11)}:${f.slice(11,13)||"00"}:00Z`);
 }
 function mapShow(i){
-  if(!MV.manifest) return;
-  const hours=MV.manifest.hours;
-  MV.idx=Math.max(0,Math.min(hours.length-1,i));
-  const iso=hours[MV.idx];
-  const vtag=iso.replace(/[-:]/g,"").slice(0,11);   // YYYYMMDDTHH
-  document.getElementById("mapImg").src=
-    `${MAPS_BASE}/${MV.manifest.path}/${vtag}_alt${mapThr()}.png`;
+  const man=MV.loaded[MV.cur];
+  if(!man) return;
+  const frames=mapFrames();
+  MV.idx=Math.max(0,Math.min(frames.length-1,i));
+  const f=frames[MV.idx];
+  let file;
+  if(MV.cur==="meps"){
+    const want=+document.getElementById("selCb").value;
+    const thr=man.thresholds.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
+    file=`${f.replace(/[-:]/g,"").slice(0,11)}_alt${thr}.png`;
+  }else if(MV.cur==="radar"){
+    file=`${f}.png`;
+  }else{
+    file=`${f.replace(/[-:]/g,"").slice(0,11)}.png`;
+  }
+  document.getElementById("mapImg").src=`${MAPS_BASE}/${man.path}/${file}`;
   document.getElementById("mapSlider").value=MV.idx;
-  document.getElementById("mapTime").textContent=fmtDT.format(new Date(iso));
+  document.getElementById("mapTime").textContent=fmtDT.format(frameTime(f));
+}
+function mapSetLayer(key){
+  MV.cur=key;
+  const frames=mapFrames();
+  document.getElementById("mapSlider").max=Math.max(0,frames.length-1);
+  document.getElementById("mapTitle").textContent="Hourly flight map — "+MAP_LAYERS[key].label;
+  if(MAP_LAYERS[key].kind==="past"){ mapShow(frames.length-1); }
+  else{
+    const nowIdx=frames.findIndex(h=>Date.parse(h)>=Date.now());
+    mapShow(nowIdx<0?0:nowIdx);
+  }
 }
 async function initMapsViewer(){
   const view=document.getElementById("mapView"), miss=document.getElementById("mapMissing");
   if(!MAPS_BASE){ miss.hidden=false; return; }
-  try{
-    const r=await fetch(`${MAPS_BASE}/maps/meps/latest.json`);
-    if(!r.ok) throw new Error("no manifest");
-    MV.manifest=await r.json();
-  }catch(e){ miss.hidden=false; return; }
+  const layerSel=document.getElementById("mapLayer");
+  await Promise.all(Object.entries(MAP_LAYERS).map(async ([key,def])=>{
+    try{
+      const r=await fetch(`${MAPS_BASE}/${def.manifest}`);
+      if(r.ok) MV.loaded[key]=await r.json();
+    }catch(e){}
+  }));
+  const avail=Object.keys(MAP_LAYERS).filter(k=>MV.loaded[k]);
+  if(!avail.length){ miss.hidden=false; return; }
+  for(const k of avail){
+    const o=document.createElement("option");
+    o.value=k; o.textContent=MAP_LAYERS[k].label;
+    layerSel.appendChild(o);
+  }
   view.hidden=false;
+  layerSel.addEventListener("change",()=>mapSetLayer(layerSel.value));
   const sl=document.getElementById("mapSlider");
-  sl.max=MV.manifest.hours.length-1;
   sl.addEventListener("input",()=>mapShow(+sl.value));
   document.getElementById("mapPrev").addEventListener("click",()=>mapShow(MV.idx-1));
   document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
@@ -709,16 +755,14 @@ async function initMapsViewer(){
     const btn=document.getElementById("mapPlay");
     if(MV.playing){ clearInterval(MV.playing); MV.playing=null; btn.textContent="▶ play"; return; }
     btn.textContent="⏸ stop";
-    MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.manifest.hours.length),600);
+    MV.playing=setInterval(()=>mapShow((MV.idx+1)%mapFrames().length),600);
   });
   document.getElementById("selCb").addEventListener("change",()=>mapShow(MV.idx));
-  // start at "now"
-  const nowIdx=MV.manifest.hours.findIndex(h=>Date.parse(h)>=Date.now());
-  mapShow(nowIdx<0?0:nowIdx);
-  // crosshair sync from the meteogram
+  mapSetLayer(avail[0]);
+  // crosshair sync from the meteogram (forecast layers only)
   window.__setMapHour=ts=>{
-    if(!MV.manifest||MV.playing) return;
-    const i=MV.manifest.hours.findIndex(h=>Date.parse(h)===ts);
+    if(!MV.cur||MV.playing||MAP_LAYERS[MV.cur].kind!=="forecast") return;
+    const i=mapFrames().findIndex(h=>Date.parse(h)===ts);
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
 }
