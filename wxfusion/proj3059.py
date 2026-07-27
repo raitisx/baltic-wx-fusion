@@ -13,7 +13,10 @@ import numpy as np
 # Fixed extent covering the Baltic bbox (53.8-59.9 N, 20.0-28.6 E)
 X0, X1 = 235_000, 805_000
 Y0, Y1 = -40_000, 650_000
-W, H = 548, 664  # pixels; matches extent aspect (570 km x 690 km)
+# Pixels EXACTLY proportional to the extent (1 px = 1000 m) — anything else
+# makes matplotlib's equal-aspect letterbox the render by a few pixels,
+# which shows up as border "ghosting" against the PIL-mapped overlays.
+W, H = 570, 690
 
 
 @functools.lru_cache(maxsize=1)
