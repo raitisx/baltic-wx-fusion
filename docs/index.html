@@ -110,7 +110,7 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote">LKS-92 (EPSG:3059) · 50 km grid · click anywhere to load that point's meteogram — it joins the hourly verification pipeline.</div>
+    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · dots are measuring stations · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
     <div class="mapnote" id="mapDiag"></div>
   </aside>
 
@@ -673,34 +673,48 @@ function renderTable(){
 }
 
 // ---------- static selector map (LKS-92, tracker style) ----------
-let smapMarker=null;
+// The dropdown lists measuring stations only. Anywhere else on the map is
+// picked as a 25 km LKS-92 cell — one forecast point per cell rather than one
+// per click, so repeat visits to the same area reuse the same verification
+// history instead of spawning a new point each time.
+const CELL=25000;
+let smapMarker=null, smapCell=null, selectedCell=null;
 function metersToPx(x,y){ return [(x-GX0)/(GX1-GX0)*570, (GY1-y)/(GY1-GY0)*690]; }
+function isStation(p){ return !String(p.point_id).startsWith("v_"); }
+function cellAt(mx,my){
+  const cx=Math.floor((mx-GX0)/CELL), cy=Math.floor((my-GY0)/CELL);
+  return {cx, cy,
+    x0:GX0+cx*CELL, y0:GY0+cy*CELL,
+    xc:GX0+(cx+0.5)*CELL, yc:GY0+(cy+0.5)*CELL};
+}
+function cellLabel(c){ return `cell ${Math.round(c.x0/1000)}/${Math.round(c.y0/1000)}`; }
 function initStaticMap(){
   document.getElementById("smapBg").src=`${MAPS_BASE}/maps/bg_3059.png`;
   const ov=document.getElementById("smapOv");
   const NS="http://www.w3.org/2000/svg";
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);ov.appendChild(e);return e;};
-  // 50 km LKS-92 grid
-  for(let x=Math.ceil(GX0/50000)*50000;x<=GX1;x+=50000){
+  // 25 km LKS-92 grid — the cells you can actually select, emphasised at 100 km
+  for(let x=Math.ceil(GX0/CELL)*CELL;x<=GX1;x+=CELL){
     const [px]=metersToPx(x,0);
-    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":x%100000===0?0.8:0.4,opacity:0.7});
+    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":x%100000===0?0.8:0.35,opacity:x%100000===0?0.75:0.5});
     if(x%100000===0) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#8a8468"}).textContent=(x/1000);
   }
-  for(let y=Math.ceil(GY0/50000)*50000;y<=GY1;y+=50000){
+  for(let y=Math.ceil(GY0/CELL)*CELL;y<=GY1;y+=CELL){
     const [,py]=metersToPx(0,y);
-    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":y%100000===0?0.8:0.4,opacity:0.7});
+    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":y%100000===0?0.8:0.35,opacity:y%100000===0?0.75:0.5});
     if(y%100000===0) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#8a8468"}).textContent=(y/1000);
   }
   const haveProj = typeof proj4!=="undefined";
   if(haveProj){
     for(const p of POINTS){
-      if(p.lat==null) continue;
+      if(p.lat==null || !isStation(p)) continue;
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
       const [px,py]=metersToPx(mx,my);
       const c=mk("circle",{cx:px,cy:py,r:5,fill:"#1c2c85","fill-opacity":0.55,stroke:"#fdf9ec","stroke-width":1});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
         ev.stopPropagation();
+        clearSmapCell();
         document.getElementById("selPoint").value=p.point_id;
         placeSmapMarker(p.lat,p.lon);
         load();
@@ -713,22 +727,55 @@ function initStaticMap(){
     const r=ev.currentTarget.getBoundingClientRect();
     const mx=GX0+(ev.clientX-r.left)/r.width*(GX1-GX0);
     const my=GY1-(ev.clientY-r.top)/r.height*(GY1-GY0);
-    const [lon,lat]=proj4("EPSG:3059","EPSG:4326",[mx,my]);
+    if(mx<GX0||mx>GX1||my<GY0||my>GY1) return;
+    const cell=cellAt(mx,my);
+    const [lon,lat]=proj4("EPSG:3059","EPSG:4326",[cell.xc,cell.yc]);
     const la=+lat.toFixed(3), lo=+lon.toFixed(3);
+    highlightCell(cell);                       // instant feedback, before the round-trip
     try{
-      const pid=await rpc("wx_ensure_point",{p_lat:la,p_lon:lo,p_name:null});
-      if(!POINTS.some(p=>p.point_id===pid)){
-        POINTS.push({point_id:pid,name:`map ${la},${lo}`,lat:la,lon:lo});
-        const o=document.createElement("option");
-        o.value=pid; o.textContent=`${pid} — map ${la},${lo}`;
-        document.getElementById("selPoint").appendChild(o);
-      }
-      document.getElementById("selPoint").value=pid;
-      Q.lat=la; Q.lon=lo; Q.name=null;
+      const pid=await rpc("wx_ensure_point",{p_lat:la,p_lon:lo,p_name:cellLabel(cell)});
+      selectedCell={...cell, pid, lat:la, lon:lo};
+      if(!POINTS.some(p=>p.point_id===pid))
+        POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
+      setCellOption(pid, cellLabel(cell));
+      Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
       placeSmapMarker(la,lo);
       load();
-    }catch(e){ console.error(e); }
+    }catch(e){
+      clearSmapCell();
+      console.error(e);
+    }
   });
+}
+// The dropdown holds stations. A picked cell gets one transient entry that is
+// replaced on the next pick, so the list never fills up with old clicks.
+function setCellOption(pid, label){
+  const sel=document.getElementById("selPoint");
+  let o=document.getElementById("optCell");
+  if(!o){
+    o=document.createElement("option"); o.id="optCell";
+    sel.insertBefore(o, sel.firstChild);
+  }
+  o.value=pid; o.textContent=`▣ ${label} (25 km)`;
+  sel.value=pid;
+}
+function highlightCell(cell){
+  const ov=document.getElementById("smapOv");
+  if(smapCell) smapCell.remove();
+  const [px,py]=metersToPx(cell.x0, cell.y0+CELL);   // top-left corner
+  const side=CELL/1000;                              // viewBox is 1 unit = 1 km
+  const NS="http://www.w3.org/2000/svg";
+  smapCell=document.createElementNS(NS,"rect");
+  for(const [k,v] of Object.entries({x:px,y:py,width:side,height:side,
+      fill:"#cc2222","fill-opacity":0.16,stroke:"#cc2222","stroke-width":1.4}))
+    smapCell.setAttribute(k,v);
+  ov.appendChild(smapCell);
+}
+function clearSmapCell(){
+  if(smapCell){ smapCell.remove(); smapCell=null; }
+  selectedCell=null;
+  const o=document.getElementById("optCell");
+  if(o) o.remove();
 }
 function placeSmapMarker(lat,lon){
   if(typeof proj4==="undefined") return;
@@ -883,7 +930,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v19",
+    "page v20",
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"—"),
@@ -975,16 +1022,23 @@ async function init(){
     POINTS=await rpc("wx_points_list",{});
   }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl",lat:56.9236,lon:23.9711}]; }
   if(Q.lat!=null && !POINTS.some(p=>p.point_id===startPid))
-    POINTS.push({point_id:startPid, name:Q.name??"map point", lat:Q.lat, lon:Q.lon});
+    POINTS.push({point_id:startPid, name:Q.name??"map cell", lat:Q.lat, lon:Q.lon});
   const sel=document.getElementById("selPoint");
-  for(const p of POINTS){
+  // Stations only — cells picked off the map get their own transient entry.
+  for(const p of POINTS.filter(isStation)){
     const o=document.createElement("option");
     o.value=p.point_id; o.textContent=`${p.point_id} — ${p.name??""}`;
     sel.appendChild(o);
   }
-  sel.value = POINTS.some(p=>p.point_id===startPid) ? startPid : "EVRA";
+  const startPt=POINTS.find(p=>p.point_id===startPid);
+  if(startPt && !isStation(startPt)){
+    setCellOption(startPid, startPt.name ?? "map cell");
+  }else{
+    sel.value = POINTS.some(p=>p.point_id===startPid && isStation(p)) ? startPid : "EVRA";
+  }
   sel.addEventListener("change",()=>{
     const p=POINTS.find(x=>x.point_id===sel.value);
+    if(p && isStation(p)) clearSmapCell();
     if(p?.lat!=null) placeSmapMarker(p.lat,p.lon);
     load();
   });
@@ -997,6 +1051,13 @@ async function init(){
   initStaticMap();
   const cur=POINTS.find(p=>p.point_id===sel.value);
   if(cur?.lat!=null) placeSmapMarker(cur.lat,cur.lon);
+  // Deep link straight to a cell (?lat&lon, or the tracker handing one over).
+  if(cur && !isStation(cur) && typeof proj4!=="undefined"){
+    const [mx,my]=proj4("EPSG:4326","EPSG:3059",[cur.lon,cur.lat]);
+    const cell=cellAt(mx,my);
+    selectedCell={...cell, pid:cur.point_id, lat:cur.lat, lon:cur.lon};
+    highlightCell(cell);
+  }
   await initMapsViewer();
   await load();
 }
