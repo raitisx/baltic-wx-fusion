@@ -55,5 +55,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          BACKFILL_HOURS: "3"   # near-free: hours already covered are skipped
+          BACKFILL_HOURS: "12"  # near-free: hours already covered are skipped,
+                                # and 12 h means a throttled cron's gap is
+                                # repaired within the hour, not next sweep
         run: python jobs/run_radar_backfill.py

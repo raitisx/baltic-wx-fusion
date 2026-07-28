@@ -25,6 +25,7 @@
   .main{flex:1;min-width:0}
   h1{font-size:18px;font-weight:700;margin:0 0 10px;color:var(--ink);letter-spacing:.2px}
   .side label{display:block;font-size:12px;color:var(--text);margin:8px 0 3px;font-weight:700}
+  .sel{font-size:12px;color:var(--ink);font-weight:700;margin:0 0 4px;min-height:16px}
   select,button{
     font:inherit;font-size:13px;color:var(--text);
     background:var(--panel);border:1px solid var(--gridday);
@@ -89,8 +90,7 @@
 <div class="layout">
   <aside class="sidebar side">
     <h1 id="title">BALTIC_WX</h1>
-    <label>Point</label>
-    <select id="selPoint"></select>
+    <div class="sel" id="selNote"></div>
     <label>Cloud-base limit</label>
     <select id="selCb">
       <option value="100">100 m AGL</option>
@@ -223,6 +223,14 @@ function wstd(vals, mean){
 function leadBin(h){ return h<6?"0-6":h<12?"6-12":h<24?"12-24":h<48?"24-48":h<72?"48-72":"72+"; }
 
 let POINTS=[], WEIGHTS=[], FC=[], OBS=[], FUSED=[], usedSkillWeights=false;
+// Selection lives on the map now — a station dot or a 25 km cell — so this is
+// the single source of truth rather than a dropdown's value.
+let currentPid="EVRA";
+function setPoint(pid, label){
+  currentPid=pid;
+  const n=document.getElementById("selNote");
+  if(n) n.textContent=label||"";
+}
 let liveSource=null;
 let weekStart = null;   // Date, Riga Monday 00:00
 
@@ -710,12 +718,12 @@ function initStaticMap(){
       if(p.lat==null || !isStation(p)) continue;
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
       const [px,py]=metersToPx(mx,my);
-      const c=mk("circle",{cx:px,cy:py,r:5,fill:"#1c2c85","fill-opacity":0.55,stroke:"#fdf9ec","stroke-width":1});
+      const c=mk("circle",{cx:px,cy:py,r:15,fill:"#1c2c85","fill-opacity":0.55,stroke:"#fdf9ec","stroke-width":2});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
         ev.stopPropagation();
         clearSmapCell();
-        document.getElementById("selPoint").value=p.point_id;
+        setPoint(p.point_id, `${p.point_id} — ${p.name??""}`);
         placeSmapMarker(p.lat,p.lon);
         load();
       });
@@ -737,7 +745,7 @@ function initStaticMap(){
       selectedCell={...cell, pid, lat:la, lon:lo};
       if(!POINTS.some(p=>p.point_id===pid))
         POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
-      setCellOption(pid, cellLabel(cell));
+      setPoint(pid, `▣ ${cellLabel(cell)} · 25 km`);
       Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
       placeSmapMarker(la,lo);
       load();
@@ -746,18 +754,6 @@ function initStaticMap(){
       console.error(e);
     }
   });
-}
-// The dropdown holds stations. A picked cell gets one transient entry that is
-// replaced on the next pick, so the list never fills up with old clicks.
-function setCellOption(pid, label){
-  const sel=document.getElementById("selPoint");
-  let o=document.getElementById("optCell");
-  if(!o){
-    o=document.createElement("option"); o.id="optCell";
-    sel.insertBefore(o, sel.firstChild);
-  }
-  o.value=pid; o.textContent=`▣ ${label} (25 km)`;
-  sel.value=pid;
 }
 function highlightCell(cell){
   const ov=document.getElementById("smapOv");
@@ -774,8 +770,6 @@ function highlightCell(cell){
 function clearSmapCell(){
   if(smapCell){ smapCell.remove(); smapCell=null; }
   selectedCell=null;
-  const o=document.getElementById("optCell");
-  if(o) o.remove();
 }
 function placeSmapMarker(lat,lon){
   if(typeof proj4==="undefined") return;
@@ -798,6 +792,7 @@ const MAP_MANIFESTS={
   meps:"maps/meps/latest.json", um4:"maps/um4/latest.json",
   um1:"maps/um1/latest.json", radar:"maps/radar/latest.json",
   radarArchive:"maps/radar/archive.json", mepsArchive:"maps/meps/archive.json",
+  um4Archive:"maps/um4/archive.json", um1Archive:"maps/um1/archive.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -823,15 +818,30 @@ function mepsSrc(iso){
   return null;
 }
 function umSrc(iso){
-  const um=MV.loaded[document.getElementById("umRes").value];
+  const res=document.getElementById("umRes").value;
+  const um=MV.loaded[res];
   if(!um) return null;
-  let best=null;
+  // meteo.pl publishes every 2 h, so carry the previous frame forward rather
+  // than showing a hole (up to 3 h back).
   const ts=Date.parse(iso);
+  let best=null;
   for(const h of um.hours){
     const d=ts-Date.parse(h);
     if(d>=0 && d<=3*3600e3 && (best===null || Date.parse(h)>Date.parse(best))) best=h;
   }
-  return best ? {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`} : null;
+  if(best) return {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`};
+  // Past hours: the current run does not reach back, but earlier runs' frames
+  // are still in the bucket — the archive index says which run owns each hour.
+  const arch=MV.loaded[res+"Archive"]?.hours;
+  if(arch){
+    for(let back=0; back<=3; back++){
+      const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
+      const run=arch[vtagOf(t)];
+      if(run) return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(t)}.png${vq(um)}`,
+                      cap:"archived · run "+run.slice(9)};
+    }
+  }
+  return null;
 }
 function radarSrc(iso){
   const rad=MV.loaded.radar;
@@ -930,7 +940,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v20",
+    "page v21",
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"—"),
@@ -964,7 +974,7 @@ async function load(){
   document.getElementById("wLabel").textContent=
     `Week ${fmtDM.format(new Date(weekStart.getTime()+12*3600e3))} – ${fmtDM.format(new Date(wEnd.getTime()-12*3600e3))}`;
   try{
-    const pid=document.getElementById("selPoint").value || "EVRA";
+    const pid=currentPid || "EVRA";
     const pt=POINTS.find(p=>p.point_id===pid);
     const [fc,obs,w]=await Promise.all([
       rpc("wx_point_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
@@ -1023,25 +1033,11 @@ async function init(){
   }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl",lat:56.9236,lon:23.9711}]; }
   if(Q.lat!=null && !POINTS.some(p=>p.point_id===startPid))
     POINTS.push({point_id:startPid, name:Q.name??"map cell", lat:Q.lat, lon:Q.lon});
-  const sel=document.getElementById("selPoint");
-  // Stations only — cells picked off the map get their own transient entry.
-  for(const p of POINTS.filter(isStation)){
-    const o=document.createElement("option");
-    o.value=p.point_id; o.textContent=`${p.point_id} — ${p.name??""}`;
-    sel.appendChild(o);
-  }
-  const startPt=POINTS.find(p=>p.point_id===startPid);
-  if(startPt && !isStation(startPt)){
-    setCellOption(startPid, startPt.name ?? "map cell");
-  }else{
-    sel.value = POINTS.some(p=>p.point_id===startPid && isStation(p)) ? startPid : "EVRA";
-  }
-  sel.addEventListener("change",()=>{
-    const p=POINTS.find(x=>x.point_id===sel.value);
-    if(p && isStation(p)) clearSmapCell();
-    if(p?.lat!=null) placeSmapMarker(p.lat,p.lon);
-    load();
-  });
+  let startPt=POINTS.find(p=>p.point_id===startPid);
+  if(!startPt) startPt=POINTS.find(p=>p.point_id==="EVRA") ?? POINTS[0];
+  if(startPt) setPoint(startPt.point_id,
+    isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
+                       : `▣ ${startPt.name ?? "map cell"} · 25 km`);
   document.getElementById("selCb").addEventListener("change",()=>{render();});
   document.getElementById("selWg").addEventListener("change",()=>{render();});
   document.getElementById("btnReload").addEventListener("click",load);
@@ -1049,7 +1045,7 @@ async function init(){
   document.getElementById("wNext").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()+7*86400e3);load();});
   document.getElementById("wToday").addEventListener("click",()=>{weekStart=weekMonday(new Date());load();});
   initStaticMap();
-  const cur=POINTS.find(p=>p.point_id===sel.value);
+  const cur=POINTS.find(p=>p.point_id===currentPid);
   if(cur?.lat!=null) placeSmapMarker(cur.lat,cur.lon);
   // Deep link straight to a cell (?lat&lon, or the tracker handing one over).
   if(cur && !isStation(cur) && typeof proj4!=="undefined"){

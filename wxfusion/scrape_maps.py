@@ -175,6 +175,27 @@ def um_run(hours: list[int] | None = None) -> None:
                           Body=buf.getvalue(), ContentType="image/png",
                           CacheControl="public, max-age=86400")
             done.append(valid.strftime("%Y-%m-%dT%H:00:00Z"))
+        # Persistent hour -> run index, same idea as maps/meps/archive.json.
+        # Frames are never deleted from the bucket, but without this only the
+        # newest run's hours were reachable, so yesterday's UM simply vanished
+        # from the viewer. An hour is only overwritten by a newer run.
+        if done:
+            try:
+                arch = json.loads(s3.get_object(
+                    Bucket=config.R2_BUCKET, Key=f"maps/{name}/archive.json"
+                )["Body"].read())
+            except Exception:
+                arch = {"hours": {}}
+            for iso in done:
+                vtag = iso[0:4] + iso[5:7] + iso[8:10] + "T" + iso[11:13]
+                if arch["hours"].get(vtag, "") <= run_tag:
+                    arch["hours"][vtag] = run_tag
+            s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/{name}/archive.json",
+                          Body=json.dumps(arch).encode(),
+                          ContentType="application/json",
+                          CacheControl="public, max-age=300")
+            log.info("%s: archive index now %d hours", name, len(arch["hours"]))
+
         if done:
             s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/{name}/latest.json",
                           Body=json.dumps({
@@ -492,10 +513,18 @@ def _archive_note(s3, vtag: str) -> None:
                       CacheControl="public, max-age=300")
 
 
+def _hour_covered(arch: dict, hour: dt.datetime) -> bool:
+    """An hour counts as covered only if its archived frame sits within 40 min
+    of :00. A frame the live job happened to grab at :49 is better than
+    nothing, but it should still be upgraded to an hour-aligned one."""
+    tag = arch["hours"].get(hour.strftime("%Y%m%dT%H"))
+    return bool(tag) and int(tag[11:13] or 0) <= 40
+
+
 def radar_backfill(hours_back: int = 168) -> None:
     """One composite per hour from meteolapa's /radari/get archive (their S3
-    store reaches back months, all three feeds). Idempotent: hours already in
-    the archive index are skipped."""
+    store reaches back months, all three feeds). Idempotent: hours already
+    covered by an hour-aligned frame are skipped."""
     s = session()
     s3 = r2_client()
     try:
@@ -532,7 +561,10 @@ def radar_backfill(hours_back: int = 168) -> None:
         t_lo = now - dt.timedelta(hours=min(w0 + win - 1, hours_back))
         hours_needed = [t_lo + dt.timedelta(hours=k)
                         for k in range(int((t_hi - t_lo).total_seconds() // 3600) + 1)]
-        if not force and all(h.strftime("%Y%m%dT%H") in arch["hours"] for h in hours_needed):
+        # Skip a window only if every hour in it is *properly* covered. Testing
+        # mere presence let an hour whose only frame sat at :49 keep the whole
+        # window from being revisited, so the per-hour upgrade never ran.
+        if not force and all(_hour_covered(arch, h) for h in hours_needed):
             continue
         try:
             overlays = fetch_overlays_window(t_lo, t_hi + dt.timedelta(minutes=30))
@@ -542,10 +574,7 @@ def radar_backfill(hours_back: int = 168) -> None:
         time.sleep(0.5)
         for target in hours_needed:
             hour_key = target.strftime("%Y%m%dT%H")
-            existing = arch["hours"].get(hour_key)
-            # an hour counts as covered only if its frame sits within 40 min
-            # of :00 — live-job frames like :49 stay but get upgraded here
-            if existing and not force and int(existing[11:13] or 0) <= 40:
+            if not force and _hour_covered(arch, target):
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             got = False
