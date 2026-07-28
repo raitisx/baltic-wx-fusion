@@ -30,12 +30,20 @@ with obs as (
   group by 1, 2, 3
 ),
 fcst as (
-  select model, run_time, valid_time, point_id,
-         case when parameter = 'cb_lcl' then 'cb' else parameter end as parameter,
-         value
-  from wx.forecasts
-  where valid_time >= now() - interval '%(days)s days'
-    and valid_time <= now()
+  -- The hot table stores a column per parameter; unpivot only the ones that
+  -- have an observed counterpart. Cloud base pairs model LCL against the
+  -- METAR ceiling, so both sides are relabelled 'cb'.
+  select f.model, f.run_time, f.valid_time, f.point_id, u.parameter, u.value
+  from wx.forecasts_h f
+  cross join lateral (values
+      ('t2m', f.t2m), ('td2m', f.td2m), ('rh', f.rh),
+      ('ws10m', f.ws10m), ('wg10m', f.wg10m), ('wdir', f.wdir),
+      ('prcp_1h', f.prcp_1h), ('pres_msl', f.pres_msl),
+      ('cc_total', f.cc_total), ('cb', f.cb_lcl)
+    ) as u(parameter, value)
+  where f.valid_time >= now() - interval '%(days)s days'
+    and f.valid_time <= now()
+    and u.value is not null
 )
 insert into wx.forecast_obs_pairs
   (model, run_time, valid_time, lead_h, lead_bin, point_id, parameter,

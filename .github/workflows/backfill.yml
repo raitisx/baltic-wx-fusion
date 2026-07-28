@@ -11,6 +11,7 @@ on:
           - radar-maps
           - meps-maps
           - station-obs
+          - forecast-archive
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -40,6 +41,10 @@ on:
         description: "station-obs: meteo.lt days of history (0 = skip)"
         type: string
         default: "0"
+      only_missing:
+        description: "forecast-archive: skip runs already present in R2"
+        type: boolean
+        default: true
 
 jobs:
   backfill:
@@ -55,8 +60,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           case "${{ inputs.target }}" in
-            radar-maps) pip install pillow numpy pyproj scipy scikit-image ;;
-            meps-maps)  pip install netCDF4 matplotlib numpy pillow pyproj ;;
+            radar-maps)       pip install pillow numpy pyproj scipy scikit-image ;;
+            meps-maps)        pip install netCDF4 matplotlib numpy pillow pyproj ;;
+            forecast-archive) pip install pyarrow boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -92,3 +98,14 @@ jobs:
           if [ "${{ inputs.lt_days }}" != "0" ]; then ARGS="$ARGS --lt-days ${{ inputs.lt_days }}"; fi
           echo "Running: python jobs/run_backfill.py $ARGS"
           python jobs/run_backfill.py $ARGS
+
+      - name: Forecast run archive -> R2 Parquet
+        if: inputs.target == 'forecast-archive'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          ARCHIVE_ONLY_MISSING: ${{ inputs.only_missing && '1' || '0' }}
+        run: python jobs/run_forecast_archive.py

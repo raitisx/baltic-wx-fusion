@@ -66,22 +66,66 @@ def upsert_observations(conn: psycopg.Connection, rows: list[tuple]) -> int:
     return len(rows)
 
 
+FORECAST_PARAMS = [
+    "t2m", "td2m", "rh", "ws10m", "wg10m", "wdir", "prcp_1h", "pres_msl",
+    "cc_low", "cc_mid", "cc_high", "cc_total", "cb_lcl",
+]
+_FH_COLS = ", ".join(FORECAST_PARAMS)
+_FH_PLACEHOLDERS = ", ".join(["%s"] * (4 + len(FORECAST_PARAMS)))
+
+
 def upsert_forecasts(conn: psycopg.Connection, rows: list[tuple]) -> int:
-    """rows: (model, run_time, valid_time, point_id, parameter, value)"""
+    """Pivot flat rows into the hot table.
+
+    rows: (model, run_time, valid_time, point_id, parameter, value)
+
+    Storing one row per value cost ~190 B each including the primary key
+    index; pivoting the 13 canonical parameters into typed columns is ~13x
+    smaller, which is what makes a 60-day hot window fit the free tier.
+    Unrecognised parameters are dropped — the full fidelity copy is the
+    Parquet run archive in R2.
+    """
     if not rows:
         return 0
+    pivot: dict[tuple, dict] = {}
+    skipped = set()
+    for model, run_time, valid_time, point_id, parameter, value in rows:
+        if parameter not in FORECAST_PARAMS:
+            skipped.add(parameter)
+            continue
+        pivot.setdefault((model, run_time, valid_time, point_id), {})[parameter] = value
+    if skipped:
+        log.debug("forecasts: parameters not in the hot schema: %s", sorted(skipped))
+
+    payload = [
+        key + tuple(vals.get(p) for p in FORECAST_PARAMS)
+        for key, vals in pivot.items()
+    ]
     with conn.cursor() as cur:
         cur.executemany(
-            """
-            insert into wx.forecasts (model, run_time, valid_time, point_id, parameter, value)
-            values (%s, %s, %s, %s, %s, %s)
-            on conflict (model, run_time, valid_time, point_id, parameter) do nothing
+            f"""
+            insert into wx.forecasts_h (model, run_time, valid_time, point_id, {_FH_COLS})
+            values ({_FH_PLACEHOLDERS})
+            on conflict (model, run_time, valid_time, point_id) do nothing
             """,
-            rows,
+            payload,
         )
     conn.commit()
-    log.info("forecasts: upserted %d rows", len(rows))
-    return len(rows)
+    log.info("forecasts: %d values -> %d hot rows", len(rows), len(payload))
+    return len(payload)
+
+
+def prune_forecasts(conn: psycopg.Connection, keep_days: int = 60) -> int:
+    """Drop hot rows past the rolling window. R2 keeps the full history."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "delete from wx.forecasts_h where run_time < now() - make_interval(days => %s)",
+            (keep_days,),
+        )
+        n = cur.rowcount
+    conn.commit()
+    log.info("forecasts: pruned %d rows older than %d days", n, keep_days)
+    return n
 
 
 def get_points(conn: psycopg.Connection, kind: str | None = None) -> list[dict]:
