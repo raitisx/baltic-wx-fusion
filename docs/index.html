@@ -239,7 +239,10 @@ const Q = {
 };
 const MAPS_BASE = QS.get("maps") || "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
 
-// Direct Open-Meteo fallback for points the pipeline hasn't ingested yet.
+// Direct Open-Meteo fetch. The server-side ingest runs twice a day and exists
+// to build the archive (stored forecast per lead) that skill weights and
+// "why we didn't fly" reports are made of. Live freshness is the browser's
+// job: for the current hour onwards we always prefer this direct fetch.
 const OM_MODELS = {icon:"icon_seamless", meps:"metno_seamless", ifs:"ecmwf_ifs025", gfs:"gfs_seamless"};
 const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m:"rh",
   precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
@@ -280,6 +283,16 @@ async function fetchOpenMeteoDirect(lat, lon){
     }
   }
   return out;
+}
+// 10-minute memo so flipping weeks or points back and forth does not refetch.
+const OM_CACHE = {};
+async function openMeteoCached(lat, lon){
+  const key = `${lat},${lon}`, now = Date.now();
+  const hit = OM_CACHE[key];
+  if(hit && now - hit.at < 600e3) return hit.rows;
+  const rows = await fetchOpenMeteoDirect(lat, lon);
+  OM_CACHE[key] = {at:now, rows};
+  return rows;
 }
 
 function fuse(){
@@ -854,7 +867,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v16",
+    "page v17",
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"—"),
@@ -897,29 +910,29 @@ async function load(){
     ]);
     FC=fc; OBS=obs; WEIGHTS=w; liveSource="db";
     const now=Date.now();
-    // Live top-up: the DB ingest keeps ~4 days ahead, so the tail of the current
-    // week (and most of next week) may be missing. Fetch Open-Meteo directly and
-    // merge only hours beyond DB coverage; past weeks are never topped up.
-    if(pt && wEnd.getTime()>now && weekStart.getTime()<now+7*86400e3){
-      let lastTs=0;
-      for(const e of FC){ const t=Date.parse(e.t); if(t>lastTs) lastTs=t; }
-      if(lastTs < wEnd.getTime()-2*3600e3){
-        try{
-          const extra=(await fetchOpenMeteoDirect(pt.lat, pt.lon))
-            .filter(e=>{const t=Date.parse(e.t);return t>=weekStart.getTime()&&t<wEnd.getTime()&&t>lastTs;});
-          if(extra.length){
-            liveSource = FC.length===0 ? "direct" : "db+direct";
-            FC=FC.concat(extra);
-          }
-        }catch(_){/* top-up is best-effort */}
-      }
+    // Past hours come from the database (the archived run that actually covered
+    // that hour — that is the evidence trail). The current hour onwards always
+    // comes live from Open-Meteo, so the server ingest can stay on a cheap
+    // twice-daily cadence without the page ever showing a stale run.
+    if(pt && pt.lat!=null && wEnd.getTime()>now){
+      const cutoff = now - 3600e3;   // keep DB rows strictly in the past
+      try{
+        const live=(await openMeteoCached(pt.lat, pt.lon)).filter(e=>{
+          const t=Date.parse(e.t);
+          return t>=cutoff && t>=weekStart.getTime() && t<wEnd.getTime();
+        });
+        if(live.length){
+          FC=FC.filter(e=>Date.parse(e.t)<cutoff).concat(live);
+          liveSource="db+live";
+        }
+      }catch(_){/* live layer is best-effort; DB rows still render */}
     }
     document.getElementById("title").textContent=`BALTIC_WX · ${Q.name ?? pt?.name ?? pid}`;
     fuse(); render(); renderTable(); setMapAxis();
     const runs={};
     for(const e of FC){ if(!runs[e.m]||e.run>runs[e.m]) runs[e.m]=e.run; }
     const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
-    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="direct"?" · live fetch":liveSource==="db+direct"?" · +live top-up":""} · newest runs: ${runTxt}`;
+    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="db+live"?" · live from now on":""} · newest runs: ${runTxt}`;
   }catch(e){
     err.hidden=false;
     err.textContent="Failed to load data: "+e.message;

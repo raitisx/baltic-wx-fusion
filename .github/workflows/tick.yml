@@ -1,25 +1,15 @@
 name: tick
-# Single scheduled workflow for the whole pipeline.
+# Hourly "what is actually happening" pass. Everything here is either
+# snapshot-only upstream (LVGMC operative returns the last hour; the Estonian
+# XML feed has no history endpoint at all — a missed hour is lost forever) or
+# wanted live (radar). Nothing here is expensive: ~2 min a run.
 #
-# Why one cron instead of four: GitHub deprioritises scheduled runs per repo,
-# and a repo with several crons (one of them */15) gets its hourly slot pushed
-# around badly. One tick per hour fires far more reliably, costs less runner
-# time (one checkout + one pip install instead of three), and gives one place
-# to look when something goes red.
-#
-# Cadence gating happens inside the job:
-#   every hour      observations, forecasts, radar composite + archive top-up
-#   hour % 3 == 1   MEPS + UM map rendering (MEPS publishes every 3 h)
-#   hour == 2       nightly forecast x observation pairing
+# Model products (forecast ingest, MEPS/UM map rendering, pairing) live in
+# models.yml on a 2x/day cadence — see that file.
 on:
   schedule:
     - cron: "7 * * * *"   # hh:07 UTC — off the top-of-hour GH congestion
   workflow_dispatch:
-    inputs:
-      force_maps:
-        description: "Render maps on this run regardless of the hour"
-        type: boolean
-        default: false
 
 concurrency:
   group: tick
@@ -28,7 +18,7 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,35 +26,18 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image netCDF4 matplotlib
+        # Deliberately no netCDF4/matplotlib here — those are only needed for
+        # map rendering and would add ~30 s to every hourly run.
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image
 
-      - name: Cadence gate
-        id: gate
-        run: |
-          H=$(date -u +%-H)
-          echo "hour=$H" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.force_maps }}" = "true" ] || [ $((H % 3)) -eq 1 ]; then
-            echo "maps=1" >> "$GITHUB_OUTPUT"; else echo "maps=0" >> "$GITHUB_OUTPUT"; fi
-          if [ "$H" -eq 2 ]; then echo "pairing=1" >> "$GITHUB_OUTPUT"; else echo "pairing=0" >> "$GITHUB_OUTPUT"; fi
-
-      # ---- station + model data (Supabase) ----
       - name: Observations
+        # METAR (incl. the only observed cloud base), LVGMC, meteo.lt, EE XML.
+        # Each source is isolated inside the script; one dead feed is not fatal.
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python jobs/run_observations.py
-      - name: Forecasts
-        if: always()
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python jobs/run_forecasts.py
-      - name: Pairing (nightly)
-        if: always() && steps.gate.outputs.pairing == '1'
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python jobs/run_pairing.py
 
-      # ---- imagery (R2) ----
-      # always(): a Supabase blip must not take the map pipeline down with it.
+      # always(): a Supabase blip must not take the radar pipeline down with it.
       - name: Radar composite
         if: always()
         continue-on-error: true
@@ -74,7 +47,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
         run: python jobs/run_radar.py
-      - name: Radar archive top-up
+      - name: Radar archive top-up (recent hours)
         if: always()
         continue-on-error: true
         env:
@@ -82,23 +55,5 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          BACKFILL_HOURS: "8"
+          BACKFILL_HOURS: "3"   # near-free: hours already covered are skipped
         run: python jobs/run_radar_backfill.py
-      - name: MEPS maps
-        if: always() && steps.gate.outputs.maps == '1'
-        continue-on-error: true
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: baltic-wx
-        run: python jobs/run_maps.py
-      - name: UM (meteo.pl) maps
-        if: always() && steps.gate.outputs.maps == '1'
-        continue-on-error: true
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: baltic-wx
-        run: python jobs/run_um_maps.py

@@ -1,0 +1,85 @@
+name: models
+# Twice-daily model pass: forecast ingest, map rendering, and the nightly
+# verification pairing.
+#
+# 04:20 and 16:20 UTC land shortly after the 00Z and 12Z runs publish, so each
+# pass picks up fresh model data. The meteogram page does not depend on this
+# for freshness — it fetches Open-Meteo directly in the browser for the current
+# and future hours and uses the database only for hours already in the past.
+# What the database pass is really for is the archive: the stored forecast per
+# lead is what "why we didn't fly" reports and the skill weights are built on.
+on:
+  schedule:
+    - cron: "20 4,16 * * *"
+  workflow_dispatch:
+    inputs:
+      pairing:
+        description: "Run the forecast x observation pairing on this run"
+        type: boolean
+        default: false
+
+concurrency:
+  group: models
+  cancel-in-progress: false
+
+jobs:
+  models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dependencies
+        run: pip install -r requirements.txt && pip install netCDF4 matplotlib numpy pillow pyproj scipy scikit-image
+
+      - name: Cadence gate
+        id: gate
+        run: |
+          H=$(date -u +%-H)
+          if [ "${{ inputs.pairing }}" = "true" ] || [ "$H" -lt 12 ]; then
+            echo "pairing=1" >> "$GITHUB_OUTPUT"; else echo "pairing=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Forecasts
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_forecasts.py
+      - name: Pairing (once a day, morning pass)
+        if: always() && steps.gate.outputs.pairing == '1'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_pairing.py
+
+      - name: MEPS maps
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_maps.py
+      - name: UM (meteo.pl) maps
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_um_maps.py
+
+      # Deeper radar sweep than the hourly top-up, so any hour the hourly tick
+      # missed (throttled cron, upstream lag) still gets an aligned frame.
+      - name: Radar archive sweep
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          BACKFILL_HOURS: "18"
+        run: python jobs/run_radar_backfill.py
