@@ -11,12 +11,12 @@
 -- LV / EE / LT — the original twelve.
 insert into wx.points (point_id, kind, station_id, name, lat, lon, active) values
   ('EETN','metar','EETN','Tallinn Lennart Meri', 59.413, 24.833, true),
-  ("EETU","metar","EETU","Tartu",                58.308, 26.690, true),
+  ('EETU','metar','EETU','Tartu',                58.308, 26.690, true),
   ('EEPU','metar','EEPU','Parnu',                58.419, 24.473, true),
   ('EEKA','metar','EEKA','Kardla',               58.991, 22.831, true),
   ('EEKE','metar','EEKE','Kuressaare',           58.230, 22.510, true),
   ('EVRA','metar','EVRA','Riga Intl',            56.924, 23.971, true),
-  ('EVLA','metar','EVLA','Liepaja',              56.517, 21.097, true),
+  ('EVLA','metar','EVLA','Liepaja',              56.518, 21.097, true),
   ('EVVA','metar','EVVA','Ventspils',            57.358, 21.544, true),
   ('EYVI','metar','EYVI','Vilnius',              54.634, 25.286, true),
   ('EYKA','metar','EYKA','Kaunas',               54.964, 24.085, true),
