@@ -134,12 +134,25 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
 
 
 def um_run(hours: list[int] | None = None) -> None:
-    """Fetch UM4 (and UM1) cloud/precip frames for the given lead hours."""
-    hours = hours or (list(range(1, 25)) + list(range(27, 61, 3)))
+    """Fetch UM4 cloud/precip frames for the given lead hours.
+
+    Leads measured against the live tile server (28.07.2026, 00Z run): real,
+    distinct content through +120 h, fully transparent from +123 h. We were
+    only asking for +60 h, so half the available range was being discarded.
+    Hourly through the first day, then coarsening — the far leads are for
+    planning shape, not detail.
+
+    UM1 (the 1.5 km layer) is not fetched: its domain is Poland, so every
+    frame came back completely transparent over the Baltic bbox at every lead
+    tested. Re-add ("um1", "um:UM1_CLOUD") below if that ever changes.
+    """
+    hours = hours or (list(range(1, 25))
+                      + list(range(27, 73, 3))
+                      + list(range(78, 121, 6)))
     now = dt.datetime.now(dt.timezone.utc)
     run = now.replace(hour=0, minute=0, second=0, microsecond=0)
     s3 = r2_client()
-    for name, layer in [("um4", "um:UM4_CLOUD"), ("um1", "um:UM1_CLOUD")]:
+    for name, layer in [("um4", "um:UM4_CLOUD")]:
         run_tag = run.strftime("%Y%m%dT%H")
         done = []
         from . import proj3059 as P
@@ -149,6 +162,13 @@ def um_run(hours: list[int] | None = None) -> None:
             if img is None:
                 log.warning("%s: no tiles for +%dh", name, h)
                 continue
+            # Past the model horizon the tile server keeps answering, just with
+            # fully transparent tiles. Storing those would index blank frames
+            # that look like a broken viewer, so stop at the first empty one.
+            probe = np.array(img)
+            if probe.shape[-1] == 4 and not probe[..., 3].any():
+                log.info("%s: +%dh is empty — horizon reached", name, h)
+                break
             # reproject the mercator-stitched canvas onto the common
             # EPSG:3059 grid (transparent overlay; client stacks it on
             # maps/bg_3059.png) and bake borders ON TOP — the UM cloud
