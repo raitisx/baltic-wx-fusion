@@ -133,6 +133,45 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
     return out
 
 
+def um_reindex(name: str = "um4") -> int:
+    """Rebuild maps/<name>/archive.json from what is actually in the bucket.
+
+    UM frames were always written to maps/<name>/<run>/<hour>.png but until the
+    archive index existed only the newest run was reachable, so earlier days
+    silently disappeared from the viewer even though the PNGs were there. This
+    recovers them. Newer run wins for any hour covered more than once, matching
+    um_run and the MEPS convention.
+    """
+    s3 = r2_client()
+    hours: dict[str, str] = {}
+    token = None
+    seen = 0
+    while True:
+        kw = {"Bucket": config.R2_BUCKET, "Prefix": f"maps/{name}/"}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for obj in resp.get("Contents", []):
+            m = re.match(rf"maps/{name}/(\d{{8}}T\d{{2}})/(\d{{8}}T\d{{2}})\.png$", obj["Key"])
+            if not m:
+                continue
+            seen += 1
+            run_tag, vtag = m.group(1), m.group(2)
+            if hours.get(vtag, "") <= run_tag:
+                hours[vtag] = run_tag
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+
+    s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/{name}/archive.json",
+                  Body=json.dumps({"hours": hours}).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("%s reindex: %d frames in the bucket -> %d hours indexed",
+             name, seen, len(hours))
+    return len(hours)
+
+
 def um_run(hours: list[int] | None = None) -> None:
     """Fetch UM4 cloud/precip frames for the given lead hours.
 
