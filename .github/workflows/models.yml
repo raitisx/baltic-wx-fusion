@@ -51,6 +51,20 @@ jobs:
           R2_BUCKET: baltic-wx
           FORECAST_KEEP_DAYS: "60"
         run: python jobs/run_forecasts.py
+      - name: Observation archive + prune
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          OBS_KEEP_DAYS: "90"
+          OBS_ARCHIVE_DAYS: "3"
+          OBS_ARCHIVE_MAX: "40"
+        run: python jobs/run_obs_archive.py
+
       - name: Pairing (once a day, morning pass)
         if: always() && steps.gate.outputs.pairing == '1'
         env:

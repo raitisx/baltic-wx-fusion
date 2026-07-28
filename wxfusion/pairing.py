@@ -16,17 +16,24 @@ log = logging.getLogger(__name__)
 PAIRING_SQL = """
 with obs as (
   -- Snap observations to the nearest hour (METARs land at :20/:50, EE at
-  -- 10-min slots) and average duplicates within the hour.
+  -- 10-min slots) and average duplicates within the hour. The hot table
+  -- stores a column per parameter, so unpivot the ones with a forecast
+  -- counterpart; observed ceiling is relabelled 'cb' to meet model LCL.
   select p.point_id,
          date_trunc('hour', o.time + interval '30 minutes') as time,
-         case when o.parameter = 'cb_ceiling' then 'cb' else o.parameter end as parameter,
-         avg(o.value) as value
-  from wx.observations o
+         u.parameter,
+         avg(u.value) as value
+  from wx.observations_h o
   join wx.points p
     on p.kind = o.source and p.station_id = o.station_id
+  cross join lateral (values
+      ('t2m', o.t2m), ('td2m', o.td2m), ('rh', o.rh),
+      ('ws10m', o.ws10m), ('wg10m', o.wg10m), ('wdir', o.wdir),
+      ('prcp_1h', o.prcp_1h), ('pres_msl', o.pres_msl),
+      ('cc_total', o.cc_total), ('vis', o.vis), ('cb', o.cb_ceiling)
+    ) as u(parameter, value)
   where o.time >= now() - interval '%(days)s days'
-    and o.parameter in ('t2m','td2m','rh','ws10m','wg10m','wdir',
-                        'prcp_1h','pres_msl','cc_total','vis','cb_ceiling')
+    and u.value is not null
   group by 1, 2, 3
 ),
 fcst as (

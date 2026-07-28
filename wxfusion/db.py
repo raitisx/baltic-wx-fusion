@@ -48,22 +48,80 @@ def connect() -> psycopg.Connection:
     raise RuntimeError(f"could not reach the Supabase pooler after {CONNECT_ATTEMPTS} attempts") from last
 
 
+OBS_PARAMS = [
+    "t2m", "td2m", "rh", "ws10m", "wg10m", "wdir", "prcp_1h", "pres_msl",
+    "cc_total", "vis", "cb_ceiling", "snow", "wx_rain",
+]
+_OH_COLS = ", ".join(OBS_PARAMS)
+_OH_SET = ", ".join(f"{p} = coalesce(excluded.{p}, wx.observations_h.{p})" for p in OBS_PARAMS)
+_OH_PLACEHOLDERS = ", ".join(["%s"] * (3 + len(OBS_PARAMS)))
+
+
 def upsert_observations(conn: psycopg.Connection, rows: list[tuple]) -> int:
-    """rows: (source, station_id, time, parameter, value)"""
+    """Pivot flat rows into the hot table.
+
+    rows: (source, station_id, time, parameter, value)
+
+    Unlike forecasts, the same (source, station, hour) slot can be filled by
+    more than one call — METAR specials arrive separately from the routine,
+    and a re-poll may carry parameters the first one lacked. So on conflict we
+    merge rather than skip: a non-null incoming value wins, an absent one
+    leaves what is already stored alone.
+    """
     if not rows:
         return 0
+    pivot: dict[tuple, dict] = {}
+    skipped = set()
+    for source, station_id, time, parameter, value in rows:
+        if parameter not in OBS_PARAMS:
+            skipped.add(parameter)
+            continue
+        pivot.setdefault((source, station_id, time), {})[parameter] = value
+    if skipped:
+        log.debug("observations: parameters not in the hot schema: %s", sorted(skipped))
+
+    payload = [
+        key + tuple(vals.get(p) for p in OBS_PARAMS)
+        for key, vals in pivot.items()
+    ]
     with conn.cursor() as cur:
         cur.executemany(
-            """
-            insert into wx.observations (source, station_id, time, parameter, value)
-            values (%s, %s, %s, %s, %s)
-            on conflict (source, station_id, time, parameter) do nothing
+            f"""
+            insert into wx.observations_h (source, station_id, time, {_OH_COLS})
+            values ({_OH_PLACEHOLDERS})
+            on conflict (source, station_id, time) do update set {_OH_SET}
             """,
-            rows,
+            payload,
         )
     conn.commit()
-    log.info("observations: upserted %d rows", len(rows))
-    return len(rows)
+    log.info("observations: %d values -> %d hot rows", len(rows), len(payload))
+    return len(payload)
+
+
+def prune_observations(conn: psycopg.Connection, keep_days: int, archived_days) -> int:
+    """Drop hot observation days that are safely in R2.
+
+    archived_days: iterable of date objects known to exist in the archive.
+    A day is only ever deleted if its Parquet file is present — losing an
+    observation is unrecoverable for the snapshot-only feeds.
+    """
+    days = sorted(archived_days)
+    if not days:
+        log.warning("observations: nothing archived yet, skipping prune")
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            delete from wx.observations_h
+            where time < now() - make_interval(days => %s)
+              and (time at time zone 'UTC')::date = any(%s)
+            """,
+            (keep_days, days),
+        )
+        n = cur.rowcount
+    conn.commit()
+    log.info("observations: pruned %d rows older than %d days", n, keep_days)
+    return n
 
 
 FORECAST_PARAMS = [
