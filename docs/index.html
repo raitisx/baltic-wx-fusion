@@ -805,7 +805,7 @@ function mapShow(i){
     const d=Math.abs(frameTime(f).getTime()-ts);
     if(d<bd){bd=d;best=f;}
   }
-  if(rad && best && bd<=40*60e3){
+  if(rad && best && bd<=55*60e3){
     radImg.style.opacity="1";
     radImg.src=`${MAPS_BASE}/${rad.path}/${best}.png${vq(rad)}`;
     radLbl.textContent=fmtDT.format(frameTime(best));
@@ -870,7 +870,7 @@ async function initMapsViewer(){
   dg.push("um1: "+(MV.loaded.um1?MV.loaded.um1.hours.length+"h":"not published"));
   dg.push("radar live: "+(MV.loaded.radar?MV.loaded.radar.frames.length+" frames":"NOT LOADED"));
   dg.push("radar archive: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+" hours":"NOT LOADED"));
-  document.getElementById("mapDiag").textContent="page v14 · "+dg.join(" · ");
+  document.getElementById("mapDiag").textContent="page v15 · "+dg.join(" · ");
   const nowIdx=MV.hours.findIndex(h=>Date.parse(h)>=Date.now());
   mapShow(nowIdx<0?0:nowIdx);
   // crosshair sync from the meteogram

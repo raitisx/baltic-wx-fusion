@@ -542,7 +542,10 @@ def radar_backfill(hours_back: int = 168) -> None:
         time.sleep(0.5)
         for target in hours_needed:
             hour_key = target.strftime("%Y%m%dT%H")
-            if hour_key in arch["hours"] and not force:
+            existing = arch["hours"].get(hour_key)
+            # an hour counts as covered only if its frame sits within 40 min
+            # of :00 — live-job frames like :49 stay but get upgraded here
+            if existing and not force and int(existing[11:13] or 0) <= 40:
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             got = False
