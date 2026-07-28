@@ -1,21 +1,43 @@
 name: backfill
+# One manual workflow for every "fill in history" job. Pick a target, set the
+# knobs that target uses, run it. Nothing here is scheduled.
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: "What to backfill"
+        type: choice
+        options:
+          - radar-maps
+          - meps-maps
+          - station-obs
+        default: radar-maps
+      hours:
+        description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
+        type: string
+        default: "168"
+      force:
+        description: "radar-maps: re-render hours already archived (apply new styling/cleaning)"
+        type: boolean
+        default: false
+      runs:
+        description: "meps-maps: how many past MEPS runs to render (thredds keeps ~1 day)"
+        type: string
+        default: "12"
       lvgmc:
-        description: "Backfill LVGMC ~365-day archive"
+        description: "station-obs: pull the LVGMC ~365-day archive"
         type: boolean
         default: true
       metar_start:
-        description: "METAR backfill start date (YYYY-MM-DD, empty = skip)"
+        description: "station-obs: METAR start date (YYYY-MM-DD, empty = skip)"
         type: string
         default: ""
       metar_end:
-        description: "METAR backfill end date (YYYY-MM-DD, empty = today)"
+        description: "station-obs: METAR end date (YYYY-MM-DD, empty = today)"
         type: string
         default: ""
       lt_days:
-        description: "meteo.lt days of history (0 = skip; 52 stations x days <= 18000)"
+        description: "station-obs: meteo.lt days of history (0 = skip)"
         type: string
         default: "0"
 
@@ -29,8 +51,37 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
-      - name: Backfill
+      - name: Dependencies
+        run: |
+          pip install -r requirements.txt
+          case "${{ inputs.target }}" in
+            radar-maps) pip install pillow numpy pyproj scipy scikit-image ;;
+            meps-maps)  pip install netCDF4 matplotlib numpy pillow pyproj ;;
+          esac
+
+      - name: Radar map backfill -> R2
+        if: inputs.target == 'radar-maps'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          BACKFILL_HOURS: ${{ inputs.hours }}
+          BACKFILL_FORCE: ${{ inputs.force && '1' || '0' }}
+        run: python jobs/run_radar_backfill.py
+
+      - name: MEPS map backfill -> R2
+        if: inputs.target == 'meps-maps'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          MEPS_RUNS: ${{ inputs.runs }}
+        run: python jobs/run_meps_backfill.py
+
+      - name: Station observation backfill -> Supabase
+        if: inputs.target == 'station-obs'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
