@@ -360,21 +360,159 @@ def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     return cls
 
 
-def _remove_spikes(cls: np.ndarray) -> np.ndarray:
-    """Kill interference beams (thin straight rays, often dashed).
+# Baltic weather radar sites. Interference beams are always radial from an
+# antenna, which is a far stronger discriminator than "looks like a line" —
+# real squall lines have no reason to point at a radar. Surgavere was
+# confirmed empirically: extending every thin streak found across 40 archived
+# frames and clustering the pairwise intersections put the densest cluster
+# 5 km from it, and it accounts for nearly all the beams we see. The rest are
+# the published site positions; an inaccurate one can only cause a missed
+# beam, never removal of real echo, because a candidate must already be thin,
+# straight and outside thick echo before the radial test is even applied.
+RADAR_SITES = [
+    ("EE Surgavere", 58.482, 25.519),
+    ("EE Harku", 59.398, 24.603),
+    ("LV Riga", 56.918, 24.062),
+    ("LT Laukuva", 55.613, 22.228),
+    ("LT Vilnius", 54.652, 25.284),
+]
+RADIAL_TOL_KM = 20      # how close the beam's line must pass to the antenna
+RADAR_RANGE_KM = 320    # beyond this a site cannot be the source
 
-    Method: 'thin residue' = echo minus a 3x3 morphological opening (anything
-    <3 px thick). Probabilistic Hough finds straight lines in the residue —
-    which connects dashed beam segments — and each candidate segment is kept
-    only if its path is NOT mostly inside thick (real) echo. Only thin pixels
-    near validated lines are removed, so storm cores and cell edges survive.
+
+def _site_pixels():
+    from . import proj3059 as P
+    out = []
+    for name, la, lo in RADAR_SITES:
+        x, y = P.to_px([la], [lo])
+        out.append((name, float(x[0]), float(y[0])))
+    return out
+
+
+def _radial_source(x0, y0, x1, y1, sites):
+    """Which radar, if any, this segment points at. 1 px = 1 km."""
+    dx, dy = x1 - x0, y1 - y0
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 1:
+        return None
+    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    for name, sx, sy in sites:
+        # perpendicular distance from the antenna to the segment's line
+        perp = abs(dx * (sy - y0) - dy * (sx - x0)) / length
+        if perp > RADIAL_TOL_KM:
+            continue
+        if ((mx - sx) ** 2 + (my - sy) ** 2) ** 0.5 > RADAR_RANGE_KM:
+            continue
+        return name
+    return None
+
+
+N_AZ = 720          # 0.5 deg azimuth bins
+R_MIN_KM, R_MAX_KM = 8, 300
+BEAM_COVER = 0.40   # fraction of the ray's range bins that must hold echo
+BEAM_RATIO = 3.0    # ... and how far above the neighbouring azimuths
+WIDE_AZ_BINS = 12   # echo spanning >6 deg at a given range is weather, not a beam
+STRONG_CLASS = 4    # interference is weak and flat; a bright core is real
+
+
+def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
+    """Remove interference spikes using the geometry that defines them.
+
+    A spike is a single azimuth from one antenna lit up along most of its
+    range, while its neighbouring azimuths are empty. That is very hard to
+    confuse with weather, and unlike a thinness test it does not care how many
+    pixels wide the ray happens to render — which is why the previous
+    thin-residue approach missed these: at 3+ px they survived the opening and
+    were never even considered.
+
+    Real echo is protected two ways: an azimuth only counts as a spike if it
+    stands well clear of its neighbours, and within a flagged azimuth a pixel
+    is only dropped if the echo at that range does not also extend across
+    several degrees either side.
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        log.warning("scipy missing - polar beam removal skipped")
+        return cls
+
+    echo = cls > 0
+    if echo.sum() < 200:
+        return cls
+    h, w = cls.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    out = cls.copy()
+    removed_by = {}
+
+    for name, sx, sy in _site_pixels():
+        dx, dy = xx - sx, yy - sy
+        rng = np.hypot(dx, dy)
+        in_range = (rng >= R_MIN_KM) & (rng <= R_MAX_KM)
+        if not in_range.any():
+            continue
+        az = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * N_AZ).astype(int) % N_AZ
+        rb = rng.astype(int)
+
+        cur = out > 0
+        lit = cur & in_range
+        if lit.sum() < 50:
+            continue
+        # how much of each ray carries echo
+        counts = np.bincount(az[lit], minlength=N_AZ).astype(float)
+        totals = np.bincount(az[in_range], minlength=N_AZ).astype(float)
+        cover = counts / np.maximum(totals, 1)
+        # neighbourhood background, wrapping at north
+        bg = ndimage.median_filter(cover, size=13, mode="wrap")
+        spike = (cover > BEAM_COVER) & (cover > bg * BEAM_RATIO + 0.04)
+        if not spike.any():
+            continue
+        spike = ndimage.binary_dilation(spike, np.ones(3), border_value=0)
+
+        # azimuthal width of echo at each range, to spare genuine weather
+        occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
+        occ[az[lit], rb[lit]] = True
+        wide = ndimage.uniform_filter(
+            occ.astype(float), size=(WIDE_AZ_BINS, 5), mode="wrap") > 0.45
+
+        # Never take a bright core, and leave whole rays alone when they
+        # carry one — a squall line can lie radially by chance, and losing
+        # real convection is far worse than leaving a streak on the map.
+        strong_az = np.zeros(N_AZ, bool)
+        strong = lit & (out >= STRONG_CLASS)
+        if strong.any():
+            strong_az[np.unique(az[strong])] = True
+            strong_az = ndimage.binary_dilation(strong_az, np.ones(5), border_value=0)
+
+        cand = (lit & spike[az] & ~strong_az[az]
+                & ~wide[az, np.clip(rb, 0, R_MAX_KM)]
+                & (out < STRONG_CLASS))
+        if cand.sum() < 20:
+            continue
+        out[cand] = 0
+        removed_by[name] = int(cand.sum())
+
+    if removed_by:
+        log.info("polar beam removal: %s",
+                 ", ".join(f"{k} {v} px" for k, v in sorted(removed_by.items())))
+    return out
+
+
+def _remove_spikes(cls: np.ndarray) -> np.ndarray:
+    """Kill interference beams: thin straight rays radiating from a radar.
+
+    'Thin residue' = echo minus a 3x3 opening, i.e. anything under 3 px thick.
+    Probabilistic Hough finds straight lines in it, which also bridges the
+    dashed beams. A candidate is removed only if it is both outside thick
+    (real) echo and radially aligned with a known antenna — the geometric
+    prior that makes this safe. Detection is deliberately more sensitive than
+    it used to be, because the radial test now does the discriminating.
     """
     try:
         from scipy import ndimage
         from skimage.transform import probabilistic_hough_line
         from skimage.draw import line as skline
     except ImportError:
-        log.warning("scipy/skimage missing — beam removal skipped")
+        log.warning("scipy/skimage missing - beam removal skipped")
         return cls
     echo = cls > 0
     if not echo.any():
@@ -384,26 +522,33 @@ def _remove_spikes(cls: np.ndarray) -> np.ndarray:
     thin = echo & ~opened
     if thin.sum() < 30:
         return cls
-    segs = probabilistic_hough_line(thin, threshold=15, line_length=35, line_gap=8)
+    segs = probabilistic_hough_line(thin, threshold=10, line_length=25, line_gap=6)
     if not segs:
         return cls
+
+    sites = _site_pixels()
     kill = np.zeros_like(echo)
-    kept = 0
+    hits = {}
     for (x0, y0), (x1, y1) in segs:
-        rr, cc = skline(y0, x0, y1, x1)
+        rr, cc = skline(int(y0), int(x0), int(y1), int(x1))
         rr = np.clip(rr, 0, echo.shape[0] - 1)
         cc = np.clip(cc, 0, echo.shape[1] - 1)
-        if thick[rr, cc].mean() < 0.25:
-            kill[rr, cc] = True
-            kept += 1
-    if not kept:
+        if thick[rr, cc].mean() >= 0.25:
+            continue                      # sitting inside real echo
+        src = _radial_source(x0, y0, x1, y1, sites)
+        if src is None:
+            continue                      # straight, but not pointing at a radar
+        kill[rr, cc] = True
+        hits[src] = hits.get(src, 0) + 1
+    if not hits:
         return cls
     kill = ndimage.binary_dilation(kill, structure=np.ones((5, 5)))
     out = cls.copy()
     out[kill & thin] = 0
-    log.info("beam removal: %d segments, %d px", kept, int((kill & thin).sum()))
+    log.info("beam removal: %d px from %s",
+             int((kill & thin).sum()),
+             ", ".join(f"{k} x{v}" for k, v in sorted(hits.items())))
     return out
-
 
 def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
     """Remove isolated pixels & thin spikes (cone-beam artifacts):
@@ -501,7 +646,7 @@ def radar_composite(frames_back: int = 3) -> None:
             votes = sum((c[0] > 0).astype(np.uint8) for c in cls_stack
                         if c[0].shape == cur.shape)
             cur = np.where(votes >= 2, cur, 0).astype(np.uint8)
-        cur = _remove_spikes(_despeckle(cur))
+        cur = _remove_beams_polar(_remove_spikes(_despeckle(cur)))
         colored = np.array(_recolor(cur))
         warped = P.resample_mercator_image(colored, f0["sw"], f0["ne"])
         canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
@@ -649,7 +794,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                 if cls is None:
                     continue
                 warped = P.resample_mercator_image(
-                    np.array(_recolor(_remove_spikes(_despeckle(cls)))),
+                    np.array(_recolor(_remove_beams_polar(_remove_spikes(_despeckle(cls))))),
                     best["sw"], best["ne"])
                 canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
                 got = True
