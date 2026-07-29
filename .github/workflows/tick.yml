@@ -30,6 +30,17 @@ jobs:
         # map rendering and would add ~30 s to every hourly run.
         run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image
 
+      # GitHub delays scheduled runs heavily on this repo — the twice-daily
+      # models workflow has fired as much as 90 min late, and a missed pass
+      # leaves the maps on yesterday's model run, where the current day is
+      # only covered every 3 h instead of hourly. The hourly tick fires far
+      # more reliably, so let it notice and repair that. Normally this is one
+      # small JSON GET and nothing else runs.
+      - name: Map staleness check
+        id: stale
+        continue-on-error: true
+        run: python jobs/check_maps_stale.py
+
       - name: Observations
         # METAR (incl. the only observed cloud base), LVGMC, meteo.lt, EE XML.
         # Each source is isolated inside the script; one dead feed is not fatal.
@@ -59,3 +70,26 @@ jobs:
                                 # and 12 h means a throttled cron's gap is
                                 # repaired within the hour, not next sweep
         run: python jobs/run_radar_backfill.py
+
+      # Only when the models pass was missed. Costs nothing on a normal tick.
+      - name: Map dependencies (stale only)
+        if: always() && steps.stale.outputs.maps == '1'
+        run: pip install netCDF4 matplotlib
+      - name: MEPS maps (stale catch-up)
+        if: always() && steps.stale.outputs.maps == '1'
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_maps.py
+      - name: UM maps (stale catch-up)
+        if: always() && steps.stale.outputs.maps == '1'
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_um_maps.py
