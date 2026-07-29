@@ -46,7 +46,7 @@ fcst as (
       ('t2m', f.t2m), ('td2m', f.td2m), ('rh', f.rh),
       ('ws10m', f.ws10m), ('wg10m', f.wg10m), ('wdir', f.wdir),
       ('prcp_1h', f.prcp_1h), ('pres_msl', f.pres_msl),
-      ('cc_total', f.cc_total), ('cb', f.cb_lcl)
+      ('cc_total', f.cc_total), ('cb', f.cb)
     ) as u(parameter, value)
   where f.valid_time >= now() - interval '%(days)s days'
     and f.valid_time <= now()
