@@ -868,10 +868,14 @@ function mepsSrc(iso){
 // Days 3-7: MEPS stops at +66 h. GFS carries a gridded cloud ceiling — the
 // same quantity — much further, at 0.25 deg and every 6 h, so it fills the
 // tail of the week. Carried forward up to 6 h between frames.
-function gfsSrc(iso, thr){
+function gfsSrc(iso, _thr){
   const gfs=MV.loaded.gfs;
   if(!gfs) return null;
-  const ts=Date.parse(iso), step=(gfs.step_h||6)*3600e3;
+  // GFS renders its own threshold set (MEPS also has 650, which no dropdown
+  // entry maps to), so pick from the manifest rather than reusing MEPS's.
+  const want=+document.getElementById("selCb").value;
+  const thr=(gfs.thresholds||[want]).reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
+  const ts=Date.parse(iso), step=(gfs.step_h||3)*3600e3;
   let best=null;
   for(const h of gfs.hours){
     const d=ts-Date.parse(h);
@@ -882,7 +886,7 @@ function gfsSrc(iso, thr){
             cap:"GFS 0.25° · long range"};
   const arch=MV.loaded.gfsArchive?.hours;
   if(arch){
-    for(let back=0; back<=(gfs.step_h||6); back++){
+    for(let back=0; back<=(gfs.step_h||3); back++){
       const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
       const run=arch[vtagOf(t)];
       if(run) return {url:`${MAPS_BASE}/maps/gfs/${run}/${vtagOf(t)}_alt${thr}.png${vq(gfs)}`,

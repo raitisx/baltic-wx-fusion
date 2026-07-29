@@ -139,6 +139,21 @@ def _to_3059(vals: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> np.ndarray
     return vals[jy, ix]
 
 
+# Only the limits the UI can actually select. MEPS also renders 650, which no
+# dropdown entry maps to, and every extra threshold is another render+upload
+# on every lead.
+GFS_THRESHOLDS = [100, 300, 700, 1000]
+# GFS publishes hourly to +120 h and 3-hourly beyond, so follow that rather
+# than settling for the coarser cadence throughout: hourly maps are the point.
+HOURLY_TO = 120
+
+
+def leads_for(start_lead: int, end_lead: int) -> list[int]:
+    hourly = list(range(start_lead, min(end_lead, HOURLY_TO) + 1))
+    coarse = [h for h in range(HOURLY_TO + 3, end_lead + 1, 3)]
+    return hourly + coarse
+
+
 def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None:
     """Render ceiling + precipitation frames for the far end of the week."""
     import matplotlib
@@ -181,7 +196,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
                 ax.plot(px, py, color="#55503f", lw=0.9, solid_capstyle="round")
 
     hours_out = []
-    for lead in range(start_lead, end_lead + 1, step):
+    for lead in leads_for(start_lead, end_lead):
         try:
             recs = _index(run, lead)
             ceil = _fetch_field(run, lead, recs,
@@ -200,13 +215,13 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         cb = np.where(ceil < NO_CEILING_M, ceil, np.nan)
         # APCP is an accumulation over the interval since the last reset;
         # divide to an average rate so the greens mean mm/h as on MEPS.
-        hrs = accum_hours(acc_fcst, step) if acc is not None else step
+        hrs = accum_hours(acc_fcst, 1) if acc is not None else 1
         pr = np.clip(acc, 0, None) / max(hrs, 1) if acc is not None else None
         prm = np.where(pr >= 0.1, pr, np.nan) if pr is not None else None
 
         valid = run + dt.timedelta(hours=lead)
         vtag = valid.strftime("%Y%m%dT%H")
-        for thr in THRESHOLDS:
+        for thr in GFS_THRESHOLDS:
             fig, ax = blank_fig()
             below = np.where(np.isfinite(cb) & (cb < thr), 1.0, np.nan)
             ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
@@ -235,8 +250,8 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/gfs/latest.json",
                   Body=json.dumps({
                       "run": run_tag, "path": f"maps/gfs/{run_tag}",
-                      "hours": hours_out, "thresholds": THRESHOLDS,
-                      "proj": "epsg3059", "step_h": step,
+                      "hours": hours_out, "thresholds": GFS_THRESHOLDS,
+                      "proj": "epsg3059", "step_h": 3,
                       "credit": "NOAA GFS 0.25 deg via AWS Open Data",
                       "generated_at": now.isoformat()}).encode(),
                   ContentType="application/json",
