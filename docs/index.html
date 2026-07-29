@@ -795,7 +795,11 @@ function initStaticMap(){
       if(p.lat==null || !isStation(p)) continue;
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
       const [px,py]=metersToPx(mx,my);
-      const c=mk("circle",{cx:px,cy:py,r:15,fill:"#1c2c85","fill-opacity":0.55,stroke:"#fdf9ec","stroke-width":2});
+      // Small dot, large invisible hit area: the earlier "3x larger" was about
+      // being able to hit the thing, not about the ink. Twenty 30 px blobs
+      // buried the map they were drawn on.
+      mk("circle",{cx:px,cy:py,r:4.5,fill:"#1c2c85","fill-opacity":0.85,stroke:"#fdf9ec","stroke-width":1.5});
+      const c=mk("circle",{cx:px,cy:py,r:15,fill:"#000","fill-opacity":0});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
         ev.stopPropagation();
@@ -1058,7 +1062,8 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v25",
+    "page v26",
+    "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"—"),
