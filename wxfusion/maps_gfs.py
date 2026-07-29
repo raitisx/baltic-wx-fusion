@@ -40,6 +40,17 @@ S3_BASE = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 NO_CEILING_M = 15000.0
 
 
+def check_eccodes() -> str:
+    """Fail loudly and early if the GRIB reader is not usable.
+
+    The eccodes wheel bundles the C library, but if it ever does not, the
+    failure would otherwise surface once per lead inside a caught exception
+    and the job would exit green having produced nothing.
+    """
+    import eccodes as ec
+    return f"eccodes {ec.__version__} (library {ec.codes_get_api_version()})"
+
+
 def r2_client():
     if not (config.R2_ACCOUNT_ID and config.R2_ACCESS_KEY_ID):
         raise RuntimeError("R2 credentials not configured")
@@ -92,7 +103,7 @@ def accum_hours(fcst: str, default: int) -> int:
 
 def _fetch_field(run: dt.datetime, lead: int, recs, want, with_meta: bool = False):
     """Range-request one GRIB message and return it on the Baltic window."""
-    import eccodes as ec
+    import eccodes as ec  # noqa: F401 — see check_eccodes() for why this is fine
 
     hit = fcst = None
     for i, (off, var, lev, desc) in enumerate(recs):
@@ -164,10 +175,10 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
 
     from . import proj3059 as P
 
+    log.info("gfs: %s", check_eccodes())
     run = latest_run()
     if run is None:
-        log.warning("gfs: no published cycle found")
-        return
+        raise RuntimeError("gfs: no published cycle found on the AWS mirror")
     run_tag = run.strftime("%Y%m%dT%H")
     log.info("gfs: run %s, leads %d..%d", run_tag, start_lead, end_lead)
 
@@ -205,8 +216,9 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
                                lambda v, l: v == "APCP" and l == "surface",
                                with_meta=True)
             acc, acc_fcst = got if got else (None, "")
-        except Exception:
-            log.exception("gfs: lead +%dh failed", lead)
+        except Exception as exc:
+            log.error("gfs: lead +%dh failed: %s: %s", lead,
+                      exc.__class__.__name__, exc)
             continue
         if ceil is None:
             log.warning("gfs: no ceiling field at +%dh", lead)
@@ -243,8 +255,12 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         log.info("gfs: +%dh -> %s", lead, vtag)
 
     if not hours_out:
-        log.warning("gfs: nothing rendered")
-        return
+        # Every lead failing looks identical to "no work to do" unless we say
+        # so. Backfill #7 spent 2 m 18 s here, rendered nothing, and still
+        # reported success — which is how this went unnoticed.
+        raise RuntimeError(
+            f"gfs: {len(leads_for(start_lead, end_lead))} leads attempted, "
+            "none rendered — see the per-lead errors above")
 
     now = dt.datetime.now(dt.timezone.utc)
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/gfs/latest.json",

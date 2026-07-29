@@ -257,13 +257,13 @@ const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m
   precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
   wind_direction_10m:"wdir", pressure_msl:"pres_msl", cloud_cover:"cc_total",
   cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high"};
-async function fetchOpenMeteoDirect(lat, lon){
+async function fetchOpenMeteoDirect(lat, lon, pastDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
   u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
   u.searchParams.set("hourly", Object.keys(OM_VARS).join(","));
   u.searchParams.set("models", Object.values(OM_MODELS).join(","));
   u.searchParams.set("forecast_days", "7");
-  u.searchParams.set("past_days", "2");
+  u.searchParams.set("past_days", String(Math.min(Math.max(pastDays ?? 2, 2), 7)));
   u.searchParams.set("windspeed_unit", "ms");
   u.searchParams.set("timezone", "UTC");
   const r = await fetch(u);
@@ -322,11 +322,11 @@ function expandWide(rows){
 }
 // 10-minute memo so flipping weeks or points back and forth does not refetch.
 const OM_CACHE = {};
-async function openMeteoCached(lat, lon){
-  const key = `${lat},${lon}`, now = Date.now();
+async function openMeteoCached(lat, lon, pastDays){
+  const key = `${lat},${lon}|${pastDays??2}`, now = Date.now();
   const hit = OM_CACHE[key];
   if(hit && now - hit.at < 600e3) return hit.rows;
-  const rows = await fetchOpenMeteoDirect(lat, lon);
+  const rows = await fetchOpenMeteoDirect(lat, lon, pastDays);
   OM_CACHE[key] = {at:now, rows};
   return rows;
 }
@@ -362,6 +362,32 @@ function fuse(){
     const pv = (idx["prcp_1h"]||{})[ts] || {};
     const n = MODELS.filter(m=>pv[m]!=null).length;
     row.prcp_prob = n ? MODELS.filter(m=>(pv[m]??0)>=0.1).length/n : null;
+
+    // Ceiling needs a vote, not just an average. "No ceiling" is a real
+    // forecast, but it arrives as an absent value, so plain averaging let a
+    // single model with low cloud set the fused ceiling while the other three
+    // — including the one drawn on the map — said clear. That is exactly the
+    // meteogram/map disagreement: at cell 535/335 only ICON had a ceiling
+    // (275 m, 79% low cloud) while MEPS, IFS and GFS had none.
+    // So: count how much weight says a ceiling exists at all. Below half,
+    // there is no ceiling. At or above, average only those that have one.
+    const cv = (idx["cb"]||{})[ts] || {};
+    const cAll = MODELS.map(m=>{
+      const rt = runAt[`${m}|${ts}`] || ts;
+      const lead = Math.max(0, Math.round((ts - rt)/3600e3));
+      const hasAny = (idx["cb_lcl"]||{})[ts]?.[m] != null;   // model reported at all
+      return {m, w: wIdx[`${m}|cb|${leadBin(lead)}`] ?? 1, ceil: cv[m] ?? null, hasAny};
+    }).filter(x=>x.hasAny);
+    const wTot = cAll.reduce((a,x)=>a+x.w, 0);
+    const wCeil = cAll.filter(x=>x.ceil!=null).reduce((a,x)=>a+x.w, 0);
+    row.cb_agree = wTot ? wCeil/wTot : null;
+    if(!wTot || wCeil/wTot < 0.5){
+      row.cb = null; row.cb_sd = null;
+    }else{
+      const withC = cAll.filter(x=>x.ceil!=null);
+      row.cb = wmean(withC.map(x=>x.ceil), withC.map(x=>x.w));
+      row.cb_sd = wstd(withC.map(x=>x.ceil), row.cb);
+    }
     row.fog = row.rh!=null && row.rh>=97 && (row.cb??999)<100;
     FUSED.push(row);
   }
@@ -688,7 +714,7 @@ function render(){
       ["--precip","precip",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
-      ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")],
+      ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
     ];
     for(const [c,l,v] of rows){
@@ -1077,14 +1103,24 @@ async function load(){
     // twice-daily cadence without the page ever showing a stale run.
     if(pt && pt.lat!=null && wEnd.getTime()>now){
       const cutoff = now - 3600e3;   // keep DB rows strictly in the past
+      // A cell picked off the map has no stored history — it only joined the
+      // pipeline when you clicked it — so the past half of the week would be
+      // empty. Ask Open-Meteo for enough past days to cover the visible week
+      // and use them only where the database has nothing. Those hours are a
+      // current-run hindcast, not what we knew at the time, so they fill the
+      // picture without ever overwriting real archived rows.
+      const pastDays = Math.ceil((now - weekStart.getTime())/86400e3);
       try{
-        const live=(await openMeteoCached(pt.lat, pt.lon)).filter(e=>{
-          const t=Date.parse(e.t);
-          return t>=cutoff && t>=weekStart.getTime() && t<wEnd.getTime();
-        });
-        if(live.length){
-          FC=FC.filter(e=>Date.parse(e.t)<cutoff).concat(live);
-          liveSource="db+live";
+        const all = await openMeteoCached(pt.lat, pt.lon, pastDays);
+        const inWeek = e=>{const t=Date.parse(e.t);
+          return t>=weekStart.getTime() && t<wEnd.getTime();};
+        const live = all.filter(e=>inWeek(e) && Date.parse(e.t)>=cutoff);
+        const haveDb = new Set(FC.map(e=>`${e.m}|${e.p}|${Date.parse(e.t)}`));
+        const gapFill = all.filter(e=>inWeek(e) && Date.parse(e.t)<cutoff
+                          && !haveDb.has(`${e.m}|${e.p}|${Date.parse(e.t)}`));
+        if(live.length || gapFill.length){
+          FC=FC.filter(e=>Date.parse(e.t)<cutoff).concat(gapFill, live);
+          liveSource = gapFill.length ? "db+live+hindcast" : "db+live";
         }
       }catch(_){/* live layer is best-effort; DB rows still render */}
     }
@@ -1093,7 +1129,7 @@ async function load(){
     const runs={};
     for(const e of FC){ if(!runs[e.m]||e.run>runs[e.m]) runs[e.m]=e.run; }
     const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
-    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="db+live"?" · live from now on":""} · newest runs: ${runTxt}`;
+    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="db+live"?" · live from now on":liveSource==="db+live+hindcast"?" · live + hindcast for gaps":""} · newest runs: ${runTxt}`;
   }catch(e){
     err.hidden=false;
     err.textContent="Failed to load data: "+e.message;
