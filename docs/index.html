@@ -13,6 +13,7 @@
     --wind:#2b48d9; --gust:#d92f2f; --cloud:#2b2b28; --fog:#e0a300;
     --threshold:#cc2222; --belowzone:rgba(217,47,47,.10);
     --ok:#2e9e2e; --marginal:#e0a300; --nofly:#d92f2f;
+    --now:#0f9d3a;
   }
   html,body{margin:0;padding:0}
   body{
@@ -193,6 +194,8 @@ const fmtDay  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day
 const fmtDM   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"2-digit",month:"2-digit"});
 const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtWd   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short"});
+const fmtNowTab = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",
+  day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 function rigaHour(d){ return parseInt(fmtHour.format(d),10); }
 function rigaMidnight(d){
   const h = rigaHour(d), m = d.getUTCMinutes(), s = d.getUTCSeconds();
@@ -401,6 +404,41 @@ function svgEl(name,attrs,parent){
   if(parent) parent.appendChild(el);
   return el;
 }
+// "Now" marker: one green line spanning every panel, with the Riga date and
+// time in a tab at the top. Drawn last so it sits above the curves, and
+// repositioned on a timer rather than only at render — the page is often left
+// open for hours while planning.
+let nowTimer=null;
+function drawNowLine(svg, plotTop, plotBottom){
+  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const g=svgEl("g",{},svg);
+  const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:"#fffdf4","stroke-width":4,"stroke-opacity":.75},g);
+  const line=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--now"),"stroke-width":1.8},g);
+  const tabW=104, tabH=13;
+  const tab=svgEl("rect",{y:plotTop-tabH,width:tabW,height:tabH,rx:2,fill:css("--now"),"fill-opacity":.92},g);
+  const lbl=svgEl("text",{y:plotTop-3.5,"font-size":"9","font-weight":"700",fill:"#fffdf4"},g);
+
+  const place=()=>{
+    const now=Date.now(), t0=FUSED[0]?.ts;
+    if(t0==null) return;
+    const t1=t0+HOURS*3600e3;
+    if(now<t0 || now>t1){ g.setAttribute("visibility","hidden"); return; }
+    g.setAttribute("visibility","visible");
+    const x=xPos(now);
+    for(const el of [halo,line]){ el.setAttribute("x1",x); el.setAttribute("x2",x); }
+    // keep the tab inside the plot at either end of the week
+    const tx=Math.min(Math.max(x-tabW/2, P.left), P.width-P.right-tabW);
+    tab.setAttribute("x",tx);
+    lbl.setAttribute("x",tx+5);
+    lbl.textContent=fmtNowTab.format(new Date());
+  };
+  place();
+  clearInterval(nowTimer);
+  nowTimer=setInterval(()=>{
+    if(!svg.isConnected){ clearInterval(nowTimer); nowTimer=null; return; }
+    place();
+  }, 30000);
+}
 function linePath(rows, key, y){
   let d="", pen=false;
   for(const r of rows){
@@ -604,10 +642,7 @@ function render(){
     t.textContent=String(r.hourOfDay).padStart(2,"0");
   }
 
-  const now=Date.now();
-  if(now>FUSED[0].ts && now<FUSED[0].ts+HOURS*3600e3){
-    svgEl("line",{x1:xPos(now),x2:xPos(now),y1:plotTop,y2:plotBottom,stroke:"#6b6552","stroke-width":1,"stroke-dasharray":"2 3"},svg);
-  }
+  drawNowLine(svg, plotTop, plotBottom);
 
   const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:plotBottom,stroke:"#6b6552","stroke-width":1,visibility:"hidden"},svg);
   const tip=document.getElementById("tip");
@@ -938,7 +973,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v22",
+    "page v23",
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "um4: "+(MV.loaded.um4?MV.loaded.um4.hours.length+"h":"—"),
