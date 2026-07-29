@@ -65,6 +65,15 @@ jobs:
           OBS_ARCHIVE_MAX: "40"
         run: python jobs/run_obs_archive.py
 
+      # Must precede pairing: it is what precipitation gets scored against.
+      - name: Radar verification (radar -> point observations)
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          RADAR_VERIFY_HOURS: "48"
+        run: python jobs/run_radar_verify.py
+
       - name: Pairing (once a day, morning pass)
         if: always() && steps.gate.outputs.pairing == '1'
         env:

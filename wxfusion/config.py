@@ -11,6 +11,10 @@ R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET = os.environ.get("R2_BUCKET", "baltic-wx")
+# Public read path for the bucket. Used where we consume our own imagery
+# (radar verification) rather than write it, so no credentials are needed.
+MAPS_BASE = os.environ.get(
+    "MAPS_BASE", "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev")
 
 # --- Identification --------------------------------------------------------
 # Honest UA on every request. Put a reachable contact address here.

@@ -25,7 +25,11 @@ with obs as (
          avg(u.value) as value
   from wx.observations_h o
   join wx.points p
-    on p.kind = o.source and p.station_id = o.station_id
+    -- Station feeds are keyed by (kind, station_id); radar-derived rows are
+    -- sampled at a point and keyed by point_id directly, so they verify every
+    -- forecast point rather than only the ones with an instrument.
+    on (p.kind = o.source and p.station_id = o.station_id)
+    or (o.source = 'radar' and p.point_id = o.station_id)
   cross join lateral (values
       ('t2m', o.t2m), ('td2m', o.td2m), ('rh', o.rh),
       ('ws10m', o.ws10m), ('wg10m', o.wg10m), ('wdir', o.wdir),
