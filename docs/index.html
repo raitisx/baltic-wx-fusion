@@ -761,7 +761,11 @@ function renderTable(){
 const CELL=25000;
 let smapMarker=null, smapCell=null, selectedCell=null;
 function metersToPx(x,y){ return [(x-GX0)/(GX1-GX0)*570, (GY1-y)/(GY1-GY0)*690]; }
-function isStation(p){ return !String(p.point_id).startsWith("v_"); }
+// Stations get dots and can be picked. Verification cells (g_*) are sampling
+// points for the model ranking, not places you would choose, so they stay out
+// of the map and the caption. User-picked cells (v_*) are handled separately.
+function isStation(p){ const id=String(p.point_id);
+  return !id.startsWith("v_") && !id.startsWith("g_"); }
 function cellAt(mx,my){
   const cx=Math.floor((mx-GX0)/CELL), cy=Math.floor((my-GY0)/CELL);
   return {cx, cy,

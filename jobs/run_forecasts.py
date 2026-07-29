@@ -19,7 +19,10 @@ from wxfusion.ingest import openmeteo  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("run_forecasts")
 
-KEEP_DAYS = int(os.environ.get("FORECAST_KEEP_DAYS", "60"))
+# Forecasts only need to survive until the hour they describe has passed and
+# been scored — a fortnight covers the longest lead plus slack. The distilled
+# comparisons are kept far longer; see run_pairing.
+KEEP_DAYS = int(os.environ.get("FORECAST_KEEP_DAYS", "14"))
 
 
 def main() -> int:

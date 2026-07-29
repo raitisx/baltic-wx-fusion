@@ -4,11 +4,11 @@ One request per batch of points fetches all configured models at once
 (Open-Meteo suffixes variables with the model id). Full grids intentionally
 NOT ingested in Phase 1 — see README.
 
-run_time caveat: Open-Meteo does not expose the underlying model run time, so
-we stamp run_time = retrieval hour (UTC). That is what the forecast "knew" at
-retrieval, which is exactly the decision-time semantics the "why we didn't
-fly" report needs. True model cycle times can be added later via the
-raw-GRIB path.
+run_time: Open-Meteo does not expose which model run a value came from, so we
+deduce it from the fetch time and each centre's published schedule — see
+model_cycle() at the foot of this module. Stamping the fetch hour instead
+(what we did originally) smeared the lead-time buckets by up to 10 hours,
+which is exactly what the skill weighting is binned on.
 """
 from __future__ import annotations
 
@@ -45,6 +45,30 @@ HOURLY_VARS = {
 CEILING_COVER = float(os.environ.get("CEILING_COVER", "60"))
 
 
+# --- model cycle estimation -------------------------------------------------
+# Open-Meteo does not tell us which model run a value came from, so we used to
+# stamp run_time = the hour we fetched. That is wrong by hours and it smears
+# the lead-time buckets that the whole skill weighting rests on: a "6 hour
+# ahead" forecast fetched at 04:00 from the 00Z run is really 6 h ahead of the
+# run, but if IFS's 00Z run only published at 07:00 we cannot have had it yet.
+#
+# Each centre runs on a fixed schedule and publishes after a fairly stable
+# delay, so the newest run we *could* have received is deducible from the
+# fetch time. Still an estimate, but hours closer than pretending fetch time
+# is run time.
+CYCLE_HOURS = {"icon": 6, "meps": 3, "ifs": 6, "gfs": 6}
+PUBLISH_DELAY_H = {"icon": 4, "meps": 2, "ifs": 8, "gfs": 5}
+
+
+def model_cycle(model: str, fetched_at: dt.datetime) -> dt.datetime:
+    """Newest run of `model` that could already have been published."""
+    cycle = CYCLE_HOURS.get(model, 6)
+    delay = PUBLISH_DELAY_H.get(model, 5)
+    t = fetched_at - dt.timedelta(hours=delay)
+    return t.replace(minute=0, second=0, microsecond=0,
+                     hour=(t.hour // cycle) * cycle)
+
+
 def lcl_height(t2m: float, td2m: float) -> float:
     """Lifted condensation level in m AGL (Espy approximation)."""
     return max(0.0, 125.0 * (t2m - td2m))
@@ -54,9 +78,7 @@ def fetch(points: list[dict]) -> list[tuple]:
     """points: dicts with point_id/lat/lon. Returns wx.forecasts rows."""
     if not points:
         return []
-    run_time = dt.datetime.now(dt.timezone.utc).replace(
-        minute=0, second=0, microsecond=0
-    )
+    fetched_at = dt.datetime.now(dt.timezone.utc)
     s = session()
     rows: list[tuple] = []
     # Open-Meteo supports comma-separated multi-location requests.
@@ -86,6 +108,9 @@ def fetch(points: list[dict]) -> list[tuple]:
             for t in hourly.get("time", [])
         ]
         for our_model, om_model in config.OPENMETEO_MODELS.items():
+            # Each centre is on its own schedule, so the run behind this data
+            # differs per model even though we fetched them together.
+            run_time = model_cycle(our_model, fetched_at)
             # collect per-variable arrays for this model
             series: dict[str, list] = {}
             for om_var, param in HOURLY_VARS.items():
