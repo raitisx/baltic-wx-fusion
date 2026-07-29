@@ -14,6 +14,7 @@ on:
           - forecast-archive
           - obs-archive
           - um-archive
+          - gfs-maps
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -71,6 +72,7 @@ jobs:
             forecast-archive) pip install pyarrow boto3 ;;
             obs-archive)      pip install pyarrow boto3 ;;
             um-archive)       pip install boto3 ;;
+            gfs-maps)         pip install eccodes matplotlib numpy pillow pyproj boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -139,3 +141,12 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
         run: python jobs/run_um_reindex.py
+
+      - name: GFS long-range maps -> R2
+        if: inputs.target == 'gfs-maps'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_gfs_maps.py
