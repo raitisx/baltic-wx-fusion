@@ -42,6 +42,12 @@ BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 GWC = "https://mapy.meteo.pl/geoserver/gwc/service/wms"
 ZOOM = 6
 TILE_SLEEP = 0.3
+# meteo.pl's DIM_FORECAST is 1-based: DIM_FORECAST=1 is the run's first
+# forecast hour, i.e. valid at run+0, so labelling it run+1 put every UM frame
+# an hour late. Confirmed two ways — the trailing was visible against MEPS,
+# and cross-correlating UM precipitation against the radar archive over the
+# frames we have peaks at -1 h (mean IoU 0.030 vs 0.019 at 0 and 0.026 at +1).
+UM_LEAD_OFFSET = 1
 
 RADAR_PAGE = "https://www.meteolapa.lv/radars"
 RADAR_BASE = "https://www.meteolapa.lv"
@@ -225,7 +231,7 @@ def um_run(hours: list[int] | None = None) -> None:
                     pts = list(zip(px.tolist(), py.tolist()))
                     d.line(pts, fill=(247, 241, 226, 230), width=3)
                     d.line(pts, fill=(85, 80, 63, 255), width=1)
-            valid = run + dt.timedelta(hours=h)
+            valid = run + dt.timedelta(hours=h - UM_LEAD_OFFSET)
             vtag = valid.strftime("%Y%m%dT%H")
             buf = io.BytesIO()
             img.save(buf, "PNG", optimize=True)
