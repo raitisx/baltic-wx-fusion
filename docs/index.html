@@ -898,24 +898,32 @@ function gfsSrc(iso, _thr){
 // meteo.pl's 1.5 km layer covers Poland only — every frame came back
 // transparent over the Baltic bbox — so 4 km is the only useful resolution.
 const UM_RES="um4";
+const UM_CARRY_H=6;
 function umSrc(iso){
   const res=UM_RES;
   const um=MV.loaded[res];
   if(!um) return null;
-  // meteo.pl publishes every 2 h, so carry the previous frame forward rather
-  // than showing a hole (up to 3 h back).
+  // UM spacing widens with lead: hourly to +24 h, then 3-hourly, then
+  // 6-hourly past +78 h. Carrying only 3 h forward left the 6-hourly range
+  // with two empty hours after every frame, which reads as broken images
+  // rather than as a coarser model. Carry to the widest spacing and say how
+  // old the frame is.
   const ts=Date.parse(iso);
   let best=null;
   for(const h of um.hours){
     const d=ts-Date.parse(h);
-    if(d>=0 && d<=3*3600e3 && (best===null || Date.parse(h)>Date.parse(best))) best=h;
+    if(d>=0 && d<=UM_CARRY_H*3600e3 && (best===null || Date.parse(h)>Date.parse(best))) best=h;
   }
-  if(best) return {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`};
+  if(best){
+    const age=Math.round((ts-Date.parse(best))/3600e3);
+    return {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`,
+            cap: age ? `+${age} h old` : ""};
+  }
   // Past hours: the current run does not reach back, but earlier runs' frames
   // are still in the bucket — the archive index says which run owns each hour.
   const arch=MV.loaded[res+"Archive"]?.hours;
   if(arch){
-    for(let back=0; back<=3; back++){
+    for(let back=0; back<=UM_CARRY_H; back++){
       const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
       const run=arch[vtagOf(t)];
       if(run) return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(t)}.png${vq(um)}`,
@@ -952,7 +960,9 @@ function mapShow(i){
   if(m){ mImg.style.opacity="1"; document.getElementById("mepsTime").textContent=m.cap; mImg.src=m.url; }
   else { mImg.style.opacity="0.15"; document.getElementById("mepsTime").textContent="no frame for this hour"; }
   const u=umSrc(iso), uImg=document.getElementById("imgUm");
-  if(u){ uImg.style.opacity="1"; uImg.src=u.url; } else uImg.style.opacity="0.12";
+  const uCap=document.getElementById("umTime");
+  if(u){ uImg.style.opacity="1"; uImg.src=u.url; if(uCap) uCap.textContent=u.cap||""; }
+  else { uImg.style.opacity="0.12"; if(uCap) uCap.textContent="no frame for this hour"; }
   const rd=radarSrc(iso), rImg=document.getElementById("imgRadar");
   if(rd){ rImg.style.opacity="1"; rImg.src=rd.url; document.getElementById("radarTime").textContent=fmtDT.format(rd.time); }
   else { rImg.style.opacity="0.12"; document.getElementById("radarTime").textContent="no frame for this hour"; }
