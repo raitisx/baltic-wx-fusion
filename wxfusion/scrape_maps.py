@@ -627,8 +627,11 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
 # approximate or because the published antenna coordinate is, and at 100 km a
 # 12 km miss smears the ray across enough azimuth bins to hide it from the
 # polar test entirely. That is what was left of the 05:00 fan on 29 July.
-LINE_MIN_KM = 45        # shortest line worth considering
-LINE_GAP_KM = 12        # beams are dashed; bridge gaps this big
+LINE_MIN_KM = 40        # shortest line worth considering
+# Beams are dashed, and the faint ones are barely more than a dotted line: the
+# Harku ray that survived the first version put 127 px on the map over 56 km.
+# A 12 km gap tolerance did not join it into anything Hough would report.
+LINE_GAP_KM = 18
 LINE_MAX_WIDTH_KM = 18  # a corridor wider than this is weather
 LINE_ELONG = 10.0       # ... and it must be this many times longer than wide
 # And it must stand alone. Light stratiform rain draws long narrow filaments
@@ -654,7 +657,7 @@ def _remove_beam_lines(cls: np.ndarray) -> np.ndarray:
     echo = cls > 0
     if echo.sum() < BEAM_MIN_PX:
         return cls
-    segs = probabilistic_hough_line(echo, threshold=8,
+    segs = probabilistic_hough_line(echo, threshold=6,
                                     line_length=LINE_MIN_KM, line_gap=LINE_GAP_KM,
                                     rng=0)
     if not segs:
