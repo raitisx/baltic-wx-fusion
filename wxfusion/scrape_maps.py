@@ -489,93 +489,123 @@ def _radial_source(x0, y0, x1, y1, sites):
     return None
 
 
-N_AZ = 720          # 0.5 deg azimuth bins
-R_MIN_KM, R_MAX_KM = 8, 300
-BEAM_COVER = 0.40   # fraction of the ray's range bins that must hold echo
-BEAM_RATIO = 3.0    # ... and how far above the neighbouring azimuths
-WIDE_AZ_BINS = 12   # echo spanning >6 deg at a given range is weather, not a beam
-STRONG_CLASS = 4    # interference is weak and flat; a bright core is real
+# A beam is a wedge from an antenna: long in range, a fixed few degrees wide,
+# and therefore many times longer than it is broad. These four numbers are the
+# whole test. 300 km used to bound the search, on the assumption that a radar's
+# own range bounds where its artefacts appear. It does not: the composite spans
+# the whole Baltic and the Latgale streak of 29 July ran from 180 km out to
+# 380 km from Riga.
+N_AZ = 720              # 0.5 deg azimuth bins
+R_MAX_KM = 600          # a site further than this cannot be the source
+BEAM_MIN_PX = 150       # too little echo to judge anything by
+BEAM_GAP_KM = 15        # dashes this far apart along a ray count as one beam
+BEAM_MIN_LEN_KM = 80    # radial extent before a blob can be a beam
+BEAM_MAX_DEG = 12.0     # azimuthal width of a beam, in degrees
+BEAM_ELONG = 5.0        # ... and how many times longer than wide it must be
+# And it has to start at the antenna. This is what separates a beam from a rain
+# band that happens to lie radially: measured over a week of frames, every
+# beam-shaped blob began within 150 km of its site, while the elongated blobs
+# that were real weather all sat 270 km or more out — radial by coincidence,
+# seen from a distant radar, not emanating from one.
+BEAM_START_KM = 150
 
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
-    """Remove interference spikes using the geometry that defines them.
+    """Remove interference cones by the shape that defines them.
 
-    A spike is a single azimuth from one antenna lit up along most of its
-    range, while its neighbouring azimuths are empty. That is very hard to
-    confuse with weather, and unlike a thinness test it does not care how many
-    pixels wide the ray happens to render — which is why the previous
-    thin-residue approach missed these: at 3+ px they survived the opening and
-    were never even considered.
+    An interference ray is a wedge: it starts at an antenna, runs outward a
+    long way, and stays a fixed few degrees wide the whole time — so it grows
+    broader in kilometres the further out it goes, which is exactly what the
+    eye reads as a cone radiating from the radar. Nothing meteorological has
+    that shape.
 
-    Real echo is protected two ways: an azimuth only counts as a spike if it
-    stands well clear of its neighbours, and within a flagged azimuth a pixel
-    is only dropped if the echo at that range does not also extend across
-    several degrees either side.
+    The work is done in polar coordinates around each known antenna, where a
+    beam is simply a long thin horizontal bar. Four numbers decide: where the
+    echo starts in range, how far it runs, how many degrees of azimuth it
+    covers, and how many times longer than wide that makes it.
+
+    Two earlier attempts failed on the Latgale streak of 29 July, both for the
+    same reason — they measured statistics instead of shape:
+
+      * the thinness test never saw it, because the wedge renders 3+ px wide
+        and survived the 3x3 opening;
+      * the per-azimuth cover test compared each ray against a 13-bin median
+        window, and the streak was 10 bins wide, so it set its own baseline:
+        144 km of range lit against a "background" of 108. Widening that
+        window started eating real rain instead, because a long ray through a
+        big rain area also stands above its neighbours. Length and prominence
+        do not separate the two. Shape does.
+
+    Working in polar space also closes gaps along the ray first, which matters
+    because these beams are often dashed — as separate Cartesian blobs each
+    dash is too short to judge, and every one of them slipped through.
+
+    Brightness is deliberately not consulted. The old rule spared any ray
+    carrying a bright core, and this streak had one down its axis, so it was
+    protected by the very test meant to protect weather.
     """
     try:
         from scipy import ndimage
     except ImportError:
-        log.warning("scipy missing - polar beam removal skipped")
+        log.warning("scipy missing - beam removal skipped")
         return cls
 
     echo = cls > 0
-    if echo.sum() < 200:
+    if echo.sum() < BEAM_MIN_PX:
         return cls
     h, w = cls.shape
     yy, xx = np.mgrid[0:h, 0:w]
     out = cls.copy()
-    removed_by = {}
+    removed = []
 
     for name, sx, sy in _site_pixels():
-        dx, dy = xx - sx, yy - sy
-        rng = np.hypot(dx, dy)
-        in_range = (rng >= R_MIN_KM) & (rng <= R_MAX_KM)
-        if not in_range.any():
+        lit = out > 0
+        if lit.sum() < BEAM_MIN_PX:
+            break
+        rng = np.hypot(xx - sx, yy - sy)
+        keep = lit & (rng <= R_MAX_KM)
+        if keep.sum() < BEAM_MIN_PX:
             continue
-        az = ((np.arctan2(dy, dx) + np.pi) / (2 * np.pi) * N_AZ).astype(int) % N_AZ
-        rb = rng.astype(int)
+        az = ((np.arctan2(yy - sy, xx - sx) + np.pi) / (2 * np.pi) * N_AZ).astype(int) % N_AZ
+        rb = np.clip(rng.astype(int), 0, R_MAX_KM)
 
-        cur = out > 0
-        lit = cur & in_range
-        if lit.sum() < 50:
-            continue
-        # how much of each ray carries echo
-        counts = np.bincount(az[lit], minlength=N_AZ).astype(float)
-        totals = np.bincount(az[in_range], minlength=N_AZ).astype(float)
-        cover = counts / np.maximum(totals, 1)
-        # neighbourhood background, wrapping at north
-        bg = ndimage.median_filter(cover, size=13, mode="wrap")
-        spike = (cover > BEAM_COVER) & (cover > bg * BEAM_RATIO + 0.04)
-        if not spike.any():
-            continue
-        spike = ndimage.binary_dilation(spike, np.ones(3), border_value=0)
-
-        # azimuthal width of echo at each range, to spare genuine weather
         occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
-        occ[az[lit], rb[lit]] = True
-        wide = ndimage.uniform_filter(
-            occ.astype(float), size=(WIDE_AZ_BINS, 5), mode="wrap") > 0.45
-
-        # Never take a bright core, and leave whole rays alone when they
-        # carry one — a squall line can lie radially by chance, and losing
-        # real convection is far worse than leaving a streak on the map.
-        strong_az = np.zeros(N_AZ, bool)
-        strong = lit & (out >= STRONG_CLASS)
-        if strong.any():
-            strong_az[np.unique(az[strong])] = True
-            strong_az = ndimage.binary_dilation(strong_az, np.ones(5), border_value=0)
-
-        cand = (lit & spike[az] & ~strong_az[az]
-                & ~wide[az, np.clip(rb, 0, R_MAX_KM)]
-                & (out < STRONG_CLASS))
-        if cand.sum() < 20:
+        occ[az[keep], rb[keep]] = True
+        # Bridge the dashes, along the ray only.
+        closed = ndimage.binary_closing(
+            occ, structure=np.ones((1, BEAM_GAP_KM), bool))
+        lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
+        if n == 0:
             continue
-        out[cand] = 0
-        removed_by[name] = int(cand.sum())
 
-    if removed_by:
-        log.info("polar beam removal: %s",
-                 ", ".join(f"{k} {v} px" for k, v in sorted(removed_by.items())))
+        kill_bins = np.zeros((N_AZ, R_MAX_KM + 1), bool)
+        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+            a0, a1 = sl[0].start, sl[0].stop
+            r0, r1 = sl[1].start, sl[1].stop
+            if r0 > BEAM_START_KM:
+                continue                       # not emanating from this antenna
+            r_span = r1 - r0
+            if r_span < BEAM_MIN_LEN_KM:
+                continue
+            a_span = (a1 - a0) * 360.0 / N_AZ
+            if a_span > BEAM_MAX_DEG:
+                continue
+            width_km = (r0 + r1) / 2.0 * np.radians(a_span)
+            if width_km <= 0 or r_span / width_km < BEAM_ELONG:
+                continue
+            kill_bins[sl] |= (lab[sl] == i)
+            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg")
+
+        if not kill_bins.any():
+            continue
+        # Only ever clear pixels that were lit; the closing was for detection.
+        gone = keep & kill_bins[az, rb]
+        if gone.sum() < BEAM_MIN_PX // 2:
+            continue
+        out[gone] = 0
+
+    if removed:
+        log.info("beam removal: %s", "; ".join(removed))
     return out
 
 
