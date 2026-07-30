@@ -619,6 +619,108 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
     return out
 
 
+# The line-based pass. A beam is a straight corridor of echo that points at an
+# antenna and stays narrow relative to its length. Unlike the polar pass this
+# does not assume the ray passes exactly through the antenna pixel — the fitted
+# line only has to point within RADIAL_TOL_KM of one. That matters: rays are
+# often a few kilometres off, either because the composite's georeferencing is
+# approximate or because the published antenna coordinate is, and at 100 km a
+# 12 km miss smears the ray across enough azimuth bins to hide it from the
+# polar test entirely. That is what was left of the 05:00 fan on 29 July.
+LINE_MIN_KM = 45        # shortest line worth considering
+LINE_GAP_KM = 12        # beams are dashed; bridge gaps this big
+LINE_MAX_WIDTH_KM = 18  # a corridor wider than this is weather
+LINE_ELONG = 10.0       # ... and it must be this many times longer than wide
+# And it must stand alone. Light stratiform rain draws long narrow filaments
+# that satisfy every shape test going, and enough of them point roughly at a
+# radar to matter — the first version of this pass ate 15% of a widespread
+# light-rain field. The difference is context: a beam sits in empty sky, a
+# filament sits inside a broader field of echo. So the flanks either side of
+# the corridor have to be nearly empty.
+LINE_FLANK_KM = 20      # how far out to look either side
+LINE_FLANK_MAX = 0.12   # and how much echo is allowed there
+LINE_KEEP_AREA = 400    # protect big blobs that are not themselves elongated
+LINE_KEEP_ELONG = 3.0
+
+
+def _remove_beam_lines(cls: np.ndarray) -> np.ndarray:
+    try:
+        from scipy import ndimage
+        from skimage.transform import probabilistic_hough_line
+    except ImportError:
+        log.warning("scipy/skimage missing - line beam removal skipped")
+        return cls
+
+    echo = cls > 0
+    if echo.sum() < BEAM_MIN_PX:
+        return cls
+    segs = probabilistic_hough_line(echo, threshold=8,
+                                    line_length=LINE_MIN_KM, line_gap=LINE_GAP_KM,
+                                    rng=0)
+    if not segs:
+        return cls
+
+    # Compact, chunky blobs are weather whatever lies across them.
+    lab, n = ndimage.label(echo, structure=np.ones((3, 3)))
+    protect = np.zeros(n + 1, bool)
+    for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+        m = (lab[sl] == i)
+        area = int(m.sum())
+        if area < LINE_KEEP_AREA:
+            continue
+        ys, xs = np.nonzero(m)
+        pts = np.c_[xs, ys].astype(float)
+        sv = np.linalg.svd(pts - pts.mean(0), full_matrices=False)[1]
+        if sv[1] > 1e-6 and sv[0] / sv[1] < LINE_KEEP_ELONG:
+            protect[i] = True
+
+    ys, xs = np.nonzero(echo)
+    pts = np.c_[xs, ys].astype(float)
+    sites = _site_pixels()
+    out = cls.copy()
+    killed = {}
+    for (x0, y0), (x1, y1) in segs:
+        p0 = np.array([x0, y0], float)
+        d = np.array([x1 - x0, y1 - y0], float)
+        length = float(np.hypot(*d))
+        if length < LINE_MIN_KM:
+            continue
+        d /= length
+        nrm = np.array([-d[1], d[0]])
+        src = _radial_source(x0, y0, x1, y1, sites)
+        if src is None:
+            continue                        # straight, but aimed at no antenna
+        t = (pts - p0) @ d
+        w = (pts - p0) @ nrm
+        near = (t >= -10) & (t <= length + 10) & (np.abs(w) <= 40)
+        if near.sum() < BEAM_MIN_PX // 2:
+            continue
+        # How wide the echo actually is around the line. A wedge is allowed to
+        # broaden with range, so the limit is relative to its length.
+        w85 = float(np.percentile(np.abs(w[near]), 85))
+        if w85 > min(LINE_MAX_WIDTH_KM, length / LINE_ELONG):
+            continue
+        half = w85 * 1.4 + 2
+        # Isolation: a beam has empty sky beside it.
+        flank = near & (np.abs(w) > half + 4) & (np.abs(w) <= half + 4 + LINE_FLANK_KM)
+        if flank.sum() / (2.0 * length * LINE_FLANK_KM) > LINE_FLANK_MAX:
+            continue
+        corridor = near & (np.abs(w) <= half)
+        idx = np.nonzero(corridor)[0]
+        yy, xx = ys[idx], xs[idx]
+        keep = protect[lab[yy, xx]]
+        yy, xx = yy[~keep], xx[~keep]
+        if len(yy) < BEAM_MIN_PX // 3:
+            continue
+        out[yy, xx] = 0
+        killed[src] = killed.get(src, 0) + len(yy)
+
+    if killed:
+        log.info("line beam removal: %s",
+                 ", ".join(f"{k} {v} px" for k, v in sorted(killed.items())))
+    return out
+
+
 def _remove_spikes(cls: np.ndarray) -> np.ndarray:
     """Kill interference beams: thin straight rays radiating from a radar.
 
@@ -773,7 +875,7 @@ def radar_composite(frames_back: int = 3) -> None:
         # overlay's own pixels those coordinates point at nothing, which is why
         # beams kept surviving however the test was tuned.
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
-        cur = _remove_beams_polar(_remove_spikes(_despeckle(cur)))
+        cur = _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))
         canvas.alpha_composite(_recolor(cur))
 
     if newest is None:
@@ -920,7 +1022,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                     continue
                 # Warp first, clean second — see the note in radar_composite.
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
-                grid = _remove_beams_polar(_remove_spikes(_despeckle(grid)))
+                grid = _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))
                 canvas.alpha_composite(_recolor(grid))
                 got = True
             if not got:
