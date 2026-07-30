@@ -500,8 +500,15 @@ R_MAX_KM = 600          # a site further than this cannot be the source
 BEAM_MIN_PX = 150       # too little echo to judge anything by
 BEAM_GAP_KM = 15        # dashes this far apart along a ray count as one beam
 BEAM_MIN_LEN_KM = 80    # radial extent before a blob can be a beam
-BEAM_MAX_DEG = 12.0     # azimuthal width of a beam, in degrees
-BEAM_ELONG = 5.0        # ... and how many times longer than wide it must be
+BEAM_MAX_DEG = 16.0     # azimuthal width of a beam, in degrees
+BEAM_ELONG = 4.5        # ... and how many times longer than wide it must be
+# A second, stricter shape that needs no origin test. Something 6 deg wide and
+# eight times longer than wide is a beam wherever along the ray it happens to
+# start — beams are often blanked over the first hundred kilometres, and the
+# 05:00 UTC fan of 29 July had one at 3 deg, elongation 9, that the origin
+# test alone threw out because it began 164 km from Harku.
+BEAM_NARROW_DEG = 6.0
+BEAM_NARROW_ELONG = 8.0
 # And it has to start at the antenna. This is what separates a beam from a rain
 # band that happens to lie radially: measured over a week of frames, every
 # beam-shaped blob began within 150 km of its site, while the elongated blobs
@@ -582,19 +589,22 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
         for i, sl in enumerate(ndimage.find_objects(lab), start=1):
             a0, a1 = sl[0].start, sl[0].stop
             r0, r1 = sl[1].start, sl[1].stop
-            if r0 > BEAM_START_KM:
-                continue                       # not emanating from this antenna
             r_span = r1 - r0
             if r_span < BEAM_MIN_LEN_KM:
                 continue
             a_span = (a1 - a0) * 360.0 / N_AZ
-            if a_span > BEAM_MAX_DEG:
-                continue
             width_km = (r0 + r1) / 2.0 * np.radians(a_span)
-            if width_km <= 0 or r_span / width_km < BEAM_ELONG:
+            if width_km <= 0:
+                continue
+            elong = r_span / width_km
+            wedge = (a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
+                     and r0 <= BEAM_START_KM)
+            needle = (a_span <= BEAM_NARROW_DEG and elong >= BEAM_NARROW_ELONG)
+            if not (wedge or needle):
                 continue
             kill_bins[sl] |= (lab[sl] == i)
-            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg")
+            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
+                           f"elong {elong:.1f}")
 
         if not kill_bins.any():
             continue
@@ -758,10 +768,13 @@ def radar_composite(frames_back: int = 3) -> None:
             votes = sum((c[0] > 0).astype(np.uint8) for c in cls_stack
                         if c[0].shape == cur.shape)
             cur = np.where(votes >= 2, cur, 0).astype(np.uint8)
+        # Warp to the shared grid BEFORE cleaning. The geometric filters place
+        # the antennas with proj3059 and assume 1 px = 1 km; run on the source
+        # overlay's own pixels those coordinates point at nothing, which is why
+        # beams kept surviving however the test was tuned.
+        cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
         cur = _remove_beams_polar(_remove_spikes(_despeckle(cur)))
-        colored = np.array(_recolor(cur))
-        warped = P.resample_mercator_image(colored, f0["sw"], f0["ne"])
-        canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
+        canvas.alpha_composite(_recolor(cur))
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
@@ -905,10 +918,10 @@ def radar_backfill(hours_back: int = 168) -> None:
                 cls = _load_and_classify(best["url"], s)
                 if cls is None:
                     continue
-                warped = P.resample_mercator_image(
-                    np.array(_recolor(_remove_beams_polar(_remove_spikes(_despeckle(cls))))),
-                    best["sw"], best["ne"])
-                canvas.alpha_composite(Image.fromarray(warped, "RGBA"))
+                # Warp first, clean second — see the note in radar_composite.
+                grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
+                grid = _remove_beams_polar(_remove_spikes(_despeckle(grid)))
+                canvas.alpha_composite(_recolor(grid))
                 got = True
             if not got:
                 log.info("backfill %s: no frames in archive", hour_key)
