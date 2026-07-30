@@ -1012,6 +1012,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             got = False
+            used = []
             for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
                 cands = [o for o in overlays if o["code"] == code]
                 if not cands:
@@ -1027,12 +1028,25 @@ def radar_backfill(hours_back: int = 168) -> None:
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
                 grid = _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))
                 canvas.alpha_composite(_recolor(grid))
+                used.append(best["time"])
                 got = True
             if not got:
                 log.info("backfill %s: no frames in archive", hour_key)
                 continue
             draw_borders(canvas)
-            vtag = target.strftime("%Y%m%dT%H%M")
+            # Name the frame after the sweep it actually came from, not after
+            # the hour we asked for. Sources arrive on their own ~10 min
+            # cadence, so the nearest one to 19:00 can be 18:12 — and stamping
+            # it 19:00 made the radar look up to 40 min later than it was,
+            # which is the wrong direction to be wrong when the whole point is
+            # deciding when rain arrives. The live path has always done this;
+            # only the backfill rounded.
+            stamp = max(used)
+            if abs((stamp - target).total_seconds()) > 60:
+                log.info("backfill %s: nearest sweep %s (%+d min)", hour_key,
+                         stamp.strftime("%H:%M"),
+                         round((stamp - target).total_seconds() / 60))
+            vtag = stamp.strftime("%Y%m%dT%H%M")
             buf = io.BytesIO()
             canvas.save(buf, "PNG", optimize=True)
             s3.put_object(Bucket=config.R2_BUCKET,

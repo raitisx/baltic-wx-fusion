@@ -130,7 +130,10 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
             vtag = valid.strftime("%Y%m%dT%H")
             if arch["hours"].get(vtag, "") >= run_tag:
                 continue
-            pr = np.clip(acc[i] - acc[i - 1], 0, None)
+            if i + 1 >= len(acc):
+                continue
+            # hour STARTING at the stamp — see the note in the live renderer
+            pr = np.clip(acc[i + 1] - acc[i], 0, None)
             prm = np.where(pr >= 0.1, pr, np.nan)
             for thr in THRESHOLDS:
                 fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
@@ -235,10 +238,19 @@ def render_run(max_hours: int = 66) -> None:
     s3.upload_file(bg, config.R2_BUCKET, "maps/bg_3059.png", ExtraArgs={
         "ContentType": "image/png", "CacheControl": "public, max-age=604800"})
 
-    for i in range(1, n):
+    # A frame stamped 01:00 shows the ceiling at 01:00 and the rain that falls
+    # between 01:00 and 02:00 — the hour STARTING at the label. It used to show
+    # the hour ending there, because precipitation_amount_acc is a running
+    # total and the obvious difference is acc[i] - acc[i-1]. That reads an hour
+    # late: checked against the radar archive over 49 hours with rain in both,
+    # the old stamping matched best at -1 h on centroid distance (75 km, vs
+    # 87 km at 0) and on overlap (0.178 vs 0.159). It also made the question
+    # this map exists to answer - when does it start raining here - one the
+    # reader had to shift by an hour in their head.
+    for i in range(0, n - 1):
         valid = times[i]
         vtag = valid.strftime("%Y%m%dT%H")
-        pr = np.clip(acc[i] - acc[i - 1], 0, None)
+        pr = np.clip(acc[i + 1] - acc[i], 0, None)
         prm = np.where(pr >= 0.1, pr, np.nan)
         for thr in THRESHOLDS:
             fig, ax = blank_fig()

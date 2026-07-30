@@ -193,6 +193,7 @@ const fmtHour = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,hour:"2-digit",hour
 const fmtDay  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit"});
 const fmtDM   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"2-digit",month:"2-digit"});
 const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+const fmtTime = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtWd   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short"});
 const fmtNowTab = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",
   day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
@@ -391,6 +392,26 @@ function fuse(){
     row.fog = row.rh!=null && row.rh>=97 && (row.cb??999)<100;
     FUSED.push(row);
   }
+  shiftPrecipToHourStart();
+}
+
+// Every precipitation number we receive — Open-Meteo's, the stations', and the
+// accumulation the MEPS and GFS maps are built from — is the total for the
+// hour ENDING at its stamp. Read literally that answers "has it rained by
+// now", when the question here is "when does it start". So a row's rain is
+// moved to the row an hour earlier: at 01:00 you see what falls between 01:00
+// and 02:00, which is also what the maps now draw. Measured against the radar
+// archive the old stamping sat 1 h late (centroid gap 75 km at -1 h against
+// 87 km at 0, overlap 0.178 against 0.159).
+function shiftPrecipToHourStart(){
+  for(let i=0;i<FUSED.length;i++){
+    const n=FUSED[i+1];
+    const contiguous = n && Math.abs(n.ts-FUSED[i].ts-3600e3) < 60e3;
+    FUSED[i]._prcp = contiguous ? n.prcp_1h : null;
+    FUSED[i]._prob = contiguous ? n.prcp_prob : null;
+  }
+  for(const r of FUSED){ r.prcp_1h=r._prcp; r.prcp_prob=r._prob;
+                         delete r._prcp; delete r._prob; }
 }
 
 function dayVerdicts(cbLim, wgLim){
@@ -531,6 +552,10 @@ function render(){
 
   const obsIdx={};
   for(const o of OBS){ ((obsIdx[o.p] ||= [])).push({ts:Date.parse(o.t),v:o.v}); }
+  // Station rain totals are hour-ending too, so move them to match the
+  // forecast bars — see shiftPrecipToHourStart().
+  if(obsIdx.prcp_1h)
+    obsIdx.prcp_1h = obsIdx.prcp_1h.map(o=>({ts:o.ts-3600e3, v:o.v}));
 
   for(const p of PANELS){
     let ly=panelTop[p.id]+16;
@@ -711,7 +736,7 @@ function render(){
       ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
       ["--dew","dew pt",f(r.td2m)+" °C"],
       ["--humid","rel.humid",f(r.rh,0)+" %"],
-      ["--precip","precip",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
+      ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
@@ -735,7 +760,7 @@ function renderTable(){
   box.textContent="";
   const tb=document.createElement("table"); tb.className="data";
   const hd=document.createElement("tr");
-  for(const h of ["time","t2m °C","dew °C","humid %","precip mm","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
+  for(const h of ["time","t2m °C","dew °C","humid %","precip mm (next h)","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
     const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
   }
   tb.appendChild(hd);
@@ -998,7 +1023,8 @@ function radarSrc(iso){
     if(d<bd){bd=d;best=f;}
   }
   if(best && bd<=55*60e3)
-    return {url:`${MAPS_BASE}/${rad.path}/${best}.png${vq(rad)}`, time:frameTime(best)};
+    return {url:`${MAPS_BASE}/${rad.path}/${best}.png${vq(rad)}`,
+            time:frameTime(best), off:Math.round((frameTime(best).getTime()-ts)/60e3)};
   return null;
 }
 function mapShow(i){
@@ -1017,7 +1043,15 @@ function mapShow(i){
   if(u){ uImg.style.opacity="1"; uImg.src=u.url; if(uCap) uCap.textContent=u.cap||""; }
   else { uImg.style.opacity="0.12"; if(uCap) uCap.textContent="no frame for this hour"; }
   const rd=radarSrc(iso), rImg=document.getElementById("imgRadar");
-  if(rd){ rImg.style.opacity="1"; rImg.src=rd.url; document.getElementById("radarTime").textContent=fmtDT.format(rd.time); }
+  if(rd){
+    rImg.style.opacity="1"; rImg.src=rd.url;
+    // The sweep time, not the hour it is filed under. Sources run on a ~10 min
+    // cadence of their own, so the nearest frame to a given hour can be most
+    // of an hour away — and if you are deciding when rain arrives, a caption
+    // that rounds that away is worse than useless.
+    document.getElementById("radarTime").textContent =
+      fmtTime.format(rd.time) + (rd.off ? ` (${rd.off>0?"+":""}${rd.off} min)` : " exactly");
+  }
   else { rImg.style.opacity="0.12"; document.getElementById("radarTime").textContent="no frame for this hour"; }
 }
 // ---- full-week frame prefetch: warm the browser cache so scrubbing is instant
@@ -1081,7 +1115,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v30",
+    "page v32",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

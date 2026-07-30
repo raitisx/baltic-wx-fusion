@@ -226,6 +226,9 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     # accum_window(). MEPS has always done this (maps_meps differences
     # precipitation_amount_acc); GFS was the odd one out.
     prev: tuple[int, int, np.ndarray] | None = None   # (lead, bucket start, acc)
+    # (ceiling, valid) of the lead before this one, waiting for the rain that
+    # falls after it.
+    pending: tuple[np.ndarray, dt.datetime] | None = None
 
     def _apcp(at_lead: int):
         recs_l = _index(run, at_lead) if at_lead != lead else recs
@@ -284,7 +287,17 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
             pr = amount / max(step, 1)          # mm/h, as on the MEPS frames
         prm = np.where(pr >= 0.1, pr, np.nan) if pr is not None else None
 
-        valid = run + dt.timedelta(hours=lead)
+        # A frame stamped 01:00 carries the ceiling at 01:00 and the rain that
+        # falls between 01:00 and the next step — the hour STARTING at the
+        # label, matching maps_meps. The rain we just worked out fell over
+        # (lead-step, lead], so it belongs to the PREVIOUS frame, whose ceiling
+        # has been held back for exactly this. One frame at the far end of the
+        # run has no following accumulation and is dropped.
+        held, held_valid = pending if pending else (None, None)
+        pending = (cb, run + dt.timedelta(hours=lead))
+        if held is None:
+            continue
+        cb, valid = held, held_valid
         vtag = valid.strftime("%Y%m%dT%H")
         for thr in GFS_THRESHOLDS:
             fig, ax = blank_fig()
