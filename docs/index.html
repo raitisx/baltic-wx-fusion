@@ -135,7 +135,7 @@
       <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · green: rain in the hour ending here</span></div>
+          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · orange: fog · green: rain in the hour starting here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -955,7 +955,7 @@ function mepsSrc(iso){
   const thr=mepsThr();
   if(!meps) return gfsSrc(iso, thr);
   if(meps.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · green: rain in the hour ending here"};
+    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · orange: fog · green: rain in the hour starting here"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
@@ -980,7 +980,7 @@ function gfsSrc(iso, _thr){
   }
   if(best)
     return {url:`${MAPS_BASE}/${gfs.path}/${vtagOf(best)}_alt${thr}.png${vq(gfs)}`,
-            cap:"GFS 0.25° · rain in the hour ending here"};
+            cap:"GFS 0.25° · rain in the hour starting here"};
   const arch=MV.loaded.gfsArchive?.hours;
   if(arch){
     for(let back=0; back<=(gfs.step_h||3); back++){
@@ -1021,11 +1021,13 @@ function umSrc(iso){
   if(um.hours.includes(iso))
     return {url:`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`,
             cap:runLabel(um.run)+" run"};
-  if(arch && arch[vtagOf(iso)]){
-    const run=arch[vtagOf(iso)];
-    return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(iso)}.png${vq(um)}`,
-            cap:runLabel(run)+" run"};
-  }
+  // Stay inside the newest run for as long as it can reach, even if that means
+  // carrying a frame forward an hour or two. Preferring an exact hour from
+  // wherever it lived was worse: on 31 July the newest run had 14, 17, 20, 23
+  // and the run from 36 h earlier had 12, 15, 18, 21, so scrubbing across the
+  // afternoon alternated between two forecasts a day and a half apart and the
+  // weather jumped back and forth. A slightly stale frame from one forecast
+  // reads as motion; two interleaved forecasts read as noise.
   let best=null;
   for(const h of um.hours){
     const d=ts-Date.parse(h);
@@ -1038,6 +1040,11 @@ function umSrc(iso){
   }
   // Past hours: the current run does not reach back, but earlier runs' frames
   // are still in the bucket — the archive index says which run owns each hour.
+  if(arch && arch[vtagOf(iso)]){
+    const run=arch[vtagOf(iso)];
+    return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(iso)}.png${vq(um)}`,
+            cap:runLabel(run)+" run"};
+  }
   if(arch){
     for(let back=1; back<=UM_CARRY_H; back++){
       const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
@@ -1153,7 +1160,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v34",
+    "page v35",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

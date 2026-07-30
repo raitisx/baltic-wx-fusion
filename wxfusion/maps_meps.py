@@ -49,13 +49,19 @@ FOG_COVER = 0.60
 
 
 def _gate_ceiling(cb, lcc, fog):
-    """Cloud base -> aviation ceiling: only where the low cloud is broken."""
+    """Cloud base -> aviation ceiling, plus a separate fog mask.
+
+    Fog gets its own colour on the map because it is its own decision: a
+    300 m base is a low ceiling you might still work under, fog is not.
+    """
     import numpy as np
     cb = np.where(cb > FILL, np.nan, cb)
     cb = np.where(lcc >= CEILING_LCC, cb, np.nan)
+    fogm = None
     if fog is not None:
-        cb = np.where(fog >= FOG_COVER, 0.0, cb)
-    return cb
+        fogm = fog >= FOG_COVER
+        cb = np.where(fogm, 0.0, cb)
+    return cb, fogm
 
 BORDERS_FILE = os.path.join(os.path.dirname(__file__), "assets", "borders_baltic.json")
 
@@ -110,6 +116,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
     greens = LinearSegmentedColormap.from_list(
         "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
+    orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     tmp = tempfile.mkdtemp()
 
     runs = list_runs()[:-1][-max_runs:]  # past runs, oldest -> newest
@@ -144,7 +151,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
         except Exception:
             log.exception("meps backfill: %s failed to open/fetch", ds_name)
             continue
-        cb = _gate_ceiling(cb, lcc, fog)
+        cb, fogm = _gate_ceiling(cb, lcc, fog)
         xw, yw = P.to_xy(lonw, latw)
         borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
                        for line in c["lines"]] for c in borders]
@@ -167,9 +174,13 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
                 ax.set_facecolor("#fbf3de")
                 ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
                 ax.set_aspect("equal"); ax.axis("off")
-                below = np.where(np.isfinite(cb[i]) & (cb[i] < thr), 1.0, np.nan)
+                fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
+                below = np.where(np.isfinite(cb[i]) & (cb[i] < thr) & ~fg, 1.0, np.nan)
                 ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
                               alpha=0.75, shading="auto")
+                # Fog in orange: a different decision from a low ceiling.
+                ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
+                              vmin=0, vmax=1, alpha=0.8, shading="auto")
                 ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
                               alpha=0.9, shading="auto")
                 for country in borders_xy:
@@ -223,7 +234,7 @@ def render_run(max_hours: int = 66) -> None:
         fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     except Exception:
         fog = None
-    cb = _gate_ceiling(cb, lcc, fog)
+    cb, fogm = _gate_ceiling(cb, lcc, fog)
 
     from . import proj3059 as P
 
@@ -231,6 +242,7 @@ def render_run(max_hours: int = 66) -> None:
     greens = LinearSegmentedColormap.from_list(
         "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
+    orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
 
     # project the MEPS cell coordinates once (curvilinear mesh in LKS-92)
     xw, yw = P.to_xy(lonw, latw)
@@ -285,9 +297,12 @@ def render_run(max_hours: int = 66) -> None:
         prm = np.where(pr >= 0.1, pr, np.nan)
         for thr in THRESHOLDS:
             fig, ax = blank_fig()
-            below = np.where(np.isfinite(cb[i]) & (cb[i] < thr), 1.0, np.nan)
+            fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
+            below = np.where(np.isfinite(cb[i]) & (cb[i] < thr) & ~fg, 1.0, np.nan)
             ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
                           alpha=0.75, shading="auto")
+            ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
+                          vmin=0, vmax=1, alpha=0.8, shading="auto")
             ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
                           alpha=0.9, shading="auto")
             draw_borders(ax)
