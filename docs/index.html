@@ -131,11 +131,11 @@
       <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">base&lt;limit pink · precip green</span></div>
+          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · green: rain in the hour ending here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
-          <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime"></span></div>
+          <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
         </div>
         <div class="mapcol">
@@ -893,7 +893,7 @@ function mepsSrc(iso){
   const thr=mepsThr();
   if(!meps) return gfsSrc(iso, thr);
   if(meps.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"base<limit pink · precip green"};
+    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · green: rain in the hour ending here"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"archived · run "+archRun.slice(9)};
@@ -917,7 +917,7 @@ function gfsSrc(iso, _thr){
   }
   if(best)
     return {url:`${MAPS_BASE}/${gfs.path}/${vtagOf(best)}_alt${thr}.png${vq(gfs)}`,
-            cap:"GFS 0.25° · long range"};
+            cap:"GFS 0.25° · rain in the hour ending here"};
   const arch=MV.loaded.gfsArchive?.hours;
   if(arch){
     for(let back=0; back<=(gfs.step_h||3); back++){
@@ -1081,7 +1081,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v29",
+    "page v30",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
