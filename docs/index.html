@@ -943,6 +943,18 @@ function umSrc(iso){
   // rather than as a coarser model. Carry to the widest spacing and say how
   // old the frame is.
   const ts=Date.parse(iso);
+  const arch=MV.loaded[res+"Archive"]?.hours;
+  // An exact frame beats a carried one, wherever it lives. The newest run is
+  // 3-hourly over today's afternoon while the previous run covered the same
+  // hours hourly — before this, the newest run's carried frame won and that
+  // detail was thrown away.
+  if(um.hours.includes(iso))
+    return {url:`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`, cap:""};
+  if(arch && arch[vtagOf(iso)]){
+    const run=arch[vtagOf(iso)];
+    return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(iso)}.png${vq(um)}`,
+            cap:"run "+run.slice(9)};
+  }
   let best=null;
   for(const h of um.hours){
     const d=ts-Date.parse(h);
@@ -955,13 +967,12 @@ function umSrc(iso){
   }
   // Past hours: the current run does not reach back, but earlier runs' frames
   // are still in the bucket — the archive index says which run owns each hour.
-  const arch=MV.loaded[res+"Archive"]?.hours;
   if(arch){
-    for(let back=0; back<=UM_CARRY_H; back++){
+    for(let back=1; back<=UM_CARRY_H; back++){
       const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
       const run=arch[vtagOf(t)];
       if(run) return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(t)}.png${vq(um)}`,
-                      cap:"archived · run "+run.slice(9)};
+                      cap:`archived · +${back} h old · run `+run.slice(9)};
     }
   }
   return null;
@@ -1062,7 +1073,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v27",
+    "page v28",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

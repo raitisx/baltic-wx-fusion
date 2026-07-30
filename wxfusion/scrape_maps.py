@@ -139,6 +139,54 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
     return out
 
 
+UM_LEADS = (list(range(1, 25)) + list(range(27, 73, 3)) + list(range(78, 121, 6)))
+
+
+def um_purge_stale(name: str = "um4") -> int:
+    """Delete frames left behind by the pre-UM_LEAD_OFFSET labelling.
+
+    Before we knew DIM_FORECAST was 1-based, every frame was written one hour
+    late. Correcting it did not remove the old keys, so the bucket now holds
+    the same picture twice — 20260730T02.png and 20260730T03.png are
+    byte-identical — and the archive index, which is built by listing the
+    bucket, offers both. That is harmless while the viewer only carries frames
+    forward from the current run's manifest, but the moment it prefers an
+    exact hour from the index it would start showing the copy that is an hour
+    wrong. So clear them out.
+
+    Deterministic, not a guess: for a given run the correct valid hours are
+    run + (lead - 1) over the standard lead list. Anything else in that run's
+    directory is a leftover.
+    """
+    s3 = r2_client()
+    stale, token = [], None
+    while True:
+        kw = {"Bucket": config.R2_BUCKET, "Prefix": f"maps/{name}/"}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for obj in resp.get("Contents", []):
+            m = re.match(rf"maps/{name}/(\d{{8}}T\d{{2}})/(\d{{8}}T\d{{2}})\.png$", obj["Key"])
+            if not m:
+                continue
+            run = dt.datetime.strptime(m.group(1), "%Y%m%dT%H").replace(
+                tzinfo=dt.timezone.utc)
+            good = {(run + dt.timedelta(hours=h - UM_LEAD_OFFSET)).strftime("%Y%m%dT%H")
+                    for h in UM_LEADS}
+            if m.group(2) not in good:
+                stale.append(obj["Key"])
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+
+    for i in range(0, len(stale), 1000):
+        batch = stale[i:i + 1000]
+        s3.delete_objects(Bucket=config.R2_BUCKET,
+                          Delete={"Objects": [{"Key": k} for k in batch]})
+    log.info("%s purge: %d mislabelled frames deleted", name, len(stale))
+    return len(stale)
+
+
 def um_reindex(name: str = "um4") -> int:
     """Rebuild maps/<name>/archive.json from what is actually in the bucket.
 
@@ -191,19 +239,47 @@ def um_run(hours: list[int] | None = None) -> None:
     frame came back completely transparent over the Baltic bbox at every lead
     tested. Re-add ("um1", "um:UM1_CLOUD") below if that ever changes.
     """
-    hours = hours or (list(range(1, 25))
-                      + list(range(27, 73, 3))
-                      + list(range(78, 121, 6)))
+    hours = hours or list(UM_LEADS)
     now = dt.datetime.now(dt.timezone.utc)
-    run = now.replace(hour=0, minute=0, second=0, microsecond=0)
     s3 = r2_client()
     for name, layer in [("um4", "um:UM4_CLOUD")]:
+        # Which run to ask for. This used to be hard-coded to today's 00Z,
+        # which was wrong twice over:
+        #
+        #   * At the 04:20 pass today's 00Z is not out yet (ICM publishes it
+        #     mid-morning), so every frame came back transparent, the loop
+        #     broke on the first one and nothing was stored. The morning pass
+        #     was doing nothing at all.
+        #   * The 12Z cycle was never fetched. UM output is hourly only for
+        #     the run's first 24 h and 3-hourly after that, so using 00Z alone
+        #     left every afternoon and evening on 3-hourly frames even when a
+        #     12Z run covering them hourly existed.
+        #
+        # So walk back through the 12-hourly cycles until one answers with
+        # actual pixels. The probe is the first lead we want anyway, so a
+        # published run costs nothing extra.
+        run = first = None
+        cand = now.replace(minute=0, second=0, microsecond=0,
+                           hour=0 if now.hour < 12 else 12)
+        for _ in range(4):
+            probe = fetch_um_frame(layer, cand, hours[0])
+            if probe is not None and np.array(probe)[..., 3].any():
+                run, first = cand, probe
+                break
+            log.info("%s: run %s not published yet", name,
+                     cand.strftime("%Y%m%dT%H"))
+            cand -= dt.timedelta(hours=12)
+        if run is None:
+            log.warning("%s: no published run found in the last 4 cycles", name)
+            continue
+        log.info("%s: run %s", name, run.strftime("%Y%m%dT%H"))
+
         run_tag = run.strftime("%Y%m%dT%H")
         done = []
         from . import proj3059 as P
         sw, ne = _tilegrid_bounds_latlon()
-        for h in hours:
-            img = fetch_um_frame(layer, run, h)
+        for i, h in enumerate(hours):
+            img = first if i == 0 else fetch_um_frame(layer, run, h)
             if img is None:
                 log.warning("%s: no tiles for +%dh", name, h)
                 continue
