@@ -42,12 +42,24 @@ BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 GWC = "https://mapy.meteo.pl/geoserver/gwc/service/wms"
 ZOOM = 6
 TILE_SLEEP = 0.3
-# meteo.pl's DIM_FORECAST is 1-based: DIM_FORECAST=1 is the run's first
-# forecast hour, i.e. valid at run+0, so labelling it run+1 put every UM frame
-# an hour late. Confirmed two ways — the trailing was visible against MEPS,
-# and cross-correlating UM precipitation against the radar archive over the
-# frames we have peaks at -1 h (mean IoU 0.030 vs 0.019 at 0 and 0.026 at +1).
-UM_LEAD_OFFSET = 1
+# DIM_FORECAST counts hours FROM the TIME we pass, starting at zero. Straight
+# from maps.meteo.pl's own code (dist/geo.min.js):
+#
+#     TIME: t.utc().format(...) + "Z",
+#     DIM_FORECAST = a.diff(t, "h")
+#
+# where t is the simulation start and a the moment being displayed. So
+# valid = TIME + DIM_FORECAST, full stop.
+#
+# We had this as 1-based on the strength of cross-correlating UM precipitation
+# against the radar archive, which put the peak at -1 h. That was five or six
+# usable pairs of very small rain areas; it was noise, and it made every UM
+# frame an hour early. The site's own arithmetic settles it.
+#
+# DIM_FORECAST=0 does come back transparent, which is what led me astray — but
+# the app never asks for it either (initSelectedDay carries firstStep: 1), so
+# the layer simply has nothing at the simulation's own hour.
+UM_LEAD_OFFSET = 0
 
 RADAR_PAGE = "https://www.meteolapa.lv/radars"
 RADAR_BASE = "https://www.meteolapa.lv"
@@ -145,15 +157,21 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
 # distinct non-empty frames. That self-imposed coarseness is what left the
 # afternoon with two empty hours after every frame.
 #
-# Hourly to +96 h, then 3-hourly to the +120 h horizon. Not hourly all the way
-# because each lead is nine tile requests against someone else's cache, and
-# this is a courtesy-scraped advisory layer: 104 leads is about 7 minutes of
-# polite fetching per run, twice a day.
-UM_LEADS = list(range(1, 98)) + list(range(99, 122, 3))
+# Hourly to +48 h, which is the window you actually plan in, then 3-hourly to
+# the +120 h horizon. Each lead is nine tile requests against someone else's
+# cache and this is a courtesy-scraped advisory layer, so 72 leads rather than
+# the 120 that are available.
+UM_LEADS = list(range(1, 49)) + list(range(51, 121, 3))
 # What earlier runs were fetched at. The purge below has to treat frames from
 # those runs as legitimate too, or changing this list would delete them.
 UM_LEADS_LEGACY = (list(range(1, 25)) + list(range(27, 73, 3))
-                   + list(range(78, 121, 6)))
+                   + list(range(78, 121, 6)) + list(range(1, 98)))
+# Runs scraped before this one were labelled with the old 1-based reading, so
+# every frame in them is an hour early. There is no way to tell a mislabelled
+# frame from a correct one by its name, so the purge drops those runs whole and
+# lets fresh scrapes rebuild. UM is an advisory layer; a day of its history is
+# worth less than knowing the hour on it is right.
+UM_OFFSET_FIXED_RUN = "20260730T18"
 
 
 def um_purge_stale(name: str = "um4") -> int:
@@ -183,7 +201,11 @@ def um_purge_stale(name: str = "um4") -> int:
             m = re.match(rf"maps/{name}/(\d{{8}}T\d{{2}})/(\d{{8}}T\d{{2}})\.png$", obj["Key"])
             if not m:
                 continue
-            run = dt.datetime.strptime(m.group(1), "%Y%m%dT%H").replace(
+            run_tag = m.group(1)
+            if run_tag < UM_OFFSET_FIXED_RUN:
+                stale.append(obj["Key"])       # written an hour early
+                continue
+            run = dt.datetime.strptime(run_tag, "%Y%m%dT%H").replace(
                 tzinfo=dt.timezone.utc)
             good = {(run + dt.timedelta(hours=h - UM_LEAD_OFFSET)).strftime("%Y%m%dT%H")
                     for h in (*UM_LEADS, *UM_LEADS_LEGACY)}
