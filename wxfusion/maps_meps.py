@@ -35,6 +35,27 @@ DAP_BASE = "https://thredds.met.no/thredds/dodsC/mepslatest/"
 BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 THRESHOLDS = [100, 300, 650, 700, 1000]
 FILL = 1e30  # cloud_base_altitude fill => clear sky
+# A ceiling needs broken-or-more low cloud, the same 5-okta rule the meteogram
+# applies. MEPS publishes cloud_base_altitude wherever it finds any cloud base
+# at all, and below 700 m that is almost never a ceiling: over the Baltic
+# window of the 30.07 18Z run, the pixels with a base under 700 m had a mean
+# low-cloud fraction of 0.011 and a 90th percentile of 0.00 — no low cloud
+# worth the name. Meanwhile where the low cloud really was broken, the base sat
+# at 1150-1550 m. Painting the first group pink is what made the map disagree
+# with the meteogram, which has been gating since the LCL fix.
+CEILING_LCC = 0.60
+# Fog is a zero-foot ceiling however the cloud-base field reports it.
+FOG_COVER = 0.60
+
+
+def _gate_ceiling(cb, lcc, fog):
+    """Cloud base -> aviation ceiling: only where the low cloud is broken."""
+    import numpy as np
+    cb = np.where(cb > FILL, np.nan, cb)
+    cb = np.where(lcc >= CEILING_LCC, cb, np.nan)
+    if fog is not None:
+        cb = np.where(fog >= FOG_COVER, 0.0, cb)
+    return cb
 
 BORDERS_FILE = os.path.join(os.path.dirname(__file__), "assets", "borders_baltic.json")
 
@@ -114,11 +135,16 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
             n = max(leads) + 1
             cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            try:
+                fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            except Exception:
+                fog = None
             times = nc.num2date(ds.variables["time"][:n], ds.variables["time"].units)
         except Exception:
             log.exception("meps backfill: %s failed to open/fetch", ds_name)
             continue
-        cb = np.where(cb > FILL, np.nan, cb)
+        cb = _gate_ceiling(cb, lcc, fog)
         xw, yw = P.to_xy(lonw, latw)
         borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
                        for line in c["lines"]] for c in borders]
@@ -192,7 +218,12 @@ def render_run(max_hours: int = 66) -> None:
     log.info("fetching %d steps, window %dx%d", n, y1 - y0 + 1, x1 - x0 + 1)
     cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
-    cb = np.where(cb > FILL, np.nan, cb)
+    lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+    try:
+        fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+    except Exception:
+        fog = None
+    cb = _gate_ceiling(cb, lcc, fog)
 
     from . import proj3059 as P
 

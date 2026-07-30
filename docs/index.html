@@ -417,7 +417,15 @@ function fuse(){
       row.cb = wmean(withC.map(x=>x.ceil), withC.map(x=>x.w));
       row.cb_sd = wstd(withC.map(x=>x.ceil), row.cb);
     }
-    row.fog = row.rh!=null && row.rh>=97 && (row.cb??999)<100;
+    // Fog: any model saturated at the surface. Not a vote — the low-cloud
+    // fraction cannot express fog (MEPS had RH 100%, T = Td, and cc_low 0 at
+    // the cell that started this), so a single model reporting it is worth
+    // showing rather than outvoting. The count says how alone it is.
+    const rhv = (idx["rh"]||{})[ts] || {};
+    const rhAll = MODELS.filter(m=>rhv[m]!=null);
+    row.fog_n = rhAll.filter(m=>rhv[m] >= 97).length;
+    row.fog_of = rhAll.length;
+    row.fog = row.fog_n > 0 || (row.cb!=null && row.cb < 100);
     FUSED.push(row);
   }
   shiftPrecipToHourStart();
@@ -764,6 +772,7 @@ function render(){
       ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
       ["--dew","dew pt",f(r.td2m)+" °C"],
       ["--humid","rel.humid",f(r.rh,0)+" %"],
+      ...(r.fog?[["--fog","fog",`${r.fog_n}/${r.fog_of} models saturated`]]:[]),
       ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
@@ -1144,7 +1153,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v33",
+    "page v34",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

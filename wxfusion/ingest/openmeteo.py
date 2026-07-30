@@ -44,6 +44,16 @@ HOURLY_VARS = {
 # ICON and ~918 m to ~559 m for MEPS.
 CEILING_COVER = float(os.environ.get("CEILING_COVER", "60"))
 
+# Fog is a ceiling on the ground, and the low-cloud fraction does not see it.
+# At 56.57N 26.40E on 29 July 04:00 UTC, MEPS had relative humidity 100% with
+# temperature and dew point both 11.4 — saturated at the surface, LCL zero —
+# and cloud_cover_low of 0. The gate above therefore reported no ceiling,
+# while MEPS's own map painted the cell as fog and its fog_area_fraction
+# agreed. That is the meteogram/map disagreement in one cell: not a
+# difference of models, a condition the cover test cannot express.
+FOG_RH = float(os.environ.get("FOG_RH", "97"))
+FOG_DEWPOINT_DEP = float(os.environ.get("FOG_DEWPOINT_DEP", "0.3"))
+
 
 # --- model cycle estimation -------------------------------------------------
 # Open-Meteo does not tell us which model run a value came from, so we used to
@@ -118,7 +128,7 @@ def fetch(points: list[dict]) -> list[tuple]:
                 if arr:
                     series[param] = arr
             for i, valid in enumerate(times):
-                t2m = td2m = cc_low = None
+                t2m = td2m = cc_low = rh = None
                 for param, arr in series.items():
                     v = arr[i] if i < len(arr) else None
                     if v is None:
@@ -132,6 +142,8 @@ def fetch(points: list[dict]) -> list[tuple]:
                         td2m = float(v)
                     elif param == "cc_low":
                         cc_low = float(v)
+                    elif param == "rh":
+                        rh = float(v)
                 if t2m is not None and td2m is not None:
                     lcl = lcl_height(t2m, td2m)
                     # Raw LCL, kept as a diagnostic.
@@ -145,7 +157,9 @@ def fetch(points: list[dict]) -> list[tuple]:
                     # map showed clear sky. A ceiling only exists where the
                     # model also has broken-or-more low cloud. Absent means no
                     # ceiling below ~1 km, not missing data.
-                    if cc_low is not None and cc_low >= CEILING_COVER:
+                    fog = ((rh is not None and rh >= FOG_RH)
+                           or (t2m - td2m) <= FOG_DEWPOINT_DEP)
+                    if (cc_low is not None and cc_low >= CEILING_COVER) or fog:
                         rows.append(
                             (our_model, run_time, valid, point["point_id"], "cb", lcl)
                         )
