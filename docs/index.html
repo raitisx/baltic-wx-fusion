@@ -933,6 +933,13 @@ function gfsSrc(iso, _thr){
 // transparent over the Baltic bbox — so 4 km is the only useful resolution.
 const UM_RES="um4";
 const UM_CARRY_H=6;
+// "20260729T12" -> "29.07 12Z". Which run a frame came from is the single
+// most useful thing to say about a UM picture: the seam where the map jumps
+// is almost always the hour the source run changes, and a +23 h forecast
+// standing next to a fresh analysis of the same sky should look different.
+function runLabel(tag){
+  return `${tag.slice(6,8)}.${tag.slice(4,6)} ${tag.slice(9,11)}Z`;
+}
 function umSrc(iso){
   const res=UM_RES;
   const um=MV.loaded[res];
@@ -949,11 +956,12 @@ function umSrc(iso){
   // hours hourly — before this, the newest run's carried frame won and that
   // detail was thrown away.
   if(um.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`, cap:""};
+    return {url:`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`,
+            cap:runLabel(um.run)+" run"};
   if(arch && arch[vtagOf(iso)]){
     const run=arch[vtagOf(iso)];
     return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(iso)}.png${vq(um)}`,
-            cap:"run "+run.slice(9)};
+            cap:runLabel(run)+" run"};
   }
   let best=null;
   for(const h of um.hours){
@@ -963,7 +971,7 @@ function umSrc(iso){
   if(best){
     const age=Math.round((ts-Date.parse(best))/3600e3);
     return {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`,
-            cap: age ? `+${age} h old` : ""};
+            cap: (age ? `+${age} h old · ` : "")+runLabel(um.run)+" run"};
   }
   // Past hours: the current run does not reach back, but earlier runs' frames
   // are still in the bucket — the archive index says which run owns each hour.
@@ -972,7 +980,7 @@ function umSrc(iso){
       const t=new Date(ts-back*3600e3).toISOString().slice(0,13)+":00:00Z";
       const run=arch[vtagOf(t)];
       if(run) return {url:`${MAPS_BASE}/maps/${res}/${run}/${vtagOf(t)}.png${vq(um)}`,
-                      cap:`archived · +${back} h old · run `+run.slice(9)};
+                      cap:`+${back} h old · `+runLabel(run)+" run"};
     }
   }
   return null;
@@ -1073,7 +1081,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v28",
+    "page v29",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
