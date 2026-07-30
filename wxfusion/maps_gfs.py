@@ -90,15 +90,29 @@ def _index(run: dt.datetime, lead: int) -> list[tuple[int, str, str, str]]:
     return recs
 
 
-def accum_hours(fcst: str, default: int) -> int:
-    """Hours covered by an accumulation record, from e.g. '90-96 hour acc'.
+def accum_window(fcst: str) -> tuple[int, int] | None:
+    """Interval an accumulation record covers, from e.g. '54-58 hour acc'.
 
-    Worth reading rather than assuming: GFS buckets precipitation over 3 h at
-    some leads and 6 h at multiples of six, so a fixed divisor would report
-    double the real rate on half the frames.
+    GFS precipitation is not a per-frame total. It is a running sum that
+    resets every 6 hours: at +55 h the record reads 54-55, at +56 h it reads
+    54-56, and so on to 54-60 before starting again at 60-61. So consecutive
+    frames are cumulative, not independent.
+
+    Treating each record as its own interval — which is what we did at first,
+    dividing by its length to get a rate — draws the union of up to six hours
+    of rain on the 6-hourly frames and one hour of rain on the next. On
+    1 August that showed a band of rain over half of Latvia at 21:00 and a
+    small cell 300 km away at 22:00. Nothing moved; the frame simply stopped
+    including the preceding five hours.
     """
     m = re.match(r"(\d+)-(\d+) hour acc", fcst)
-    return int(m.group(2)) - int(m.group(1)) if m else default
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def accum_hours(fcst: str, default: int) -> int:
+    """Length in hours of an accumulation record's own interval."""
+    w = accum_window(fcst)
+    return w[1] - w[0] if w else default
 
 
 def _fetch_field(run: dt.datetime, lead: int, recs, want, with_meta: bool = False):
@@ -207,28 +221,67 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
                 ax.plot(px, py, color="#55503f", lw=0.9, solid_capstyle="round")
 
     hours_out = []
+    # Previous rendered lead's raw accumulation, so the running 6-hour bucket
+    # can be differenced back to what fell in this frame's hour alone. See
+    # accum_window(). MEPS has always done this (maps_meps differences
+    # precipitation_amount_acc); GFS was the odd one out.
+    prev: tuple[int, int, np.ndarray] | None = None   # (lead, bucket start, acc)
+
+    def _apcp(at_lead: int):
+        recs_l = _index(run, at_lead) if at_lead != lead else recs
+        got_l = _fetch_field(run, at_lead, recs_l,
+                             lambda v, l: v == "APCP" and l == "surface",
+                             with_meta=True)
+        if not got_l:
+            return None
+        arr, fcst = got_l
+        win = accum_window(fcst)
+        return (arr, win) if win else None
+
     for lead in leads_for(start_lead, end_lead):
+        step = lead - prev[0] if prev and prev[0] < lead else (
+            1 if lead <= HOURLY_TO else 3)
         try:
             recs = _index(run, lead)
             ceil = _fetch_field(run, lead, recs,
                                 lambda v, l: v == "HGT" and l.startswith("cloud ceiling"))
-            got = _fetch_field(run, lead, recs,
-                               lambda v, l: v == "APCP" and l == "surface",
-                               with_meta=True)
-            acc, acc_fcst = got if got else (None, "")
+            got = _apcp(lead)
         except Exception as exc:
             log.error("gfs: lead +%dh failed: %s: %s", lead,
                       exc.__class__.__name__, exc)
+            prev = None
             continue
         if ceil is None:
             log.warning("gfs: no ceiling field at +%dh", lead)
             continue
 
         cb = np.where(ceil < NO_CEILING_M, ceil, np.nan)
-        # APCP is an accumulation over the interval since the last reset;
-        # divide to an average rate so the greens mean mm/h as on MEPS.
-        hrs = accum_hours(acc_fcst, 1) if acc is not None else 1
-        pr = np.clip(acc, 0, None) / max(hrs, 1) if acc is not None else None
+
+        pr = None
+        if got:
+            acc, (a0, a1) = got
+            if a0 == lead - step:
+                # The record's own interval is exactly this frame's: the hour
+                # after a bucket reset, and every 3-hourly lead past +120 h.
+                amount = np.clip(acc, 0, None)
+            else:
+                if prev is None or prev[1] != a0 or prev[0] != lead - step:
+                    # First frame of the run, or the previous lead failed.
+                    # One extra range request buys a correct frame instead of
+                    # a six-hour smear.
+                    try:
+                        seed = _apcp(lead - step)
+                    except Exception:
+                        seed = None
+                    prev = (lead - step, seed[1][0], seed[0]) if seed else None
+                if prev is not None and prev[1] == a0:
+                    amount = np.clip(acc - prev[2], 0, None)
+                else:
+                    log.warning("gfs: +%dh cannot difference %d-%d, drawing the "
+                                "bucket mean", lead, a0, a1)
+                    amount = np.clip(acc, 0, None) * step / max(a1 - a0, 1)
+            prev = (lead, a0, acc)
+            pr = amount / max(step, 1)          # mm/h, as on the MEPS frames
         prm = np.where(pr >= 0.1, pr, np.nan) if pr is not None else None
 
         valid = run + dt.timedelta(hours=lead)
