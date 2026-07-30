@@ -77,6 +77,10 @@
   .mapsub{font-weight:400;color:var(--muted);font-size:10px}
   .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:var(--panel);overflow:hidden}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  /* the selected cell/station, in the same place on every map */
+  .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
+         background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
+         pointer-events:none;z-index:3}
   .mapctl{display:flex;gap:8px;align-items:center;margin:8px 0 4px;flex-wrap:wrap}
   .mapctl input[type=range]{flex:1;min-width:200px;accent-color:var(--ink)}
   .mapctl .mtime{font-size:12px;font-weight:700;color:var(--ink);min-width:150px}
@@ -232,6 +236,30 @@ function setPoint(pid, label){
   currentPid=pid;
   const n=document.getElementById("selNote");
   if(n) n.textContent=label||"";
+  placeMapMarkers();
+}
+
+// Where the meteogram is being read, drawn on all three maps. They share the
+// EPSG:3059 grid and each image fills its box, so one percentage position is
+// correct on every panel regardless of how the browser scales them.
+function activeLatLon(){
+  if(typeof selectedCell !== "undefined" && selectedCell)
+    return {lat:selectedCell.lat, lon:selectedCell.lon};
+  const p=(POINTS||[]).find(x=>x.point_id===currentPid);
+  return (p && p.lat!=null) ? {lat:p.lat, lon:p.lon} : null;
+}
+function placeMapMarkers(){
+  const ll=activeLatLon();
+  for(const st of document.querySelectorAll(".stack")){
+    let m=st.querySelector(".mmark");
+    if(!ll || typeof proj4==="undefined"){ if(m) m.remove(); continue; }
+    if(!m){ m=document.createElement("div"); m.className="mmark"; st.appendChild(m); }
+    const [mx,my]=proj4("EPSG:4326","EPSG:3059",[ll.lon,ll.lat]);
+    const [px,py]=metersToPx(mx,my);
+    m.style.left=(px/570*100)+"%";
+    m.style.top=(py/690*100)+"%";
+    m.style.display=(px>=0&&px<=570&&py>=0&&py<=690)?"block":"none";
+  }
 }
 let liveSource=null;
 let weekStart = null;   // Date, Riga Monday 00:00
@@ -921,7 +949,8 @@ function mepsSrc(iso){
     return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · green: rain in the hour ending here"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
-    return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"archived · run "+archRun.slice(9)};
+    return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
+            cap:"archived · "+runLabel(archRun)+" run"};
   return gfsSrc(iso, thr);
 }
 // Days 3-7: MEPS stops at +66 h. GFS carries a gridded cloud ceiling — the
@@ -1115,7 +1144,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v32",
+    "page v33",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1242,6 +1271,7 @@ async function init(){
     highlightCell(cell);
   }
   await initMapsViewer();
+  placeMapMarkers();
   await load();
 }
 init();
