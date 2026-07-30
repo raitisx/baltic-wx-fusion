@@ -1007,11 +1007,9 @@ function umSrc(iso){
   const res=UM_RES;
   const um=MV.loaded[res];
   if(!um) return null;
-  // UM spacing widens with lead: hourly to +24 h, then 3-hourly, then
-  // 6-hourly past +78 h. Carrying only 3 h forward left the 6-hourly range
-  // with two empty hours after every frame, which reads as broken images
-  // rather than as a coarser model. Carry to the widest spacing and say how
-  // old the frame is.
+  // UM is fetched hourly to +96 h and 3-hourly to +120 h, so carrying forward
+  // only matters at the far end of the week. Carry to the widest spacing and
+  // say how old the frame is.
   const ts=Date.parse(iso);
   const arch=MV.loaded[res+"Archive"]?.hours;
   // An exact frame beats a carried one, wherever it lives. The newest run is
@@ -1160,7 +1158,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v35",
+    "page v36",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

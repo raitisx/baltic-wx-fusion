@@ -139,7 +139,21 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
     return out
 
 
-UM_LEADS = (list(range(1, 25)) + list(range(27, 73, 3)) + list(range(78, 121, 6)))
+# meteo.pl serves EVERY hour, not just the first day. We had been asking for
+# 1..24 hourly and then 3-hourly, which was our assumption, never theirs:
+# probed on the 30.07 12Z run, leads 25, 26, 27, 28, 30 and 31 all return
+# distinct non-empty frames. That self-imposed coarseness is what left the
+# afternoon with two empty hours after every frame.
+#
+# Hourly to +96 h, then 3-hourly to the +120 h horizon. Not hourly all the way
+# because each lead is nine tile requests against someone else's cache, and
+# this is a courtesy-scraped advisory layer: 104 leads is about 7 minutes of
+# polite fetching per run, twice a day.
+UM_LEADS = list(range(1, 98)) + list(range(99, 122, 3))
+# What earlier runs were fetched at. The purge below has to treat frames from
+# those runs as legitimate too, or changing this list would delete them.
+UM_LEADS_LEGACY = (list(range(1, 25)) + list(range(27, 73, 3))
+                   + list(range(78, 121, 6)))
 
 
 def um_purge_stale(name: str = "um4") -> int:
@@ -172,7 +186,7 @@ def um_purge_stale(name: str = "um4") -> int:
             run = dt.datetime.strptime(m.group(1), "%Y%m%dT%H").replace(
                 tzinfo=dt.timezone.utc)
             good = {(run + dt.timedelta(hours=h - UM_LEAD_OFFSET)).strftime("%Y%m%dT%H")
-                    for h in UM_LEADS}
+                    for h in (*UM_LEADS, *UM_LEADS_LEGACY)}
             if m.group(2) not in good:
                 stale.append(obj["Key"])
         if not resp.get("IsTruncated"):
