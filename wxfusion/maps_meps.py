@@ -46,6 +46,11 @@ FILL = 1e30  # cloud_base_altitude fill => clear sky
 CEILING_LCC = 0.60
 # Fog is a zero-foot ceiling however the cloud-base field reports it.
 FOG_COVER = 0.60
+# ...and so is a ceiling sitting on the deck, whether or not the fog field
+# agrees. MEPS's fog_area_fraction is strict: on the 30.07 06Z run only 1.7%
+# of the area with a ceiling under 700 m passed it. Without this, a cell whose
+# ceiling the model puts at 20 m would be drawn as an ordinary low ceiling.
+FOG_CEILING_M = 60.0
 
 
 def _gate_ceiling(cb, lcc, fog):
@@ -57,10 +62,11 @@ def _gate_ceiling(cb, lcc, fog):
     import numpy as np
     cb = np.where(cb > FILL, np.nan, cb)
     cb = np.where(lcc >= CEILING_LCC, cb, np.nan)
-    fogm = None
+    fogm = np.zeros(cb.shape, bool)
     if fog is not None:
-        fogm = fog >= FOG_COVER
-        cb = np.where(fogm, 0.0, cb)
+        fogm |= fog >= FOG_COVER
+    fogm |= np.isfinite(cb) & (cb < FOG_CEILING_M)
+    cb = np.where(fogm, 0.0, cb)
     return cb, fogm
 
 BORDERS_FILE = os.path.join(os.path.dirname(__file__), "assets", "borders_baltic.json")
