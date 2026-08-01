@@ -162,3 +162,36 @@ into `_classify_intensity`.
 
 That is slower than a one-shot fix and it is the honest shape of the problem:
 you cannot calibrate a radar against rain that has not fallen yet.
+
+---
+
+# The Estonian rings: five attempts, and what actually shipped
+
+| attempt | why it failed |
+|---------|---------------|
+| flat range cut on weak echo | removed 73% of Latvia's echo, which is real — Latvia has one radar, so most of the country *is* long range |
+| drop isolated all-weak blobs | removed 89% of Estonia on a day its whole field was genuinely light rain |
+| per-frame ring detector | the ring in the reported frame is 110 km wide, not a narrow spike; the test missed it and false-fired on real rain drifting out |
+| persistent clutter map | 60 frames over four days: median echo frequency beyond 200 km is **0.00**. The rings are episodic, not fixed — nothing to subtract |
+| beam-height quality mask | physically right, but at the 4 km height that catches 72% of the ring it also takes 60% of Latvia |
+
+On a single frame an artefact ring and real drizzle at 220 km are the same
+picture. What separates the feeds is not the frame, it is **how many radars
+each country has**, measured against the borders file:
+
+| country | radars | land within 150 km | 180 km | 250 km |
+|---------|-------:|-------------------:|-------:|-------:|
+| Estonia | 2 | 94% | 98% | 100% |
+| Lithuania | 2 | 96% | 100% | 100% |
+| Latvia | 1 | 64% | 78% | 99% |
+
+Estonian echo beyond 180 km is almost never over Estonia — it is over the sea,
+or over Latvia where Latvia's own radar is looking at the same sky from closer.
+Latvia's long range is not spare.
+
+So: weak echo (classes 1-2 only) is limited per feed — 180 km for Estonia and
+Lithuania, 250 km for Latvia — faded in over the last 40 km so there is no rim.
+Strong returns are untouched at every range, because a heavy core at 230 km is
+real weather even with the beam five kilometres up. Verified: class 3 and above
+byte-identical for all three feeds, and the far arcs gone from the Estonian
+frame while its rain core is unchanged.

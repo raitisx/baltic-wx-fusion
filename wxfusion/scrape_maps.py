@@ -969,7 +969,8 @@ SNOW_STEPS = [(223, 238, 255, 170), (181, 213, 251, 200), (127, 178, 238, 225),
               (69, 135, 214, 240), (31, 90, 168, 250), (255, 120, 0, 255)]
 
 
-def _recolor(cls: np.ndarray, cold: np.ndarray | None = None) -> Image.Image:
+def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
+             feed: str | None = None) -> Image.Image:
     """Intensity classes -> RGBA, in green or, where the air is below freezing,
     in blue. Recoloured from the class array rather than from finished pixels:
     once the sources are composited the edges are blended and no longer sit on
@@ -982,6 +983,10 @@ def _recolor(cls: np.ndarray, cold: np.ndarray | None = None) -> Image.Image:
             out[sel & cold] = SNOW_STEPS[i - 1]
         else:
             out[sel] = rgba
+    if feed:
+        w = _weak_alpha(feed)
+        weak = (cls > 0) & (cls <= WEAK_CLASSES)
+        out[..., 3] = np.where(weak, out[..., 3] * w, out[..., 3]).astype(np.uint8)
     return Image.fromarray(out, "RGBA")
 
 
@@ -1060,6 +1065,44 @@ def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | Non
 # Latvia, so 250 km is the working range for all of them.
 RADAR_RANGE_KM_COVER = 250
 EDGE_FADE_KM = 25
+# Weak echo fades much earlier than the coverage edge, and this is why.
+#
+# Estonia paints faint rings at long range — you can see them as arcs over the
+# gulf with clear air inside. I tried five ways to cut them and could not find
+# one that is safe:
+#
+#   a flat range cut         removed 73% of Latvia's echo, which is real: LV
+#                            has one radar, so most of its country IS long range
+#   isolated weak blobs      removed 89% of Estonia on a day its whole field
+#                            was genuinely light rain
+#   per-frame ring detector  the ring in the reported frame is 110 km wide, not
+#                            a narrow spike, and the test false-fired elsewhere
+#   a persistent clutter map 60 frames over four days: median echo frequency
+#                            beyond 200 km is 0.00, so the rings are episodic,
+#                            not fixed. Nothing to subtract.
+#   a beam-height rule       physically right, and at the 4 km height that
+#                            catches 72% of the ring it also takes 60% of Latvia
+#
+# On one frame, an artefact ring and real drizzle at 220 km are the same
+# picture. So this does not delete anything — it makes weak returns fade with
+# range, which is honest about how much a 0.2 mm/h echo from five kilometres up
+# is worth. A ring at 230 km renders at a sixth of its weight and stops
+# competing for attention; a heavy core at the same range is untouched, because
+# a strong return from high up is real weather.
+# What settles it is how many radars each country has. Measured against the
+# borders file: 94% of Estonia's land is within 150 km of an Estonian antenna
+# and 98% within 180, and Lithuania is 96% and 100% — both have two radars for
+# a small country. Latvia has one, at Riga, and only 64% of Latvia is inside
+# 150 km, 78% inside 180. So Estonian echo beyond 180 km is almost never over
+# Estonia; it is over the sea, or over Latvia where Latvia's own radar is
+# looking at the same sky from closer. Latvia's long range is not spare.
+#
+# Hence a per-feed limit on WEAK echo only, faded in over the last 40 km so
+# there is no rim. Strong returns are left alone everywhere: a heavy core at
+# 230 km is real weather even if the beam is five kilometres up.
+WEAK_RANGE_KM = {"EE": 180.0, "LT": 180.0, "LT2": 180.0, "LV": 250.0}
+WEAK_FADE_KM = 40.0
+WEAK_CLASSES = 2
 
 
 @functools.lru_cache(maxsize=4)
@@ -1079,6 +1122,32 @@ def _coverage_alpha(range_km: int = RADAR_RANGE_KM_COVER,
     for _, sx, sy in _site_pixels():
         d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
     return np.clip((range_km - d) / float(fade_km), 0.0, 1.0).astype(np.float32)
+
+
+@functools.lru_cache(maxsize=1)
+def _range_km() -> np.ndarray:
+    """Distance to the nearest antenna, in kilometres (1 px = 1 km)."""
+    from . import proj3059 as P
+    yy, xx = np.mgrid[0:P.H, 0:P.W]
+    d = np.full((P.H, P.W), np.inf, dtype=np.float32)
+    for _, sx, sy in _site_pixels():
+        d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
+    return d
+
+
+@functools.lru_cache(maxsize=8)
+def _weak_alpha(feed: str) -> np.ndarray:
+    """Multiplier for this feed's weak echo: 1 in close, 0 past its limit."""
+    from . import proj3059 as P
+    lim = WEAK_RANGE_KM.get(feed or "", 250.0)
+    sites = [(sx, sy) for n, sx, sy in _site_pixels() if n.startswith(feed[:2])]
+    if not sites:
+        return np.ones((P.H, P.W), np.float32)
+    yy, xx = np.mgrid[0:P.H, 0:P.W]
+    d = np.full((P.H, P.W), np.inf, np.float32)
+    for sx, sy in sites:
+        d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
+    return np.clip((lim - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
 
 
 def _fade_edges(canvas: Image.Image) -> Image.Image:
@@ -1112,6 +1181,9 @@ def radar_composite(frames_back: int = 3) -> None:
     # One lookup for the whole frame: every source is being drawn for the same
     # hour, so they share an isotherm.
     cold = _freezing_mask(dt.datetime.now(dt.timezone.utc))
+    # The strongest class any feed put on each pixel, so the fade can tell weak
+    # echo from heavy. Taken from the classes, not read back off the canvas:
+    # once four feeds are composited the pixels are blended.
     newest = None
     for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
         use = frames[:frames_back]
@@ -1137,7 +1209,7 @@ def radar_composite(frames_back: int = 3) -> None:
         # beams kept surviving however the test was tuned.
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
         cur = _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))
-        canvas.alpha_composite(_recolor(cur, cold))
+        canvas.alpha_composite(_recolor(cur, cold, code))
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
@@ -1287,7 +1359,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                 # Warp first, clean second — see the note in radar_composite.
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
                 grid = _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))
-                canvas.alpha_composite(_recolor(grid, cold))
+                canvas.alpha_composite(_recolor(grid, cold, code))
                 used.append(best["time"])
                 got = True
             if not got:
