@@ -20,6 +20,7 @@ Radar (meteolapa.lv fuses LVGMC LV + EE composites):
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import io
 import json
 import logging
@@ -934,6 +935,41 @@ def _load_and_classify(url: str, s) -> np.ndarray | None:
     return _classify_intensity(np.array(img))
 
 
+# Coverage is geometry, not opacity. Estonia paints its whole disc — 76,061 px
+# against 18,475 px of echo on the 31.07 20:01 frame — but Latvia and Lithuania
+# paint only where it rains, so their opaque area IS the echo and fading by it
+# would eat the weather. Measured on that frame, the furthest covered pixel is
+# 255 km from the nearest antenna for Estonia, 242 for Lithuania, 233 for
+# Latvia, so 250 km is the working range for all of them.
+RADAR_RANGE_KM_COVER = 250
+EDGE_FADE_KM = 25
+
+
+@functools.lru_cache(maxsize=4)
+def _coverage_alpha(range_km: int = RADAR_RANGE_KM_COVER,
+                    fade_km: int = EDGE_FADE_KM) -> np.ndarray:
+    """1 inside the radar discs, ramping to 0 over the last fade_km of range.
+
+    A hard rim reads as a weather boundary — a straight edge or a clean arc is
+    the one shape rain never has. It is also where the data is weakest: at
+    maximum range the beam is kilometres up and kilometres wide, so what it
+    reports is barely a surface observation. Fading it says both things at once.
+    """
+    from . import proj3059 as P
+
+    yy, xx = np.mgrid[0:P.H, 0:P.W]
+    d = np.full((P.H, P.W), np.inf, dtype=np.float32)
+    for _, sx, sy in _site_pixels():
+        d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
+    return np.clip((range_km - d) / float(fade_km), 0.0, 1.0).astype(np.float32)
+
+
+def _fade_edges(canvas: Image.Image) -> Image.Image:
+    a = np.array(canvas)
+    a[..., 3] = (a[..., 3].astype(np.float32) * _coverage_alpha()).astype(np.uint8)
+    return Image.fromarray(a, "RGBA")
+
+
 def radar_composite(frames_back: int = 3) -> None:
     """Latest LV+EE+LT frames -> cleaned, recoloured Baltic composite in R2."""
     overlays = parse_radar_overlays()
@@ -985,6 +1021,7 @@ def radar_composite(frames_back: int = 3) -> None:
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
+    canvas = _fade_edges(canvas)
     # thin borders on the overlay itself (readable even without background)
     from PIL import ImageDraw
     borders_file = os.path.join(os.path.dirname(__file__), "assets",
@@ -1135,6 +1172,7 @@ def radar_backfill(hours_back: int = 168) -> None:
             if not got:
                 log.info("backfill %s: no frames in archive", hour_key)
                 continue
+            canvas = _fade_edges(canvas)
             draw_borders(canvas)
             # Name the frame after the sweep it actually came from, not after
             # the hour we asked for. Sources arrive on their own ~10 min
