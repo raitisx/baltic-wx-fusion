@@ -23,7 +23,7 @@ on:
         type: string
         default: "168"
       force:
-        description: "radar-maps: re-render hours already archived (apply new styling/cleaning)"
+        description: "radar-maps / meps-maps: re-render hours already archived (apply new styling/cleaning)"
         type: boolean
         default: false
       runs:
@@ -98,6 +98,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           MEPS_RUNS: ${{ inputs.runs }}
+          BACKFILL_FORCE: ${{ inputs.force && '1' || '0' }}
         run: python jobs/run_meps_backfill.py
 
       - name: Station observation backfill -> Supabase

@@ -105,7 +105,14 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
     """Render short-lead frames from PAST runs still on thredds (the catalog
     keeps roughly the last day of runs) so today's already-passed hours get
     near-analysis maps. Registers them in maps/meps/archive.json; an hour is
-    only overwritten by a NEWER run (shorter lead = better)."""
+    only overwritten by a NEWER run (shorter lead = better).
+
+    BACKFILL_FORCE=1 re-renders hours that are already claimed, which is what
+    you want after a change to the palette or to what gets drawn — otherwise
+    the archived frames keep whatever they were rendered with."""
+    force = os.environ.get("BACKFILL_FORCE", "") == "1"
+    if force:
+        log.info("FORCE: re-rendering hours already in the archive")
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -170,7 +177,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
                 continue
             valid = times[i]
             vtag = valid.strftime("%Y%m%dT%H")
-            if arch["hours"].get(vtag, "") >= run_tag:
+            if not force and arch["hours"].get(vtag, "") >= run_tag:
                 continue
             if i + 1 >= len(acc):
                 continue
