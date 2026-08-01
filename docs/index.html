@@ -14,6 +14,7 @@
     --threshold:#cc2222; --belowzone:rgba(217,47,47,.10);
     --ok:#2e9e2e; --marginal:#e0a300; --nofly:#d92f2f;
     --now:#0f9d3a;
+    --dewwet:#c62828; --dewdry:#63b063; --dewfrost:#5b6bc0;
   }
   html,body{margin:0;padding:0}
   body{
@@ -194,6 +195,7 @@ async function rpc(fn, args){
   return r.json();
 }
 const fmtHour = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,hour:"2-digit",hour12:false});
+const fmtHM   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtDay  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit"});
 const fmtDM   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"2-digit",month:"2-digit"});
 const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
@@ -454,6 +456,7 @@ function fuse(){
     FUSED.push(row);
   }
   shiftPrecipToHourStart();
+  computeDew();          // needs the rain already stamped to the hour it falls
 }
 
 // Every precipitation number we receive — Open-Meteo's, the stations', and the
@@ -473,6 +476,134 @@ function shiftPrecipToHourStart(){
   }
   for(const r of FUSED){ r.prcp_1h=r._prcp; r.prcp_prob=r._prob;
                          delete r._prcp; delete r._prob; }
+}
+
+// ---------- dew on the ground ----------
+// When the overnight dew dries is an energy question, not an angle. Dew is a
+// film of water; it goes when enough energy has arrived to evaporate it. Solar
+// elevation sets the rate, but what clears the field is the integral since
+// sunrise. That distinction matters here: at 56.9 N the sun only rises above
+// 35 degrees between 26 March and 17 September, yet the ground dries on most
+// mornings of the other six months too. Checked against a year of reanalysis
+// at Riga: of 106 dewy mornings that dried, 53 never saw the sun reach 35
+// degrees at all, and of the 53 that did, 33 were already dry by then, on
+// average an hour earlier.
+//
+// Three pieces, each calibrated separately:
+//   solar elevation  NOAA low-precision; 56.51 deg at the June solstice
+//                    against an almanac 56.5, 9.64 against 9.6 in December
+//   irradiance       fitted to a year of hourly reanalysis shortwave at Riga
+//                    (n=4112): bias 0, rmse 116 W/m2, daily totals 19%
+//   surface cooling  fitted to 398 night hours of modelled surface temperature
+//                    (bias -0.05 K, rmse 0.92 K), scaled by GRASS_COOL because
+//                    a canopy is cut off from the soil and cools further
+// Deposition is set by measurement rather than fitted: 0.14 +/- 0.12 mm per
+// night over grassland across the NEON radiometer network. This model puts the
+// median night at 0.17 mm and dew on 28% of nights, against 25 +/- 14% measured
+// at humid temperate sites.
+const GRASS_COOL = 1.3;      // grass runs colder than the bare surface
+const DEW_CAP    = 0.20;     // mm, the most free water a canopy holds
+const LAT_HEAT   = 2.45e6;   // J/kg, evaporation
+const SUB_HEAT   = 2.83e6;   // J/kg, sublimation — frost costs more to shift
+const GAMMA      = 0.0665;   // psychrometric constant, kPa/K
+
+function solarElev(ms, lat, lon){
+  const n = ms/86400000 + 2440587.5 - 2451545.0;
+  const rad = Math.PI/180;
+  const L = (280.460 + 0.9856474*n) % 360;
+  const g = ((357.528 + 0.9856003*n) % 360) * rad;
+  const lam = (L + 1.915*Math.sin(g) + 0.020*Math.sin(2*g)) * rad;
+  const eps = (23.439 - 0.0000004*n) * rad;
+  const dec = Math.asin(Math.sin(eps)*Math.sin(lam));
+  const y = Math.tan(eps/2)**2, Lr = L*rad;
+  const eot = 4/rad * (y*Math.sin(2*Lr) - 2*0.0167*Math.sin(g)
+      + 4*0.0167*y*Math.sin(g)*Math.cos(2*Lr)
+      - 0.5*y*y*Math.sin(4*Lr) - 1.25*0.0167**2*Math.sin(2*g));
+  const d = new Date(ms);
+  const utcMin = d.getUTCHours()*60 + d.getUTCMinutes() + d.getUTCSeconds()/60;
+  const tst = (utcMin + eot + 4*lon + 1440) % 1440;
+  const ha = (tst/4 - 180) * rad;
+  const s = Math.sin(lat*rad)*Math.sin(dec) + Math.cos(lat*rad)*Math.cos(dec)*Math.cos(ha);
+  return Math.asin(Math.max(-1,Math.min(1,s))) / rad;
+}
+const svp   = t => 0.6108*Math.exp(17.27*t/(t+237.3));            // kPa
+const dsvp  = t => 4098*svp(t)/((t+237.3)**2);                    // kPa/K
+// Clear and calm the ground runs several degrees below the thermometer screen,
+// which is why dew appears while the screen still reads above its dew point.
+// Cloud puts a lid on the radiative loss and wind mixes it away, so both
+// collapse the difference.
+const cooling = (cc, ws) =>
+  GRASS_COOL * 3.0 * (1 - 0.40*Math.max(0,Math.min(100,cc??50))/100)
+             * Math.exp(-Math.max(0, ws??3)/4.0);
+const irradiance = (elev, cc) => {
+  if(elev <= 0) return 0;
+  const clear = 1020*Math.sin(elev*Math.PI/180) - 20;
+  if(clear <= 0) return 0;
+  return clear * (1 - 0.62*(Math.max(0,Math.min(100,cc??50))/100)**4);
+};
+// Penman, kept in its two parts. The radiation term is what the sun does; the
+// aerodynamic term is what dry moving air does, and it is the reason dew still
+// clears on a breezy overcast morning with no sun worth speaking of.
+function evapRate(t, td, ws, cc, elev){
+  const rn = 0.75*irradiance(elev, cc) - (elev > 0 ? 45 : -25);
+  const D = dsvp(t), w = D/(D+GAMMA);
+  const vpd = Math.max(0, svp(t) - svp(td));
+  const le = w*rn + (1-w)*6.43*(1 + 0.536*Math.max(0,ws??3))*vpd*11.574;
+  // W/m2 divided by J/kg is kg/m2/s; an hour of it is kg/m2, which over water
+  // is millimetres. No other factor belongs here.
+  return le <= 0 ? 0 : le/LAT_HEAT*3600;
+}
+
+function computeDew(){
+  const ll = activeLatLon();
+  let water = 0, frost = false, fromRain = false;
+  for(const r of FUSED){
+    r.dew = null;
+    if(!ll || r.t2m == null || r.td2m == null) continue;
+    // Mid-hour sun: the row stands for the hour that starts at its stamp.
+    const elev = solarElev(r.ts + 1800e3, ll.lat, ll.lon);
+    const cool = cooling(r.cc_total, r.ws10m);
+    const night = elev < 3;
+    const surfT = r.t2m - (night ? cool : 0);
+    const depression = r.t2m - r.td2m;
+    let laid = 0;
+    if(night && depression < cool){
+      laid = 0.028 * Math.min(1, (cool - depression)/Math.max(cool, 0.5));
+      if(water === 0) fromRain = false;
+      water = Math.min(DEW_CAP, water + laid);
+      if(surfT < 0) frost = true;
+    }
+    // Rain leaves more on a canopy than dew ever does — grass holds something
+    // like half a millimetre before it starts shedding — so a wet hour resets
+    // the film rather than adding to it.
+    if((r.prcp_1h ?? 0) > 0.1){
+      water = Math.max(water, Math.min(0.5, r.prcp_1h));
+      frost = false; fromRain = true;
+    }
+    let rate = 0, cleared = null;
+    if(water > 0){
+      rate = evapRate(r.t2m, r.td2m, r.ws10m, r.cc_total, elev);
+      if(frost){
+        rate *= LAT_HEAT/SUB_HEAT;
+        if(r.t2m > 0.5) frost = false;
+      }
+      if(rate > 0 && rate >= water && laid === 0){
+        // Interpolate inside the hour so the answer is a time, not a bucket.
+        const at = r.ts + Math.round(water/rate*3600e3);
+        // Stamp a time on it only in daylight. Wind drying a rain-soaked field
+        // at nine in the evening is real and the bar turns green for it, but
+        // "dries at 23:19" answers a question nobody asked. Whether the water
+        // came from dew or from rain does not change when you can fly, so it
+        // does not gate the label — the tooltip says which it was.
+        if(solarElev(at, ll.lat, ll.lon) > 0) cleared = at;
+      }
+      water = Math.max(0, water - rate);
+      if(water === 0){ frost = false; fromRain = false; }
+    }
+    r.dew = {wet: water > 0.005, water, frost: frost && water > 0.005,
+             elev, surfT, cool, rate, cleared, fromRain,
+             rain: (r.prcp_1h ?? 0) > 0.1};
+  }
 }
 
 function dayVerdicts(cbLim, wgLim){
@@ -507,6 +638,7 @@ const PANELS = [
   {id:"prcp",  h:120, rows:[["precip mm/h","--precip"],["rel.humid. %","--humid"]]},
   {id:"wind",  h:120, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
   {id:"cloud", h:200, rows:[["ceiling m","--cloud"],["fog / mist","--fog"]]},
+  {id:"dew",   h:26,  rows:[["dew","--dewwet"]]},
 ];
 function xPos(ts){
   const t0=FUSED[0].ts, t1=t0+HOURS*3600e3;
@@ -780,6 +912,53 @@ function render(){
     }
   }
 
+  // dew on the ground: red while there is water on it, green once it is gone
+  {
+    const p=PANELS[4];
+    const top=panelTop[p.id], bot=top+p.h, h=p.h-10, y=top+5;
+    // Drawn as runs rather than one rectangle per hour: 168 abutting rects at
+    // fractional x leave hairline seams that read as stripes, and this bar is
+    // too short to carry that much texture.
+    const state = r => !r.dew ? "none" : r.dew.frost ? "frost" : r.dew.wet ? "wet" : "dry";
+    // Wet reads at full strength; dry is quieter, because "you can fly" should
+    // not shout as loudly as "you cannot".
+    const paint = {none:[css("--grid"),1], frost:[css("--dewfrost"),0.95],
+                   wet:[css("--dewwet"),1], dry:[css("--dewdry"),1]};
+    let i=0;
+    while(i<FUSED.length){
+      const s=state(FUSED[i]);
+      let j=i; while(j+1<FUSED.length && state(FUSED[j+1])===s) j++;
+      const x=xPos(FUSED[i].ts), [c,o]=paint[s];
+      svgEl("rect",{x,y,width:xPos(FUSED[j].ts+3600e3)-x,height:h,fill:c,opacity:o},svg);
+      i=j+1;
+    }
+    // Print the clearing time where the ground actually dries out. This is the
+    // number the whole panel exists to produce.
+    // Every dry-out gets a tick. Ticks are drawn first, in their own pass, or a
+    // later one slices through an earlier label.
+    const dries=FUSED.filter(r=>r.dew?.cleared!=null).map(r=>r.dew.cleared);
+    for(const c of dries)
+      svgEl("line",{x1:xPos(c),x2:xPos(c),y1:y,y2:y+h,stroke:"#fffdf4","stroke-width":1.4},svg);
+    // Not every one gets a time. On a showery day the ground can dry four times
+    // over, and four stamps on top of each other say less than one does; the
+    // tooltip has the rest.
+    let lastLabelX=-99;
+    for(const c of dries){
+      const x=xPos(c);
+      if(x-lastLabelX < 46) continue;
+      lastLabelX=x;
+      const t=svgEl("text",{x:x+3,y:y+h-3.5,"font-size":"8.5","font-weight":"700",
+                            fill:"#fffdf4"},svg);
+      t.textContent=fmtHM.format(new Date(c));
+    }
+    for(let d=0;d<7;d++){
+      const x=xPos(FUSED[0].ts+d*86400e3);
+      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
+    }
+    svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",
+                  stroke:css("--gridday"),"stroke-width":1},svg);
+  }
+
   for(const r of FUSED){
     if(r.hourOfDay%6!==0) continue;
     const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":"8.5","font-weight":"700",fill:css("--ink")},svg);
@@ -823,6 +1002,16 @@ function render(){
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
+      ...(r.dew?[[r.dew.frost?"--dewfrost":r.dew.wet?"--dewwet":"--dewdry",
+        r.dew.frost?"frost":r.dew.wet?(r.dew.fromRain?"wet (rain)":"dew"):"ground dry",
+        r.dew.wet
+          ? `${r.dew.water.toFixed(2)} mm · ` + (r.dew.rate>0.004
+              ? `drying ${r.dew.rate.toFixed(2)} mm/h`
+              : "not drying")
+          : "sun " + (r.dew.elev>0?`${Math.round(r.dew.elev)}° up`:"down")]]:[]),
+      ...(r.dew?.cleared!=null
+          ? [["--dewdry","dries at",fmtHM.format(new Date(r.dew.cleared))
+             + ` · sun ${Math.round(r.dew.elev)}°`]] : []),
     ];
     for(const [c,l,v] of rows){
       const tr=document.createElement("tr");
@@ -1233,7 +1422,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v42",
+    "page v44",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
