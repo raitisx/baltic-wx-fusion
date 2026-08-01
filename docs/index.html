@@ -775,15 +775,26 @@ function linePath(rows, key, y){
 // The cloud-base selector is a real <select>, not SVG, so it is an absolutely
 // positioned overlay. Percentages rather than pixels because the SVG scales
 // with the window and the line has to stay under it.
-// Held in a variable, not looked up: render() empties #chart every time, which
-// would take the <select> and its listeners with it. Detached and re-attached,
-// the same element survives.
-let CB_BOX=null;
+// Held in variables, not looked up. Once the selector has been moved into the
+// chart it is a child of #chart, and #chart is emptied on every render — so a
+// getElementById for it returns null for the rest of the frame. That is not a
+// hypothetical: it took the page down with "Cannot read properties of null".
+// Two defences, because either alone is one edit away from breaking again:
+// the box is skipped when the chart is cleared, and every read goes through
+// cbLimit() rather than the DOM.
+let CB_BOX=null, CB_SEL=null;
+function cbSel(){
+  return CB_SEL || (CB_SEL=document.getElementById("selCb"));
+}
+function cbLimit(){
+  const v=+(cbSel()?.value);
+  return Number.isFinite(v) ? v : 700;
+}
 function placeCbBox(yVB, totalH){
   if(!CB_BOX){
     CB_BOX=document.createElement("div");
     CB_BOX.id="cbBox";
-    const sel=document.getElementById("selCb");
+    const sel=cbSel();
     sel.hidden=false;
     CB_BOX.appendChild(sel);
     const cap=document.createElement("div");
@@ -796,9 +807,11 @@ function placeCbBox(yVB, totalH){
 
 function render(){
   const chart=document.getElementById("chart");
-  chart.textContent="";
+  // Everything except the selector overlay, which has to stay in the document
+  // between frames — see the note above cbSel().
+  for(const n of [...chart.childNodes]) if(n!==CB_BOX) chart.removeChild(n);
   if(!FUSED.length) return;
-  const cbLim=+document.getElementById("selCb").value;
+  const cbLim=cbLimit();
   const wgLim=+document.getElementById("selWg").value;
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -957,7 +970,7 @@ function render(){
       const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
-    const cbLimV=+document.getElementById("selCb").value;
+    const cbLimV=cbLimit();
     svgEl("rect",{x:P.left,y:y(cbLimV),width:P.width-P.left-P.right,height:y0-y(cbLimV),fill:css("--belowzone")},svg);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLimV),y2:y(cbLimV),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
     // The selector rides the dashed line it sets, so the number and the line
@@ -1485,7 +1498,7 @@ function frameTime(f){
 function vtagOf(iso){ return iso.replace(/[-:]/g,"").slice(0,11); }
 function mepsThr(){
   const thrs=MV.loaded.meps?.thresholds || MV.loaded.gfs?.thresholds;
-  const want=+document.getElementById("selCb").value;
+  const want=cbLimit();
   return thrs ? thrs.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a) : want;
 }
 function mepsSrc(iso){
@@ -1516,7 +1529,7 @@ function gfsSrc(iso, _thr){
   if(!gfs) return null;
   // GFS renders its own threshold set (MEPS also has 650, which no dropdown
   // entry maps to), so pick from the manifest rather than reusing MEPS's.
-  const want=+document.getElementById("selCb").value;
+  const want=cbLimit();
   const thr=(gfs.thresholds||[want]).reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a);
   const ts=Date.parse(iso), step=(gfs.step_h||3)*3600e3;
   let best=null;
@@ -1718,7 +1731,7 @@ async function initMapsViewer(){
     btn.textContent="⏸ stop";
     MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),500);
   });
-  document.getElementById("selCb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
+  cbSel().addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
     if(MV.playing) return;
@@ -1726,7 +1739,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v47",
+    "page v48",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1839,7 +1852,7 @@ async function init(){
   if(startPt) setPoint(startPt.point_id,
     isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
                        : `▣ ${startPt.name ?? "map cell"} · 25 km`);
-  document.getElementById("selCb").addEventListener("change",()=>{render();});
+  cbSel().addEventListener("change",()=>{render();});
   document.getElementById("selWg").addEventListener("change",()=>{render();});
   document.getElementById("btnReload").addEventListener("click",load);
   opsInit();
