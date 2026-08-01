@@ -10,6 +10,7 @@ on:
         options:
           - radar-maps
           - meps-maps
+          - meps-grid
           - station-obs
           - forecast-archive
           - obs-archive
@@ -50,6 +51,14 @@ on:
         description: "station-obs: meteo.lt days of history (0 = skip)"
         type: string
         default: "0"
+      grid_from:
+        description: "meps-grid: first day to fetch (YYYY-MM-DD)"
+        type: string
+        default: ""
+      grid_to:
+        description: "meps-grid: last day to fetch (YYYY-MM-DD)"
+        type: string
+        default: ""
       only_missing:
         description: "forecast-archive: skip runs already present in R2"
         type: boolean
@@ -75,6 +84,7 @@ jobs:
           case "${{ inputs.target }}" in
             radar-maps)       pip install pillow numpy pyproj scipy scikit-image ;;
             meps-maps)        pip install netCDF4 matplotlib numpy pillow pyproj ;;
+            meps-grid)        pip install netCDF4 matplotlib numpy pillow pyproj boto3 ;;
             forecast-archive) pip install pyarrow boto3 ;;
             obs-archive)      pip install pyarrow boto3 ;;
             um-archive)       pip install boto3 ;;
@@ -105,6 +115,20 @@ jobs:
           MEPS_DAYS: ${{ inputs.days }}
           BACKFILL_FORCE: ${{ inputs.force && '1' || '0' }}
         run: python jobs/run_meps_backfill.py
+
+      # The year of MEPS fields, in chunks. A month a run is comfortable;
+      # a year in one go would outlast the job timeout.
+      - name: MEPS grid archive -> R2
+        if: inputs.target == 'meps-grid'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          GRID_FROM: ${{ inputs.grid_from }}
+          GRID_TO: ${{ inputs.grid_to }}
+          GRID_RENDER_DAYS: "0"
+        run: python jobs/run_meps_grid.py
 
       - name: Station observation backfill -> Supabase
         if: inputs.target == 'station-obs'

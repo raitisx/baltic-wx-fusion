@@ -82,6 +82,22 @@ jobs:
           PAIR_KEEP_DAYS: "60"
         run: python jobs/run_pairing.py
 
+      # Keep the last fortnight of frames drawable without touching thredds,
+      # and roll the three windows forward: grids at a year, frames at two
+      # weeks, on-demand renders at a day.
+      - name: MEPS grid store + retention
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          GRID_FROM: ""
+          GRID_TO: ""
+          GRID_PRUNE: "1"
+        run: python jobs/run_meps_grid.py
+
       - name: MEPS maps
         if: always()
         continue-on-error: true

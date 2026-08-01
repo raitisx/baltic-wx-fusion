@@ -16,6 +16,7 @@ borders from a bundled Natural Earth extract.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import logging
 import os
@@ -119,6 +120,59 @@ def archive_runs(day: dt.date) -> list[str]:
         return []
     names = re.findall(r'<dataset name="(meps_det_2_5km_\d{8}T\d{2}Z\.nc)"', r.text)
     return [f"{ARCHIVE_DAP}/{day:%Y/%m/%d}/{n}" for n in sorted(set(names))]
+
+
+def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
+    """One hour of fields -> {threshold: PNG bytes}, the shared drawing path.
+
+    Used by the grid renderer. The two older paths still draw inline; they
+    should end up here too, but they are working and this is new code, so the
+    duplication is deliberate for now.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    from PIL import Image as PILImage
+
+    from . import proj3059 as P
+
+    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
+    pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
+    orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
+    borders = json.load(open(BORDERS_FILE))
+    xw, yw = P.to_xy(lonw, latw)
+    prm = np.where(pr >= 0.1, pr, np.nan)
+    out = {}
+    for thr in THRESHOLDS:
+        fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_facecolor("#fbf3de")
+        ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
+        ax.set_aspect("equal"); ax.axis("off")
+        fg = fogm if fogm is not None else np.zeros(cb.shape, bool)
+        below = np.where(np.isfinite(cb) & (cb < thr) & ~fg, 1.0, np.nan)
+        ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1, alpha=0.75,
+                      shading="auto")
+        ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange, vmin=0,
+                      vmax=1, alpha=0.8, shading="auto")
+        ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4, alpha=0.9,
+                      shading="auto")
+        for c in borders:
+            for line in c["lines"]:
+                bx, by = P.to_xy([lo for lo, _ in line], [la for _, la in line])
+                ax.plot(bx, by, color="#f7f1e2", lw=2.4, alpha=0.9,
+                        solid_capstyle="round")
+                ax.plot(bx, by, color="#55503f", lw=0.9, solid_capstyle="round")
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=100, format="png")
+        plt.close(fig)
+        buf.seek(0)
+        q = io.BytesIO()
+        PILImage.open(buf).convert("RGB").quantize(
+            colors=192, dither=PILImage.Dither.NONE).save(q, "PNG", optimize=True)
+        out[thr] = q.getvalue()
+    return out
 
 
 def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),

@@ -81,3 +81,29 @@ Current fusion weights: `select * from wx.model_weights order by parameter, lead
   `meteo@icm.edu.pl` about licensed access. Constraints in requirements doc §5.
 - EE historical bulk archive investigation.
 - True cloud-layer profiles from pressure-level cloud cover.
+
+## Map history: three tiers
+
+Map PNGs are output, not input — once drawn, a palette change cannot fix them,
+and once deleted the hour is gone. So the model fields are kept as data and the
+pictures are treated as disposable:
+
+| tier | where | kept | cost |
+|---|---|---|---|
+| grid | `maps/meps_grid/YYYY/MM/DD/<hour>.npz` | 365 days | 141 KiB/h, 3.3 MiB/day, 1.2 GiB/year |
+| frames | `maps/meps/<run>/<hour>_alt<thr>.png` | 14 days | 5 PNGs per hour |
+| on demand | `maps/meps_req/<hour>_alt<thr>.png` | 1 day | drawn when asked for |
+
+Inside the year, re-rendering an hour is one object read and about a second of
+drawing — no thredds call. Outside it, the hour is fetched from MET Norway's
+`meps25epsarchive`, which goes back years.
+
+The page has no server behind it, so an hour older than the frame window cannot
+be drawn during a page load. Clicking one writes a row through `wx_request_map`
+and the hourly tick draws it, which is why the caption says "drawn within the
+hour". Requests are capped server-side at 200 pending.
+
+Filling the year: `backfill` → `meps-grid` with `grid_from` / `grid_to`, a
+month per run. Reading one run is about 6 s, so a month is ~25 min and the year
+about 4.5 h of OPeNDAP time in total. Days already stored are skipped, so an
+interrupted run can simply be repeated.

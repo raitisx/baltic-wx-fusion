@@ -341,6 +341,9 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays){
 const FOG_VIS_M=1000, DENSE_VIS_M=300;
 // Full-strength fog draws up to the 300 m line on the ceiling scale.
 const FOG_FULL_M=300;
+// How long rendered frames are kept. Beyond this the hour has to be redrawn
+// from the stored grid, which is a background job rather than a page load.
+const FRAME_DAYS=14;
 const CEILING_COVER=60;
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
   "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis"];
@@ -997,6 +1000,13 @@ function mepsSrc(iso){
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
             cap:"archived · "+runLabel(archRun)+" run"};
+  // Frames are kept for a fortnight; the model fields behind them for a year.
+  // Older than the frame window, ask for it to be drawn and show whatever
+  // arrives — the render happens on the next hourly pass, because there is no
+  // server here to do it while you wait.
+  if(Date.parse(iso) < Date.now() - FRAME_DAYS*86400e3)
+    return {url:`${MAPS_BASE}/maps/meps_req/${vtagOf(iso)}_alt${thr}.png?v=req`,
+            cap:"requested · drawn within the hour", request:iso};
   return gfsSrc(iso, thr);
 }
 // Days 3-7: MEPS stops at +66 h. GFS carries a gridded cloud ceiling — the
@@ -1090,6 +1100,20 @@ function umSrc(iso){
   }
   return null;
 }
+// One queue row per hour, at most once per page load. The RPC is idempotent
+// and rate-limited on the server side; this just avoids asking on every scrub.
+const REQUESTED=new Set();
+function requestMapHour(iso, img){
+  if(REQUESTED.has(iso)) return;
+  REQUESTED.add(iso);
+  img.addEventListener("error", ()=>{
+    rpc("wx_request_map",{p_hour:iso}).then(r=>{
+      const cap=document.getElementById("mepsTime");
+      if(cap) cap.textContent = r==="queued" ? "requested · drawn within the hour"
+                              : "not available ("+r+")";
+    }).catch(()=>{});
+  }, {once:true});
+}
 function radarSrc(iso){
   const rad=MV.loaded.radar;
   if(!rad) return null;
@@ -1116,7 +1140,11 @@ function mapShow(i){
   document.getElementById("mapTime").textContent=label;
   document.getElementById("mapTimeHead").textContent=label;
   const m=mepsSrc(iso), mImg=document.getElementById("imgMeps");
-  if(m){ mImg.style.opacity="1"; document.getElementById("mepsTime").textContent=m.cap; mImg.src=m.url; }
+  if(m){
+    mImg.style.opacity="1"; document.getElementById("mepsTime").textContent=m.cap;
+    if(m.request) requestMapHour(m.request, mImg);
+    mImg.src=m.url;
+  }
   else { mImg.style.opacity="0.15"; document.getElementById("mepsTime").textContent="no frame for this hour"; }
   const u=umSrc(iso), uImg=document.getElementById("imgUm");
   const uCap=document.getElementById("umTime");
@@ -1195,7 +1223,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v38",
+    "page v39",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

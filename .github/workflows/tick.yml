@@ -71,6 +71,20 @@ jobs:
                                 # repaired within the hour, not next sweep
         run: python jobs/run_radar_backfill.py
 
+      # Hours the page asked for that have no frames. Usually nothing to do.
+      - name: Requested map hours
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: |
+          pip install netCDF4 matplotlib >/dev/null
+          python jobs/run_map_requests.py
+
       # Only when the models pass was missed. Costs nothing on a normal tick.
       - name: Map dependencies (stale only)
         if: always() && steps.stale.outputs.maps == '1'
