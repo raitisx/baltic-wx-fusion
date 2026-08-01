@@ -265,7 +265,21 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
             log.warning("gfs: no ceiling field at +%dh", lead)
             continue
 
+        # HGT is geopotential height, which is referenced to mean sea level —
+        # NCEP's table calls this record "geopotential height of cloud ceiling"
+        # and says no more, but that is what the quantity means. Same correction
+        # as MEPS: subtract the ground so the map answers the question a pilot
+        # asks. A single frame could not settle it empirically (the ceiling's
+        # correlation with terrain is dominated by where the weather is), so
+        # this rests on the definition rather than on a measurement.
         cb = np.where(ceil < NO_CEILING_M, ceil, np.nan)
+        try:
+            surf = _fetch_field(run, lead, recs,
+                                lambda v, l: v == "HGT" and l == "surface")
+            if surf is not None:
+                cb = np.maximum(cb - surf, 0.0)
+        except Exception:
+            log.warning("gfs: no surface height at +%dh; ceiling stays above sea level", lead)
 
         pr = None
         if got:

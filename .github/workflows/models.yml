@@ -41,6 +41,11 @@ jobs:
           H=$(date -u +%-H)
           if [ "${{ inputs.pairing }}" = "true" ] || [ "$H" -lt 12 ]; then
             echo "pairing=1" >> "$GITHUB_OUTPUT"; else echo "pairing=0" >> "$GITHUB_OUTPUT"; fi
+          # Radar calibration once a day. It walks every raining hour of the
+          # last day and reads up to six frames per hour per feed, so it is not
+          # something to do on the hourly tick.
+          if [ "$H" -lt 12 ]; then
+            echo "calibrate=1" >> "$GITHUB_OUTPUT"; else echo "calibrate=0" >> "$GITHUB_OUTPUT"; fi
 
       - name: Forecasts (hot tier + R2 archive + prune)
         env:
@@ -141,3 +146,20 @@ jobs:
           R2_BUCKET: baltic-wx
           BACKFILL_HOURS: "18"
         run: python jobs/run_radar_backfill.py
+
+      # Yesterday's rain, paired with the colour each national radar was
+      # painting over each gauge. The tables this builds are what stops the
+      # three feeds being read on three different scales; they are empty at
+      # first and fill in as weather happens, so this wants to run every day
+      # rather than once.
+      - name: Radar calibration against rain gauges
+        if: always() && steps.gate.outputs.calibrate == '1'
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CAL_HOURS: "30"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_stations.py && python jobs/run_radar_calibrate.py

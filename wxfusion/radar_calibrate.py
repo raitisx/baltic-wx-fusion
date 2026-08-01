@@ -172,3 +172,48 @@ def merge_and_store(new: dict) -> dict:
                   CacheControl="public, max-age=300")
     log.info("calibrate: %d colour buckets stored", sum(len(v) for v in summary.values()))
     return summary
+
+
+# --- turning the pairs into something the classifier can use ----------------
+# A colour is only trusted once enough gauge-hours have sat under it. Below
+# this it keeps whatever the hue rules said, so the table can only ever add
+# knowledge — there is no state of the world in which collecting more data
+# makes the map worse.
+MIN_N = 40
+SCALES_KEY = "maps/radar_cal/scales.json"
+
+
+def fit(summary: dict | None = None) -> dict:
+    """Colour -> mm/h for every colour with enough gauge-hours behind it.
+
+    The mean, not the median: half the hours under a light-rain colour recorded
+    nothing at all, so the median is zero for colours that clearly do carry
+    rain. What matters for "how much fell" is the mean.
+    """
+    s3 = r2_client()
+    if summary is None:
+        summary = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
+                                           Key=KEY)["Body"].read())["summary"]
+    out, counts = {}, {}
+    for feed, rows in summary.items():
+        table = []
+        for e in rows:
+            if e["rgb"] == "clear" or e["n"] < MIN_N:
+                continue
+            rgb = [int(v) for v in e["rgb"].split(",")]
+            table.append({"rgb": rgb, "mmh": round(float(e["mean"]), 3),
+                          "n": int(e["n"])})
+        if table:
+            out[feed] = table
+        counts[feed] = (len(table), len(rows))
+    body = {"scales": out, "min_n": MIN_N,
+            "coverage": {k: f"{a}/{b} colours have {MIN_N}+ gauge-hours"
+                         for k, (a, b) in counts.items()},
+            "updated": dt.datetime.now(dt.timezone.utc).isoformat()}
+    s3.put_object(Bucket=config.R2_BUCKET, Key=SCALES_KEY,
+                  Body=json.dumps(body).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=600")
+    for k, (a, b) in counts.items():
+        log.info("calibrate: %s -> %d of %d colours qualified", k, a, b)
+    return body

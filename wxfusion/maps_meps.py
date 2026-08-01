@@ -36,6 +36,39 @@ DAP_BASE = "https://thredds.met.no/thredds/dodsC/mepslatest/"
 BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 THRESHOLDS = [100, 300, 650, 700, 1000]
 FILL = 1e30  # cloud_base_altitude fill => clear sky
+G0 = 9.80665  # m/s^2, for surface_geopotential -> terrain height
+
+
+def _terrain(ds, y0, y1, x0, x1):
+    """Ground height above sea level, metres, over the window.
+
+    MEPS publishes cloud_base_altitude, and in CF and WMO terms "altitude"
+    means above mean SEA level while "height" means above the ground. Drawn
+    raw, the map was reporting a ceiling that included whatever hill was
+    underneath — a median of 64 m across this window, 97 m over land, 177 m at
+    the 90th percentile and 319 m at its highest. The meteogram's ceiling is an
+    LCL, which is above ground by construction, and a METAR ceiling is above
+    the aerodrome. So the map was the odd one out, by up to a third of the
+    limit it was being compared against.
+    """
+    import numpy as np
+    try:
+        fis = np.array(ds.variables["surface_geopotential"][0, 0, y0:y1 + 1, x0:x1 + 1])
+    except Exception:
+        log.warning("no surface_geopotential; cloud base stays above sea level")
+        return None
+    return (fis / G0).astype("float32")
+
+
+def _to_agl(cb, terrain):
+    """Cloud base above SEA level -> above the ground under it."""
+    import numpy as np
+    if terrain is None:
+        return cb
+    out = np.where(cb > FILL, cb, np.maximum(cb - terrain, 0.0))
+    return out.astype(cb.dtype, copy=False)
+
+
 # Rain ramp measured off a meteo.pl frame (see scrape_maps.RAIN_STEPS for the
 # pixel counts): pale cream-yellow for the lightest rain, darkening through
 # green, then orange for the heavy cores. No yellow in the middle.
@@ -285,6 +318,8 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                     ds.variables["air_temperature_2m"][:n, 0, y0:y1 + 1, x0:x1 + 1]) - 273.15
             except Exception:
                 tair = None
+            terr = _terrain(ds, y0, y1, x0, x1)
+            cb = _to_agl(cb, terr)
             times = nc.num2date(ds.variables["time"][:n], ds.variables["time"].units)
         except Exception:
             log.exception("meps backfill: %s failed to open/fetch", ds_name)
@@ -378,6 +413,7 @@ def render_run(max_hours: int = 66) -> None:
             ds.variables["air_temperature_2m"][:n, 0, y0:y1 + 1, x0:x1 + 1]) - 273.15
     except Exception:
         tair = None
+    cb = _to_agl(cb, _terrain(ds, y0, y1, x0, x1))
     cb, fogm = _gate_ceiling(cb, lcc, fog)
 
     from . import proj3059 as P

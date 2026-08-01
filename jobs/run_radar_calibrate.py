@@ -22,6 +22,8 @@ def main() -> int:
     pairs = radar_calibrate.collect(conn, hours_back=HOURS)
     conn.close()
     summary = radar_calibrate.merge_and_store(pairs)
+    fitted = radar_calibrate.fit(summary)
+    print("qualified colours:", fitted["coverage"])
     for feed, rows in sorted(summary.items()):
         print(f"\n{feed}: {len(rows)} colours")
         for e in rows[-8:]:

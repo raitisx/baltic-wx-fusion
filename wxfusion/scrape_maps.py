@@ -36,6 +36,7 @@ from PIL import Image
 
 from . import config
 from .http import session
+from .maps_meps import RAIN_LEVELS
 
 log = logging.getLogger(__name__)
 
@@ -466,7 +467,66 @@ def fetch_overlays_window(t_from: dt.datetime, t_to: dt.datetime) -> list[dict]:
     return out
 
 
-def _classify_intensity(arr: np.ndarray) -> np.ndarray:
+# Colour -> mm/h, learned from the rain gauges and refreshed by the
+# radar-calibrate job. Empty until that job has run, and partial for a long
+# time after: a colour only appears here once forty gauge-hours have sat under
+# it. Everything not in the table keeps the hue rules, so this can only add
+# knowledge — there is no amount of collected data that makes the map worse.
+FEED_SCALE = {"LV": "LV", "EE": "EE", "LT": "LT2", "LT2": "LT2"}
+CAL_KEY = "maps/radar_cal/scales.json"
+_CAL_CACHE: dict = {}
+
+
+def fitted_scales(force: bool = False) -> dict:
+    """{feed: (palette Nx3, rate N)} from R2. Fail-soft by design: no table,
+    no credentials, no network — the caller carries on with the hue rules."""
+    if _CAL_CACHE and not force:
+        return _CAL_CACHE
+    try:
+        body = r2_client().get_object(Bucket=config.R2_BUCKET,
+                                      Key=CAL_KEY)["Body"].read()
+        for feed, rows in json.loads(body)["scales"].items():
+            if rows:
+                _CAL_CACHE[feed] = (
+                    np.array([r["rgb"] for r in rows], dtype=np.float32),
+                    np.array([r["mmh"] for r in rows], dtype=np.float32))
+        log.info("calibration table: %s", {k: len(v[1]) for k, v in _CAL_CACHE.items()})
+    except Exception:
+        log.info("no calibration table yet; classifying by hue")
+        _CAL_CACHE["_none"] = True
+    return _CAL_CACHE
+
+
+# How close a pixel has to be to a calibrated colour to inherit its rate. The
+# feeds are quantised into 16-unit buckets when they are measured, so half a
+# bucket in each channel is the natural radius.
+CAL_MAX_DIST = 24.0
+
+
+def _classify_calibrated(arr: np.ndarray, feed: str):
+    """Classes from the measured table, plus a mask of what it could not place."""
+    tab = fitted_scales().get(FEED_SCALE.get(feed or "", ""))
+    if tab is None:
+        return None, None
+    pal, rate = tab
+    flat = arr[..., :3].reshape(-1, 3).astype(np.float32)
+    best_i = np.empty(flat.shape[0], np.int32)
+    best_d = np.empty(flat.shape[0], np.float32)
+    for a0 in range(0, flat.shape[0], 200_000):
+        chunk = flat[a0:a0 + 200_000]
+        d = np.linalg.norm(chunk[:, None, :] - pal[None, :, :], axis=2)
+        best_i[a0:a0 + 200_000] = d.argmin(1)
+        best_d[a0:a0 + 200_000] = d.min(1)
+    mm = rate[best_i].reshape(arr.shape[:2])
+    unknown = (best_d > CAL_MAX_DIST).reshape(arr.shape[:2])
+    cls = np.zeros(arr.shape[:2], np.uint8)
+    for k, lo in enumerate(RAIN_LEVELS[:-1], start=1):
+        cls[mm >= lo] = k
+    cls[mm < RAIN_LEVELS[0]] = 0
+    return cls, unknown
+
+
+def _classify_intensity(arr: np.ndarray, feed: str | None = None) -> np.ndarray:
     """Source palette RGBA -> intensity class 0..6 (0 = no echo).
 
     LVGMC/EE/LT palettes all run blue -> green -> yellow -> orange -> red with
@@ -515,6 +575,12 @@ def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     magenta = echo & (r > 150) & (b > 150) & (g < 130)     # EE top of scale
     cls[magenta] = 6
     cls[white] = 6
+    # Measured rates win wherever a colour has been calibrated; the hue rules
+    # stay underneath for the rest.
+    by_cal, unknown = _classify_calibrated(arr, feed)
+    if by_cal is not None:
+        cls = np.where(unknown, cls, by_cal).astype(np.uint8)
+        cls[~opaque] = 0
     return _fill_enclosed(cls, opaque)
 
 
@@ -973,7 +1039,7 @@ def _lt_frames(newest: dt.datetime, count: int = 3, step_min: int = 5) -> list[d
     return out
 
 
-def _load_and_classify(url: str, s) -> np.ndarray | None:
+def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | None:
     r = s.get(url, allow_redirects=True, timeout=90)
     time.sleep(0.2)
     if r.status_code != 200:
@@ -983,7 +1049,7 @@ def _load_and_classify(url: str, s) -> np.ndarray | None:
         sc = LT_MAXSIZE / max(img.size)
         img = img.resize((int(img.width * sc), int(img.height * sc)),
                          Image.NEAREST)
-    return _classify_intensity(np.array(img))
+    return _classify_intensity(np.array(img), feed)
 
 
 # Coverage is geometry, not opacity. Estonia paints its whole disc — 76,061 px
@@ -1054,7 +1120,7 @@ def radar_composite(frames_back: int = 3) -> None:
         newest = max(newest or use[0]["time"], use[0]["time"])
         cls_stack = []
         for f in use:
-            cls = _load_and_classify(f["url"], s)
+            cls = _load_and_classify(f["url"], s, code)
             if cls is not None:
                 cls_stack.append((cls, f))
         if not cls_stack:
@@ -1215,7 +1281,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                            key=lambda o: abs((o["time"] - target).total_seconds()))
                 if abs((best["time"] - target).total_seconds()) > 40 * 60:
                     continue
-                cls = _load_and_classify(best["url"], s)
+                cls = _load_and_classify(best["url"], s, code)
                 if cls is None:
                     continue
                 # Warp first, clean second — see the note in radar_composite.

@@ -34,6 +34,7 @@ import re
 import numpy as np
 
 from . import config
+from . import maps_meps as MM
 from .maps_meps import (BBOX, DAP_BASE, FILL, THRESHOLDS, _gate_ceiling,
                         draw_hour, r2_client)
 
@@ -122,6 +123,10 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
         return np.array(ds.variables[name][:n, 0, y0:y1 + 1, x0:x1 + 1])
 
     cb = grab("cloud_base_altitude")
+    # MEPS reports it above SEA level; everything else in this project — the
+    # meteogram's LCL, a METAR ceiling, the number you actually fly against —
+    # is above the ground. Subtract the hill.
+    cb = MM._to_agl(cb, MM._terrain(ds, y0, y1, x0, x1))
     acc = grab("precipitation_amount_acc")
     lcc = grab("low_type_cloud_area_fraction")
     try:
