@@ -48,7 +48,16 @@
     text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;
   }
   svg{display:block}
+  #chart{position:relative}
   #chart svg{width:100%;height:auto}
+  /* The cloud-base limit sits in the meteogram's own gutter, level with the
+     dashed line it controls. Positioned in percent so it tracks the SVG as it
+     scales. */
+  #cbBox{position:absolute;transform:translateY(-50%);width:60px;left:3px}
+  #cbBox select{width:100%;padding:2px 3px;font-size:11px;font-weight:700;
+    color:var(--threshold);border-color:var(--threshold)}
+  #cbBox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
+    text-align:center;margin-top:1px;line-height:1.1}
   svg text{font-family:inherit}
   .tip{
     position:fixed;pointer-events:none;z-index:10;display:none;
@@ -97,12 +106,14 @@
   <aside class="sidebar side">
     <h1 id="title">BALTIC_WX</h1>
     <div class="sel" id="selNote"></div>
-    <label>Cloud-base limit</label>
-    <select id="selCb">
-      <option value="100">100 m AGL</option>
-      <option value="300">300 m AGL</option>
-      <option value="700" selected>700 m AGL</option>
-      <option value="1000">1000 m AGL</option>
+    <!-- The cloud-base limit is moved onto the ceiling panel on load, beside
+         the line it draws — see placeCbBox(). Moved rather than duplicated so
+         there is only ever one of it. -->
+    <select id="selCb" hidden>
+      <option value="100">100 m</option>
+      <option value="300">300 m</option>
+      <option value="700" selected>700 m</option>
+      <option value="1000">1000 m</option>
     </select>
     <label>Gust limit</label>
     <select id="selWg">
@@ -136,7 +147,7 @@
       <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · orange: fog · rain green→orange, hour starting here</span></div>
+          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -631,13 +642,17 @@ function dayVerdicts(cbLim, wgLim){
 }
 
 // ---------- meteogram render ----------
-const P = {gutter:118, axis:34, right:12, width:1180};
+// The plot runs edge to edge with the map row below it — same SVG, same
+// container width — so a rain band on the maps sits directly under the hour
+// that produced it. What is left on the left is the gutter, and it is only as
+// wide as the longest label needs, which is why they are abbreviated.
+const P = {gutter:66, axis:34, right:1, width:1180};
 P.left = P.gutter + P.axis;
 const PANELS = [
-  {id:"temp",  h:130, rows:[["temperature °C","--temp"],["dew pt °C","--dew"]]},
+  {id:"temp",  h:130, rows:[["temp. °C","--temp"],["dew pt °C","--dew"]]},
   {id:"prcp",  h:120, rows:[["precip mm/h","--precip"],["rel.humid. %","--humid"]]},
   {id:"wind",  h:120, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
-  {id:"cloud", h:200, rows:[["ceiling m","--cloud"],["fog / mist","--fog"]]},
+  {id:"cloud", h:200, rows:[["ceiling m","--cloud"],["fog","--fog"]]},
   {id:"dew",   h:26,  rows:[["dew","--dewwet"]]},
 ];
 function xPos(ts){
@@ -702,6 +717,28 @@ function linePath(rows, key, y){
   return d;
 }
 
+// The cloud-base selector is a real <select>, not SVG, so it is an absolutely
+// positioned overlay. Percentages rather than pixels because the SVG scales
+// with the window and the line has to stay under it.
+// Held in a variable, not looked up: render() empties #chart every time, which
+// would take the <select> and its listeners with it. Detached and re-attached,
+// the same element survives.
+let CB_BOX=null;
+function placeCbBox(yVB, totalH){
+  if(!CB_BOX){
+    CB_BOX=document.createElement("div");
+    CB_BOX.id="cbBox";
+    const sel=document.getElementById("selCb");
+    sel.hidden=false;
+    CB_BOX.appendChild(sel);
+    const cap=document.createElement("div");
+    cap.className="cbcap"; cap.textContent="cloud limit";
+    CB_BOX.appendChild(cap);
+  }
+  CB_BOX.style.top=(yVB/totalH*100).toFixed(3)+"%";
+  document.getElementById("chart").appendChild(CB_BOX);
+}
+
 function render(){
   const chart=document.getElementById("chart");
   chart.textContent="";
@@ -752,12 +789,15 @@ function render(){
   if(obsIdx.prcp_1h)
     obsIdx.prcp_1h = obsIdx.prcp_1h.map(o=>({ts:o.ts-3600e3, v:o.v}));
 
+  // Labels sit at the foot of their panel, not the head. The top of a panel is
+  // where the highest tick label lives and, on the cloud panel, the whole cloud
+  // band; the bottom is reliably empty gutter.
   for(const p of PANELS){
-    let ly=panelTop[p.id]+16;
-    for(const [txt,varName] of p.rows){
-      const t=svgEl("text",{x:10,y:ly,"font-size":"12","font-weight":"700",fill:css(varName)},svg);
+    let ly=panelTop[p.id]+p.h-5;
+    for(const [txt,varName] of [...p.rows].reverse()){
+      const t=svgEl("text",{x:6,y:ly,"font-size":"11","font-weight":"700",fill:css(varName)},svg);
       t.textContent=txt;
-      ly+=17;
+      ly-=14;
     }
   }
 
@@ -865,8 +905,9 @@ function render(){
     const cbLimV=+document.getElementById("selCb").value;
     svgEl("rect",{x:P.left,y:y(cbLimV),width:P.width-P.left-P.right,height:y0-y(cbLimV),fill:css("--belowzone")},svg);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLimV),y2:y(cbLimV),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
-    const tl=svgEl("text",{x:P.left-6,y:y(cbLimV)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--threshold")},svg);
-    tl.textContent=cbLimV;
+    // The selector rides the dashed line it sets, so the number and the line
+    // are one object and there is nothing to go and look up elsewhere.
+    placeCbBox(y(cbLimV), totalH);
     const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
@@ -1422,7 +1463,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v44",
+    "page v45",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1511,7 +1552,7 @@ async function load(){
 }
 
 async function init(){
-  for(const [qv,selId,unit] of [[Q.cb,"selCb"," m AGL"],[Q.wg,"selWg"," m/s"]]){
+  for(const [qv,selId,unit] of [[Q.cb,"selCb"," m"],[Q.wg,"selWg"," m/s"]]){
     if(qv==null || !isFinite(qv)) continue;
     const sel=document.getElementById(selId);
     if(![...sel.options].some(o=>+o.value===qv)){

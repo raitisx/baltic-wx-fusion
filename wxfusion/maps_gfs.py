@@ -30,7 +30,8 @@ import numpy as np
 
 from . import config
 from .http import session
-from .maps_meps import RAIN_ANCHORS, RAIN_LEVELS, THRESHOLDS
+from .maps_meps import (RAIN_ANCHORS, RAIN_LEVELS, SNOW_ANCHORS, THRESHOLDS,
+                        _draw_rain)
 
 log = logging.getLogger(__name__)
 
@@ -198,6 +199,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
 
     s3 = r2_client()
     greens = ListedColormap(RAIN_ANCHORS)
+    blues = ListedColormap(SNOW_ANCHORS)
     rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = ListedColormap(["#f3b8b4"])
     borders = json.load(open(os.path.join(
@@ -228,7 +230,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     prev: tuple[int, int, np.ndarray] | None = None   # (lead, bucket start, acc)
     # (ceiling, valid) of the lead before this one, waiting for the rain that
     # falls after it.
-    pending: tuple[np.ndarray, dt.datetime] | None = None
+    pending: tuple[np.ndarray, dt.datetime, np.ndarray | None] | None = None
 
     def _apcp(at_lead: int):
         recs_l = _index(run, at_lead) if at_lead != lead else recs
@@ -249,6 +251,11 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
             ceil = _fetch_field(run, lead, recs,
                                 lambda v, l: v == "HGT" and l.startswith("cloud ceiling"))
             got = _apcp(lead)
+            # Kelvin, and optional: an hour with no temperature record simply
+            # draws green, which is what every hour did before.
+            tk = _fetch_field(run, lead, recs,
+                              lambda v, l: v == "TMP" and l == "2 m above ground")
+            tair = (tk - 273.15) if tk is not None else None
         except Exception as exc:
             log.error("gfs: lead +%dh failed: %s: %s", lead,
                       exc.__class__.__name__, exc)
@@ -293,11 +300,14 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         # (lead-step, lead], so it belongs to the PREVIOUS frame, whose ceiling
         # has been held back for exactly this. One frame at the far end of the
         # run has no following accumulation and is dropped.
-        held, held_valid = pending if pending else (None, None)
-        pending = (cb, run + dt.timedelta(hours=lead))
+        # The temperature is held back with the ceiling, not taken from the
+        # current lead: the rain fell over (lead-step, lead], so the air it
+        # fell through is the air at the START of that window.
+        held, held_valid, held_t = pending if pending else (None, None, None)
+        pending = (cb, run + dt.timedelta(hours=lead), tair)
         if held is None:
             continue
-        cb, valid = held, held_valid
+        cb, valid, tair = held, held_valid, held_t
         vtag = valid.strftime("%Y%m%dT%H")
         for thr in GFS_THRESHOLDS:
             fig, ax = blank_fig()
@@ -305,8 +315,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
             ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
                           alpha=0.75, shading="auto")
             if prm is not None:
-                ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
-                              alpha=0.9, shading="auto")
+                _draw_rain(ax, xw, yw, prm, tair, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
             fig.savefig(fp, dpi=100)

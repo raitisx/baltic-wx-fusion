@@ -46,6 +46,37 @@ RAIN_ANCHORS = ["#fcffad", "#e6ff78", "#00e300", "#00a800", "#006709", "#ff7800"
 # of a rain area, so the map read as a solid orange blob where meteo.pl showed
 # green with small orange cores.
 RAIN_LEVELS = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0, 1e6]
+# The same ramp again for air below freezing, in blue. Precipitation at -3 C is
+# a different thing to fly a drone through than precipitation at +3, and on a
+# green map the two look identical. Lightness tracks the green ramp step for
+# step so the two read at the same weight side by side; the top class stays
+# orange, because at fifteen millimetres an hour the rate is the whole story.
+SNOW_ANCHORS = ["#dfeeff", "#b5d5fb", "#7fb2ee", "#4587d6", "#1f5aa8", "#ff7800"]
+# Where the changeover sits. Not 0.0: precipitation arriving through air at
+# +0.5 C at two metres has usually fallen through something colder above and
+# reaches the ground as wet snow or sleet — the surface is the last part of
+# the column to warm up.
+FREEZE_C = 1.0
+
+
+def _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm, alpha=0.9):
+    """Precipitation in two passes, split at freezing.
+
+    Two masked meshes rather than one recoloured array: the boundary between
+    them is a front, not a pixel edge, so each pass keeps its own ramp and they
+    meet wherever the isotherm happens to run. t2m of None means an older
+    stored grid with no temperature in it, which draws exactly as before.
+    """
+    if t2m is None:
+        ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm, alpha=alpha,
+                      shading="auto")
+        return
+    ax.pcolormesh(xw, yw, np.where(t2m >= FREEZE_C, prm, np.nan),
+                  cmap=greens, norm=rain_norm, alpha=alpha, shading="auto")
+    ax.pcolormesh(xw, yw, np.where(t2m < FREEZE_C, prm, np.nan),
+                  cmap=blues, norm=rain_norm, alpha=alpha, shading="auto")
+
+
 # A ceiling needs broken-or-more low cloud, the same 5-okta rule the meteogram
 # applies. MEPS publishes cloud_base_altitude wherever it finds any cloud base
 # at all, and below 700 m that is almost never a ceiling: over the Baltic
@@ -128,7 +159,7 @@ def archive_runs(day: dt.date) -> list[str]:
     return [f"{ARCHIVE_DAP}/{day:%Y/%m/%d}/{n}" for n in sorted(set(names))]
 
 
-def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
+def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
     """One hour of fields -> {threshold: PNG bytes}, the shared drawing path.
 
     Used by the grid renderer. The two older paths still draw inline; they
@@ -144,6 +175,7 @@ def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
     from . import proj3059 as P
 
     greens = ListedColormap(RAIN_ANCHORS)
+    blues = ListedColormap(SNOW_ANCHORS)
     rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
@@ -163,8 +195,7 @@ def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
                       shading="auto")
         ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange, vmin=0,
                       vmax=1, alpha=0.8, shading="auto")
-        ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm, alpha=0.9,
-                      shading="auto")
+        _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
         for c in borders:
             for line in c["lines"]:
                 bx, by = P.to_xy([lo for lo, _ in line], [la for _, la in line])
@@ -213,6 +244,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
 
     borders = json.load(open(BORDERS_FILE))
     greens = ListedColormap(RAIN_ANCHORS)
+    blues = ListedColormap(SNOW_ANCHORS)
     rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
@@ -247,6 +279,12 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             except Exception:
                 fog = None
+            # Kelvin here; the drawing code works in Celsius.
+            try:
+                tair = np.array(
+                    ds.variables["air_temperature_2m"][:n, 0, y0:y1 + 1, x0:x1 + 1]) - 273.15
+            except Exception:
+                tair = None
             times = nc.num2date(ds.variables["time"][:n], ds.variables["time"].units)
         except Exception:
             log.exception("meps backfill: %s failed to open/fetch", ds_name)
@@ -268,6 +306,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
             # hour STARTING at the stamp — see the note in the live renderer
             pr = np.clip(acc[i + 1] - acc[i], 0, None)
             prm = np.where(pr >= 0.1, pr, np.nan)
+            t2m = tair[i] if tair is not None else None
             for thr in THRESHOLDS:
                 fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
                 ax = fig.add_axes([0, 0, 1, 1])
@@ -281,8 +320,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 # Fog in orange: a different decision from a low ceiling.
                 ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
                               vmin=0, vmax=1, alpha=0.8, shading="auto")
-                ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
-                              alpha=0.9, shading="auto")
+                _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
                 for country in borders_xy:
                     for bx, by in country:
                         ax.plot(bx, by, color="#f7f1e2", lw=2.2, zorder=9)
@@ -334,12 +372,19 @@ def render_run(max_hours: int = 66) -> None:
         fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     except Exception:
         fog = None
+    # Kelvin in the file; everything downstream works in Celsius.
+    try:
+        tair = np.array(
+            ds.variables["air_temperature_2m"][:n, 0, y0:y1 + 1, x0:x1 + 1]) - 273.15
+    except Exception:
+        tair = None
     cb, fogm = _gate_ceiling(cb, lcc, fog)
 
     from . import proj3059 as P
 
     borders = json.load(open(BORDERS_FILE))
     greens = ListedColormap(RAIN_ANCHORS)
+    blues = ListedColormap(SNOW_ANCHORS)
     rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
@@ -395,6 +440,7 @@ def render_run(max_hours: int = 66) -> None:
         vtag = valid.strftime("%Y%m%dT%H")
         pr = np.clip(acc[i + 1] - acc[i], 0, None)
         prm = np.where(pr >= 0.1, pr, np.nan)
+        t2m = tair[i] if tair is not None else None
         for thr in THRESHOLDS:
             fig, ax = blank_fig()
             fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
@@ -403,8 +449,7 @@ def render_run(max_hours: int = 66) -> None:
                           alpha=0.75, shading="auto")
             ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
                           vmin=0, vmax=1, alpha=0.8, shading="auto")
-            ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
-                          alpha=0.9, shading="auto")
+            _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
             fig.savefig(fp, dpi=100)

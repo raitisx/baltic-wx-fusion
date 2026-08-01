@@ -128,6 +128,10 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
         fog = grab("fog_area_fraction")
     except Exception:
         fog = np.zeros_like(lcc)
+    try:
+        tair = grab("air_temperature_2m")          # Kelvin
+    except Exception:
+        tair = None
 
     s3 = r2_client()
     written = 0
@@ -139,12 +143,17 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
         pr = np.clip(acc[i + 1] - acc[i], 0, None)
         cbq = np.where(cb[i] > FILL, CLEAR,
                        np.clip(cb[i], 0, 20000)).astype(np.uint16)
-        blob = pack({
+        arrays = {
             "cb": cbq,
             "lcc": (np.clip(lcc[i], 0, 1) * 100).astype(np.uint8),
             "fog": (np.clip(fog[i], 0, 1) * 100).astype(np.uint8),
             "pr": (np.clip(pr, 0, 650) * 100).astype(np.uint16),
-        }, {"run": run.strftime("%Y%m%dT%H"), "hour": hour.strftime("%Y%m%dT%H"),
+        }
+        if tair is not None:
+            # Kelvin x100 stays inside uint16 for any temperature the planet
+            # produces, so no new dtype and no sign to get wrong.
+            arrays["t2m"] = (np.clip(tair[i], 150, 340) * 100).astype(np.uint16)
+        blob = pack(arrays, {"run": run.strftime("%Y%m%dT%H"), "hour": hour.strftime("%Y%m%dT%H"),
             "rows": int(y1 - y0 + 1), "cols": int(x1 - x0 + 1)})
         s3.put_object(Bucket=config.R2_BUCKET, Key=_key(hour),
                       Body=blob, ContentType="application/octet-stream",
@@ -168,8 +177,11 @@ def read_hour(hour: dt.datetime) -> dict | None:
     fog = z["fog"].astype(np.float32) / 100.0
     gated, fogm = _gate_ceiling(cb, lcc, fog)
     lat, lon = _window_latlon()
+    # Grids written before the freezing palette have no temperature in them;
+    # those hours draw green as they always did.
+    t2m = (z["t2m"].astype(np.float32) / 100.0 - 273.15) if "t2m" in z else None
     return {"cb": gated, "fogm": fogm, "pr": z["pr"].astype(np.float32) / 100.0,
-            "lat": lat, "lon": lon,
+            "t2m": t2m, "lat": lat, "lon": lon,
             "run": dt.datetime.strptime(meta["run"], "%Y%m%dT%H").replace(
                 tzinfo=dt.timezone.utc)}
 
@@ -286,7 +298,7 @@ def render_hour(hour: dt.datetime, prefix: str | None = None) -> int:
     g = read_hour(hour)
     if g is None:
         return 0
-    pngs = draw_hour(g["cb"], g["fogm"], g["pr"], g["lat"], g["lon"])
+    pngs = draw_hour(g["cb"], g["fogm"], g["pr"], g["lat"], g["lon"], g.get("t2m"))
     s3 = r2_client()
     run_tag = g["run"].strftime("%Y%m%dT%H")
     vtag = hour.strftime("%Y%m%dT%H")

@@ -29,7 +29,7 @@ import numpy as np
 
 from . import config
 from .http import session
-from .scrape_maps import (LEGACY_RAIN_STEPS, LEGACY_RAIN_STEPS_2,
+from .scrape_maps import (LEGACY_RAIN_STEPS, LEGACY_RAIN_STEPS_2, SNOW_STEPS,
                           RAIN_STEPS, r2_client)
 
 log = logging.getLogger(__name__)
@@ -44,9 +44,14 @@ RAIN_CLASS = 1  # class at or above which we call it rain
 
 
 def _palette() -> np.ndarray:
-    # Both palettes: frames rendered before 01.08 carry the old all-green ramp
-    # and still have to be scoreable.
+    # Every ramp a stored frame might have been drawn with: the current green
+    # one, its blue below-freezing twin, and the two older all-green ramps that
+    # frames before 01.08 carry. History stops being scoreable the moment a
+    # colour changes and the verifier is not told, so each new ramp is appended
+    # here, never substituted. The modulo in _classes() maps all four back onto
+    # the same six intensity steps.
     return np.array([[0, 0, 0, 0]] + [list(c) for c in RAIN_STEPS]
+                    + [list(c) for c in SNOW_STEPS]
                     + [list(c) for c in LEGACY_RAIN_STEPS]
                     + [list(c) for c in LEGACY_RAIN_STEPS_2], dtype=int)
 

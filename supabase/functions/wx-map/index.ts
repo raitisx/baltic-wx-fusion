@@ -33,10 +33,12 @@ const FOG_CEILING_M = 60;
 const CLEAR = 65535;
 
 // Palette: 0 transparent, 1 pink ceiling, 2 orange fog, 3-8 rain light->heavy,
-// 9 border halo, 10 border core. The rain steps and the breakpoints below are
-// the same ones maps_meps draws with (RAIN_ANCHORS / RAIN_LEVELS), measured
-// off a meteo.pl frame: pale cream-yellow for the lightest, darkening through
-// green, orange for the heavy cores, and no yellow in the middle.
+// 9 border halo, 10 border core, 11-15 the same rain steps in blue for air
+// below freezing. The steps and breakpoints are the ones maps_meps draws with
+// (RAIN_ANCHORS / SNOW_ANCHORS / RAIN_LEVELS), measured off a meteo.pl frame:
+// pale cream-yellow for the lightest, darkening through green, orange for the
+// heavy cores, no yellow in the middle. There is no blue sixth step, because
+// the heaviest class stays orange in both ramps and index 8 serves for both.
 const PALETTE: [number, number, number, number][] = [
   [0, 0, 0, 0],
   [243, 184, 180, 191],
@@ -49,8 +51,16 @@ const PALETTE: [number, number, number, number][] = [
   [255, 120, 0, 255],
   [247, 241, 226, 230],
   [85, 80, 63, 255],
+  [223, 238, 255, 230],
+  [181, 213, 251, 240],
+  [127, 178, 238, 245],
+  [69, 135, 214, 250],
+  [31, 90, 168, 253],
 ];
 const RAIN_EDGES = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0];  // mm/h -> classes 3..8
+const COLD_BASE = 11;     // classes 3..7 each have a blue twin at 11..15
+const FREEZE_C = 1.0;     // see maps_meps.FREEZE_C for why this is not zero
+const K0 = 273.15;
 
 async function inflate(buf: ArrayBuffer): Promise<Uint8Array> {
   const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream("deflate"));
@@ -177,6 +187,9 @@ Deno.serve(async (req: Request) => {
     const lcc = g.arrays.lcc as Uint8Array;
     const fog = g.arrays.fog as Uint8Array;
     const pr = g.arrays.pr as Uint16Array;
+    // Absent from grids written before the freezing palette existed; those
+    // hours draw entirely green, exactly as they did when they were stored.
+    const t2m = g.arrays.t2m as Uint16Array | undefined;
 
     const out = new Uint8Array(W * H);
     for (let i = 0; i < W * H; i++) {
@@ -191,6 +204,9 @@ Deno.serve(async (req: Request) => {
         if (rate >= RAIN_EDGES[0]) {
           let k = 3;
           for (let e = 1; e < RAIN_EDGES.length; e++) if (rate >= RAIN_EDGES[e]) k = 3 + e;
+          // Below freezing the same step is drawn in blue — except the top
+          // one, which stays orange because by then the rate is the point.
+          if (t2m && k < 8 && t2m[src] / 100 - K0 < FREEZE_C) k = COLD_BASE + (k - 3);
           out[i] = k;                      // rain draws over the tint, as in Python
         }
       }

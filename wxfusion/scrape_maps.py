@@ -896,11 +896,62 @@ def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
     return out
 
 
-def _recolor(cls: np.ndarray) -> Image.Image:
+# The same six steps for air below freezing, matching maps_meps.SNOW_ANCHORS
+# so the model column and the radar column say the same thing in the same
+# colour. Top step stays orange: at that rate the rate is the point.
+SNOW_STEPS = [(223, 238, 255, 170), (181, 213, 251, 200), (127, 178, 238, 225),
+              (69, 135, 214, 240), (31, 90, 168, 250), (255, 120, 0, 255)]
+
+
+def _recolor(cls: np.ndarray, cold: np.ndarray | None = None) -> Image.Image:
+    """Intensity classes -> RGBA, in green or, where the air is below freezing,
+    in blue. Recoloured from the class array rather than from finished pixels:
+    once the sources are composited the edges are blended and no longer sit on
+    a palette colour."""
     out = np.zeros((*cls.shape, 4), dtype=np.uint8)
     for i, rgba in enumerate(RAIN_STEPS, start=1):
-        out[cls == i] = rgba
+        sel = cls == i
+        if cold is not None and i < len(RAIN_STEPS):
+            out[sel & ~cold] = rgba
+            out[sel & cold] = SNOW_STEPS[i - 1]
+        else:
+            out[sel] = rgba
     return Image.fromarray(out, "RGBA")
+
+
+def _freezing_mask(when: dt.datetime):
+    """True where MEPS puts the air below freezing, on the 3059 canvas.
+
+    Radar says where the echo is; it cannot say what is falling. The model can,
+    and it is already stored on this grid for the hour. Best effort by design:
+    anything missing — no grid for the hour, no reprojection index, an hour
+    stored before temperature was kept — returns None and the frame draws
+    green, which is what every frame did before.
+    """
+    from .maps_meps import FREEZE_C
+    try:
+        from . import meps_grid as MG
+        from . import proj3059 as P
+
+        hour = when.astimezone(dt.timezone.utc).replace(
+            minute=0, second=0, microsecond=0)
+        s3 = r2_client()
+        blob = s3.get_object(Bucket=config.R2_BUCKET,
+                             Key=MG._key(hour))["Body"].read()
+        z, _ = MG.unpack(blob)
+        if "t2m" not in z:
+            return None
+        ix, _ = MG.unpack(s3.get_object(
+            Bucket=config.R2_BUCKET,
+            Key="maps/meps_grid/index.wxg")["Body"].read())
+        idx = ix["idx"].ravel()
+        t = (z["t2m"].astype(np.float32) / 100.0 - 273.15).ravel()
+        miss = idx == 0xFFFFFFFF
+        sampled = t[np.where(miss, 0, idx)]
+        return np.where(miss, False, sampled < FREEZE_C).reshape(P.H, P.W)
+    except Exception:
+        log.info("no freezing mask for %s; drawing rain green", when)
+        return None
 
 
 def _lt_frames(newest: dt.datetime, count: int = 3, step_min: int = 5) -> list[dict]:
@@ -992,6 +1043,9 @@ def radar_composite(frames_back: int = 3) -> None:
     # composite on the common EPSG:3059 grid (transparent overlay)
     from . import proj3059 as P
     canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    # One lookup for the whole frame: every source is being drawn for the same
+    # hour, so they share an isotherm.
+    cold = _freezing_mask(dt.datetime.now(dt.timezone.utc))
     newest = None
     for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
         use = frames[:frames_back]
@@ -1017,7 +1071,7 @@ def radar_composite(frames_back: int = 3) -> None:
         # beams kept surviving however the test was tuned.
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
         cur = _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))
-        canvas.alpha_composite(_recolor(cur))
+        canvas.alpha_composite(_recolor(cur, cold))
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
@@ -1150,6 +1204,7 @@ def radar_backfill(hours_back: int = 168) -> None:
             if not force and _hour_covered(arch, target):
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+            cold = _freezing_mask(target)
             got = False
             used = []
             for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
@@ -1166,7 +1221,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                 # Warp first, clean second — see the note in radar_composite.
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
                 grid = _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))
-                canvas.alpha_composite(_recolor(grid))
+                canvas.alpha_composite(_recolor(grid, cold))
                 used.append(best["time"])
                 got = True
             if not got:
