@@ -47,6 +47,41 @@
     display:block;height:15px;line-height:15px;font-size:11px;color:var(--muted);
     text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;
   }
+  /* Jobs drawer: shut by default, because on a normal day it is not what the
+     page is for. */
+  .ops{margin-top:14px;border:1px solid var(--gridday);border-radius:6px;
+    background:var(--panel)}
+  .ops>summary{cursor:pointer;padding:7px 10px;font-size:13px;font-weight:700;
+    color:var(--ink);list-style:none}
+  .ops>summary::-webkit-details-marker{display:none}
+  .ops[open] .opsarrow{transform:rotate(90deg)}
+  .opsarrow{display:inline-block;transition:transform .12s;font-size:11px}
+  .opssum{font-weight:400;color:var(--muted);font-size:11px;margin-left:8px}
+  .opsbody{padding:2px 10px 12px}
+  .opskey{display:flex;align-items:center;gap:8px;margin:2px 0 10px;font-size:12px}
+  .opskey label{font-weight:700;color:var(--text)}
+  .opskey input{font:inherit;font-size:12px;width:180px;padding:3px 6px;
+    border:1px solid var(--gridday);border-radius:4px;background:#fffdf4}
+  .opsnote{color:var(--muted);font-size:11px}
+  .opsgrp{font-size:11px;font-weight:700;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.06em;margin:12px 0 4px}
+  .opsjob{display:grid;grid-template-columns:1fr auto;gap:6px 10px;
+    align-items:start;padding:7px 0;border-top:1px solid var(--grid)}
+  .opsjob h4{margin:0 0 2px;font-size:13px;font-weight:700;color:var(--ink)}
+  .opsjob p{margin:0;font-size:11.5px;line-height:1.45;color:var(--text)}
+  .opsargs{margin-top:5px;display:flex;flex-wrap:wrap;gap:6px 10px;
+    align-items:center;font-size:11px;color:var(--muted)}
+  .opsargs input[type=text]{font:inherit;font-size:11px;width:78px;padding:2px 4px;
+    border:1px solid var(--gridday);border-radius:3px;background:#fffdf4}
+  .opsargs label{display:inline-flex;align-items:center;gap:3px}
+  .opsrun{white-space:nowrap}
+  .opsrun button{font-size:12px;padding:3px 10px}
+  .opsstate{display:block;margin-top:3px;font-size:10.5px;text-align:right;
+    color:var(--muted);max-width:170px;margin-left:auto}
+  .opschip{display:inline-block;padding:0 5px;border-radius:8px;font-size:10px;
+    font-weight:700;color:#fffdf4}
+  .c-ok{background:var(--ok)} .c-bad{background:var(--nofly)}
+  .c-run{background:var(--marginal)} .c-none{background:var(--muted)}
   svg{display:block}
   #chart{position:relative}
   #chart svg{width:100%;height:auto}
@@ -171,6 +206,19 @@
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
 
     <details id="tableWrap"><summary>Data table (fused hourly values)</summary><div id="tableBox"></div></details>
+
+    <details id="ops" class="ops">
+      <summary><span class="opsarrow">&#9656;</span> Jobs <span class="opssum" id="opsSum"></span></summary>
+      <div class="opsbody">
+        <div class="opskey">
+          <label for="opsKey">ops key</label>
+          <input id="opsKey" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="needed only to start a run">
+          <span class="opsnote" id="opsKeyNote"></span>
+        </div>
+        <div id="opsList"></div>
+      </div>
+    </details>
 
     <div class="foot">
       Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
@@ -1074,6 +1122,214 @@ function render(){
   hit.addEventListener("pointerleave",()=>{cross.setAttribute("visibility","hidden");tip.style.display="none";});
 }
 
+// ---------- jobs drawer ----------
+// The workflow files say what runs; this says what it is FOR. A row here is a
+// sentence about the data, not a YAML target — "re-render the radar frames" is
+// the thing you actually want, `backfill.yml target=radar-maps force=true` is
+// how it is spelled.
+const OPS_JOBS = [
+  {group:"routine", file:"tick.yml", title:"Hourly tick",
+   blurb:"Builds the radar composite from the four national feeds, scrapes any "
+        +"new UM frames, and draws the past map hours the page has queued."},
+  {group:"routine", file:"models.yml", title:"Fetch the models",
+   blurb:"Pulls the forecasts into the database, stores the MEPS grid for the "
+        +"year, renders the MEPS and GFS map frames, and prunes what has aged out.",
+   args:[{k:"pairing", t:"bool", def:false,
+          label:"also score yesterday's forecasts against what happened"}]},
+  {group:"routine", file:"publish-app.yml", title:"Publish the page",
+   blurb:"Pushes docs/ to GitHub Pages. Runs itself on every commit; this is "
+        +"for when you want it now."},
+
+  {group:"maps", file:"backfill.yml", target:"meps-static",
+   title:"Build the map lookup tables",
+   blurb:"The reprojection index and border mask the on-demand renderer needs. "
+        +"Until this has run once, asking for an hour older than a fortnight "
+        +"draws nothing at all."},
+  {group:"maps", file:"backfill.yml", target:"meps-maps",
+   title:"Re-render the MEPS map frames",
+   blurb:"From MET Norway's archive. Force rewrites hours that already have a "
+        +"frame, which is what you want after changing the palette or what gets "
+        +"drawn — otherwise they keep whatever they were made with.",
+   args:[{k:"days", t:"text", def:"7", label:"days back"},
+         {k:"runs", t:"text", def:"12", label:"runs"},
+         {k:"force", t:"bool", def:true, label:"force"}]},
+  {group:"maps", file:"backfill.yml", target:"gfs-maps",
+   title:"Re-render the GFS map frames",
+   blurb:"The long-range column, out to a week. Same palette, coarser grid."},
+  {group:"maps", file:"backfill.yml", target:"um-maps",
+   title:"Re-fetch the UM frames",
+   blurb:"meteo.pl's 4 km model, scraped a tile at a time from their own cache. "
+        +"Slow and deliberately polite; expect it to take a while."},
+  {group:"maps", file:"backfill.yml", target:"radar-maps",
+   title:"Re-render the radar frames",
+   blurb:"From the meteolapa archive, recoloured and cleaned. Force rewrites "
+        +"hours already stored — needed after a colour change or a change to "
+        +"the beam removal, since old frames keep the old look.",
+   args:[{k:"hours", t:"text", def:"264", label:"hours back"},
+         {k:"force", t:"bool", def:true, label:"force"}]},
+
+  {group:"history", file:"backfill.yml", target:"meps-grid",
+   title:"Download MEPS history",
+   blurb:"Fetches the model grid for a date range and keeps it a year, so any "
+        +"hour in that window can be drawn on demand. Roughly a month per run; "
+        +"a full year is several hours of Actions time.",
+   args:[{k:"grid_from", t:"text", def:"", label:"from (YYYY-MM-DD)"},
+         {k:"grid_to", t:"text", def:"", label:"to"}]},
+  {group:"history", file:"backfill.yml", target:"um-archive",
+   title:"Archive the UM frames",
+   blurb:"Moves the scraped UM frames into the archive manifest. Run it after "
+        +"a model fetch, not before."},
+  {group:"history", file:"backfill.yml", target:"station-obs",
+   title:"Backfill station observations",
+   blurb:"What actually happened, from LVĢMC, METAR and meteo.lt. This is the "
+        +"evidence half of every skill score.",
+   args:[{k:"lvgmc", t:"bool", def:true, label:"LVĢMC year"},
+         {k:"metar_start", t:"text", def:"", label:"METAR from"},
+         {k:"metar_end", t:"text", def:"", label:"to"},
+         {k:"lt_days", t:"text", def:"0", label:"meteo.lt days"}]},
+  {group:"history", file:"backfill.yml", target:"forecast-archive",
+   title:"Archive raw forecast runs",
+   blurb:"Copies whole runs to R2 so the weighting can be recomputed a "
+        +"different way later without waiting months for fresh data.",
+   args:[{k:"only_missing", t:"bool", def:true, label:"skip what is already there"}]},
+  {group:"history", file:"backfill.yml", target:"obs-archive",
+   title:"Archive observations",
+   blurb:"Moves observations out of the hot table once they are past the window.",
+   args:[{k:"obs_prune", t:"bool", def:true, label:"delete the hot rows after"}]},
+  {group:"history", file:"backfill.yml", target:"radar-verify",
+   title:"Score the forecasts against radar",
+   blurb:"Samples the radar archive at every forecast point, so precipitation "
+        +"gets verified everywhere rather than only where there is a station."},
+];
+const OPS_GROUPS = {routine:"routine", maps:"maps and frames",
+                    history:"history and verification"};
+
+const opsAgo = iso => {
+  if(!iso) return "";
+  const s=(Date.now()-Date.parse(iso))/1000;
+  if(s<90) return `${Math.round(s)}s ago`;
+  if(s<5400) return `${Math.round(s/60)} min ago`;
+  if(s<172800) return `${Math.round(s/3600)} h ago`;
+  return `${Math.round(s/86400)} d ago`;
+};
+let OPS_STATUS = {};
+
+function opsChip(last){
+  if(!last) return `<span class="opschip c-none">never run</span>`;
+  if(last.status!=="completed")
+    return `<span class="opschip c-run">running</span> ${opsAgo(last.started)}`;
+  const good=last.conclusion==="success";
+  const mins=last.ended
+    ? Math.max(1,Math.round((Date.parse(last.ended)-Date.parse(last.started))/60000))
+    : null;
+  return `<span class="opschip ${good?"c-ok":"c-bad"}">${last.conclusion}</span> `
+       + `${opsAgo(last.started)}${mins?` · ${mins} min`:""}`;
+}
+
+function opsRender(){
+  const box=document.getElementById("opsList");
+  box.textContent="";
+  let group=null;
+  for(const j of OPS_JOBS){
+    if(j.group!==group){
+      group=j.group;
+      const h=document.createElement("div");
+      h.className="opsgrp"; h.textContent=OPS_GROUPS[group]||group;
+      box.appendChild(h);
+    }
+    const row=document.createElement("div"); row.className="opsjob";
+    const left=document.createElement("div");
+    left.innerHTML=`<h4>${j.title}</h4><p>${j.blurb}</p>`;
+    if(j.args){
+      const a=document.createElement("div"); a.className="opsargs";
+      for(const f of j.args){
+        const l=document.createElement("label");
+        if(f.t==="bool"){
+          l.innerHTML=`<input type="checkbox" ${f.def?"checked":""}> ${f.label}`;
+        }else{
+          l.innerHTML=`${f.label} <input type="text" value="${f.def}">`;
+        }
+        l.querySelector("input").dataset.k=f.k;
+        a.appendChild(l);
+      }
+      left.appendChild(a);
+    }
+    const right=document.createElement("div"); right.className="opsrun";
+    const btn=document.createElement("button"); btn.textContent="Run";
+    const state=document.createElement("span"); state.className="opsstate";
+    // Several rows are the same workflow file with a different target, so the
+    // status they share is the file's — say so rather than implying each row
+    // has its own history.
+    state.innerHTML=opsChip(OPS_STATUS[j.file]) + (j.target?" (file)":"");
+    right.appendChild(btn); right.appendChild(state);
+    btn.addEventListener("click",()=>opsRun(j,left,btn,state));
+    row.appendChild(left); row.appendChild(right);
+    box.appendChild(row);
+  }
+}
+
+async function opsStatus(){
+  const sum=document.getElementById("opsSum");
+  try{
+    const r=await fetch(`${SUPABASE_URL}/functions/v1/wx-actions?op=status`);
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
+    OPS_STATUS={};
+    for(const w of d.workflows) OPS_STATUS[w.file]=w.last;
+    const running=d.workflows.filter(w=>w.last&&w.last.status!=="completed").length;
+    const failed=d.workflows.filter(w=>w.last&&w.last.conclusion==="failure").length;
+    sum.textContent = running ? `${running} running`
+                    : failed  ? `${failed} failing`
+                    : "all green";
+  }catch(e){
+    sum.textContent=`status unavailable (${e.message})`;
+  }
+  opsRender();
+}
+
+async function opsRun(job,left,btn,state){
+  const key=document.getElementById("opsKey").value.trim();
+  if(!key){ state.textContent="needs the ops key"; return; }
+  const inputs={};
+  if(job.target) inputs.target=job.target;
+  for(const el of left.querySelectorAll("[data-k]"))
+    inputs[el.dataset.k] = el.type==="checkbox" ? String(el.checked) : el.value.trim();
+  btn.disabled=true; state.textContent="starting…";
+  try{
+    const r=await fetch(`${SUPABASE_URL}/functions/v1/wx-actions`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-wx-key":key},
+      body:JSON.stringify({op:"run", file:job.file, inputs})
+    });
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
+    localStorage.setItem("wxOpsKey", key);
+    state.textContent="started";
+    // GitHub does not list the run immediately, so give it a moment.
+    setTimeout(opsStatus, 4000);
+  }catch(e){
+    state.textContent=e.message.slice(0,60);
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+function opsInit(){
+  const det=document.getElementById("ops");
+  const key=document.getElementById("opsKey");
+  const saved=localStorage.getItem("wxOpsKey");
+  if(saved){ key.value=saved;
+    document.getElementById("opsKeyNote").textContent="remembered in this browser"; }
+  key.addEventListener("change",()=>localStorage.setItem("wxOpsKey", key.value.trim()));
+  let loaded=false;
+  // Nothing is fetched until the drawer is opened: on a normal visit this
+  // costs one extra byte of HTML and no requests at all.
+  det.addEventListener("toggle",()=>{
+    if(det.open && !loaded){ loaded=true; opsRender(); opsStatus(); }
+    else if(det.open) opsStatus();
+  });
+}
+
 function renderTable(){
   const box=document.getElementById("tableBox");
   box.textContent="";
@@ -1470,7 +1726,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v46",
+    "page v47",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1586,6 +1842,7 @@ async function init(){
   document.getElementById("selCb").addEventListener("change",()=>{render();});
   document.getElementById("selWg").addEventListener("change",()=>{render();});
   document.getElementById("btnReload").addEventListener("click",load);
+  opsInit();
   document.getElementById("wPrev").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()-7*86400e3);load();});
   document.getElementById("wNext").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()+7*86400e3);load();});
   document.getElementById("wToday").addEventListener("click",()=>{weekStart=weekMonday(new Date());load();});
