@@ -93,30 +93,32 @@ async function status() {
   if (!wfR.ok) return json({ error: `workflows: HTTP ${wfR.status}` }, 502);
   const wfs = (await wfR.json()).workflows ?? [];
   const runs = runR.ok ? ((await runR.json()).workflow_runs ?? []) : [];
-  const newest = new Map<number, any>();
-  for (const r of runs) if (!newest.has(r.workflow_id)) newest.set(r.workflow_id, r);
-  const out = [];
+  const byId = new Map<number, string>();
   for (const w of wfs) {
     const file = String(w.path ?? "").split("/").pop() ?? "";
-    if (!(file in ALLOW)) continue;
-    const r = newest.get(w.id);
+    if (file in ALLOW) byId.set(w.id, file);
+  }
+  // Every recent run, not just the newest per file. backfill.yml is thirteen
+  // different jobs wearing one filename, and the only thing that tells them
+  // apart is the run name — which the workflow now builds from its target.
+  const out = [];
+  for (const r of runs) {
+    const file = byId.get(r.workflow_id);
+    if (!file) continue;
     out.push({
       file,
-      name: w.name,
-      last: r
-        ? {
-          status: r.status,                 // queued | in_progress | completed
-          conclusion: r.conclusion,         // success | failure | cancelled | ...
-          started: r.run_started_at ?? r.created_at,
-          ended: r.status === "completed" ? r.updated_at : null,
-          event: r.event,
-          url: r.html_url,
-          number: r.run_number,
-        }
-        : null,
+      title: r.display_title ?? r.name ?? "",
+      status: r.status,                   // queued | in_progress | completed
+      conclusion: r.conclusion,           // success | failure | cancelled | ...
+      started: r.run_started_at ?? r.created_at,
+      ended: r.status === "completed" ? r.updated_at : null,
+      event: r.event,
+      url: r.html_url,
+      number: r.run_number,
     });
   }
-  return json({ workflows: out, checked: new Date().toISOString() });
+  const known = [...byId.values()].map((file) => ({ file }));
+  return json({ runs: out, workflows: known, checked: new Date().toISOString() });
 }
 
 Deno.serve(async (req: Request) => {

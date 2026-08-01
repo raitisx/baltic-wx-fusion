@@ -1269,18 +1269,38 @@ const opsAgo = iso => {
   if(s<172800) return `${Math.round(s/3600)} h ago`;
   return `${Math.round(s/86400)} d ago`;
 };
-let OPS_STATUS = {};
+let OPS_RUNS = [];
+
+// A workflow_dispatch run reports which FILE ran, never which inputs it ran
+// with — so thirteen backfill jobs all looked like one another, and starting
+// one of them lit up all thirteen. backfill.yml now writes its target into the
+// run name, which is the one field the API does carry, and a row claims the
+// newest run whose name mentions its target. Runs started before that change
+// have no target in the name; those rows say so rather than guessing.
+function opsFind(job){
+  let legacy=null;
+  for(const r of OPS_RUNS){
+    if(r.file!==job.file) continue;
+    if(!job.target) return r;
+    if((r.title||"").includes(job.target)) return r;
+    // Started before the run name carried a target. Still worth showing on
+    // every row of that file, but marked, because it could be any of them.
+    if(!legacy && !(r.title||"").includes("·")) legacy={...r, vague:true};
+  }
+  return legacy;
+}
 
 function opsChip(last){
   if(!last) return `<span class="opschip c-none">never run</span>`;
+  const tag=last.vague ? " (this file, target unknown)" : "";
   if(last.status!=="completed")
-    return `<span class="opschip c-run">running</span> ${opsAgo(last.started)}`;
+    return `<span class="opschip c-run">running</span> ${opsAgo(last.started)}${tag}`;
   const good=last.conclusion==="success";
   const mins=last.ended
     ? Math.max(1,Math.round((Date.parse(last.ended)-Date.parse(last.started))/60000))
     : null;
   return `<span class="opschip ${good?"c-ok":"c-bad"}">${last.conclusion}</span> `
-       + `${opsAgo(last.started)}${mins?` · ${mins} min`:""}`;
+       + `${opsAgo(last.started)}${mins?` · ${mins} min`:""}${tag}`;
 }
 
 function opsRender(){
@@ -1314,10 +1334,7 @@ function opsRender(){
     const right=document.createElement("div"); right.className="opsrun";
     const btn=document.createElement("button"); btn.textContent="Run";
     const state=document.createElement("span"); state.className="opsstate";
-    // Several rows are the same workflow file with a different target, so the
-    // status they share is the file's — say so rather than implying each row
-    // has its own history.
-    state.innerHTML=opsChip(OPS_STATUS[j.file]) + (j.target?" (file)":"");
+    state.innerHTML=opsChip(opsFind(j));
     right.appendChild(btn); right.appendChild(state);
     btn.addEventListener("click",()=>opsRun(j,left,btn,state));
     row.appendChild(left); row.appendChild(right);
@@ -1331,12 +1348,20 @@ async function opsStatus(){
     const r=await fetch(`${SUPABASE_URL}/functions/v1/wx-actions?op=status`);
     const d=await r.json();
     if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
-    OPS_STATUS={};
-    for(const w of d.workflows) OPS_STATUS[w.file]=w.last;
-    const running=d.workflows.filter(w=>w.last&&w.last.status!=="completed").length;
-    const failed=d.workflows.filter(w=>w.last&&w.last.conclusion==="failure").length;
+    // Newest first, so opsFind can take the first match it sees.
+    OPS_RUNS=(d.runs||[]).slice().sort((a,b)=>Date.parse(b.started)-Date.parse(a.started));
+    const running=OPS_RUNS.filter(r=>r.status!=="completed").length;
+    // Only the newest run of each distinct thing counts as "failing" — an old
+    // failure that has since been re-run and passed is not news.
+    const seen=new Set(), failed=[];
+    for(const r of OPS_RUNS){
+      const k=`${r.file}|${r.title}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      if(r.conclusion==="failure") failed.push(k);
+    }
     sum.textContent = running ? `${running} running`
-                    : failed  ? `${failed} failing`
+                    : failed.length ? `${failed.length} failing`
                     : "all green";
   }catch(e){
     sum.textContent=`status unavailable (${e.message})`;
@@ -1783,7 +1808,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v54",
+    "page v55",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

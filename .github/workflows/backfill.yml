@@ -1,6 +1,12 @@
 name: backfill
 # One manual workflow for every "fill in history" job. Pick a target, set the
 # knobs that target uses, run it. Nothing here is scheduled.
+#
+# The run name carries the target because the API does not: a workflow_dispatch
+# run reports which FILE ran, never which inputs it ran with. Without this the
+# jobs drawer showed one dispatch as thirteen, since all thirteen backfill rows
+# are the same file.
+run-name: "backfill · ${{ inputs.target }}"
 on:
   workflow_dispatch:
     inputs:
