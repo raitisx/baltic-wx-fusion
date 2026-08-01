@@ -446,19 +446,27 @@ def fetch_overlays_window(t_from: dt.datetime, t_to: dt.datetime) -> list[dict]:
 def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     """Source palette RGBA -> intensity class 0..6 (0 = no echo).
 
-    LVGMC/EE palettes run blue -> green/yellow -> orange -> red with
-    increasing intensity. Classify by hue+value rather than exact colours so
-    both feeds work.
+    LVGMC/EE/LT palettes all run blue -> green -> yellow -> orange -> red with
+    increasing intensity, so most of this is done by hue and value rather than
+    by exact colours. The tops of the three scales are where they diverge, and
+    that is where this used to fail: on the 20:01 frame of 31 July the pixels
+    it could not place were white (254,254,254) and dark maroon (128,0,0) from
+    Latvia, magenta (255,69,255) from Estonia, and amber (254,188,0) from
+    Lithuania — every one of them the most intense end of its own scale. They
+    were dropped, so the heaviest cores came out as holes in the middle of the
+    rain. Exactly backwards for deciding whether to fly.
     """
     r = arr[..., 0].astype(int)
     g = arr[..., 1].astype(int)
     b = arr[..., 2].astype(int)
     a = arr[..., 3]
-    echo = a > 60
-    # exclude near-neutral pixels (LT out-of-range gray, basemap tints)
+    opaque = a > 60
     mx = np.maximum(np.maximum(r, g), b)
     mn = np.minimum(np.minimum(r, g), b)
-    echo = echo & ((mx - mn) > 25)
+    # Near-neutral pixels are basemap tints or a feed's no-data grey, EXCEPT
+    # near-white, which is the top of the Latvian scale.
+    white = opaque & (mn >= 240)
+    echo = opaque & (((mx - mn) > 25) | white)
     cls = np.zeros(arr.shape[:2], dtype=np.uint8)
     # LT teal/cyan (weak-moderate)
     teal = echo & (r < 100) & (g > 120) & (b > 120)
@@ -469,13 +477,49 @@ def _classify_intensity(arr: np.ndarray) -> np.ndarray:
     cls[blueish & (b >= 180)] = 1         # light blue = weak
     greenish = echo & (g >= r) & (g > b)
     cls[greenish] = 3
-    yellow = echo & (r > 150) & (g > 120) & (b < 120) & (g >= r - 60)
+    # Yellow through amber. The old rule also demanded g >= r - 60, which threw
+    # away Lithuania's amber (254,188,0) — 194 > 188 — for no reason.
+    yellow = echo & (r > 150) & (g > 120) & (b < 120)
     cls[yellow] = 4
+    pale = echo & (r > 200) & (g > 180) & (b >= 120) & (b <= 220)
+    cls[pale] = 4
     orange = echo & (r > 180) & (g > 60) & (g <= 160) & (b < 100)
     cls[orange] = 5
     red = echo & (r > 150) & (g <= 60) & (b < 100)
     cls[red] = 6
-    return cls
+    dark_red = echo & (r >= 90) & (g < 60) & (b < 60)      # maroon top of scale
+    cls[dark_red] = 6
+    magenta = echo & (r > 150) & (b > 150) & (g < 130)     # EE top of scale
+    cls[magenta] = 6
+    cls[white] = 6
+    return _fill_enclosed(cls, opaque)
+
+
+def _fill_enclosed(cls: np.ndarray, opaque: np.ndarray, rounds: int = 3) -> np.ndarray:
+    """Give enclosed unplaced pixels the strongest class touching them.
+
+    Whatever a feed paints inside a rain area — a colour we do not know, or its
+    own no-data grey where the beam was blocked — a hole in the middle of an
+    echo is the one reading we can be sure is wrong. Filling from the
+    neighbours errs towards more rain, which is the right way to be wrong here.
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return cls
+    out = cls
+    for _ in range(rounds):
+        gap = opaque & (out == 0)
+        if not gap.any():
+            break
+        nb = ndimage.maximum_filter(out, size=3)
+        # only fill where the pixel is genuinely enclosed, not at an edge
+        enclosed = gap & (ndimage.minimum_filter((out > 0).astype(np.uint8), size=3) == 0) \
+                       & (ndimage.uniform_filter((out > 0).astype(float), size=5) > 0.55)
+        if not enclosed.any():
+            break
+        out = np.where(enclosed, nb, out)
+    return out
 
 
 # Baltic weather radar sites. Interference beams are always radial from an
