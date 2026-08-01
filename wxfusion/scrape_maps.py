@@ -574,7 +574,15 @@ def _classify_intensity(arr: np.ndarray, feed: str | None = None) -> np.ndarray:
     cls[dark_red] = 6
     magenta = echo & (r > 150) & (b > 150) & (g < 130)     # EE top of scale
     cls[magenta] = 6
-    cls[white] = 6
+    # White is Latvia's, and it is NOT the top of its scale. On meteolapa's own
+    # legend it sits in the gap between the blue family and the yellow one, at
+    # about 3 mm/h — and Latvia's colours matched that legend row at a
+    # nearest-colour distance of zero, with the gauge work putting its ordering
+    # at Spearman +0.77, so the row is sound even though the Lithuanian one is
+    # not. Read as class 6 it was a fivefold overstatement, and it was the
+    # whole story: over three live frames, 100% of Latvia's class-6 pixels were
+    # white, while its real maroon top step appeared twice in total.
+    cls[white] = 4 if (feed or "").upper().startswith("LV") else 6
     # Measured rates win wherever a colour has been calibrated; the hue rules
     # stay underneath for the rest.
     by_cal, unknown = _classify_calibrated(arr, feed)
@@ -962,6 +970,51 @@ def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
     return out
 
 
+# Smallest a heavy core is allowed to be, in pixels — and a pixel is a
+# kilometre. Measured off a live composite: the orange class appeared in 115
+# separate blobs of which the median was ONE pixel and 58% were three pixels
+# or fewer, scattered through an otherwise uniform green field. The MEPS and
+# UM panels of the same weather had their heaviest class in 3 and 18 blobs,
+# median 40 and 11 px, with nothing tiny at all. Convection does not produce
+# isolated square kilometres of 15 mm/h inside light rain; a source with 6,561
+# colours of compression noise in it does.
+#
+# Demoted rather than deleted: the pixel is still raining, it is just not
+# raining that hard, so it takes the strongest class its neighbours can
+# vouch for.
+MIN_CORE_PX = 4
+CORE_CLASS = 5
+
+
+def _despeckle_intensity(cls: np.ndarray, min_px: int = MIN_CORE_PX) -> np.ndarray:
+    """Demote heavy-class blobs too small to be real cores."""
+    try:
+        from scipy import ndimage
+    except Exception:
+        return cls
+    out = cls.copy()
+    heavy = cls >= CORE_CLASS
+    if not heavy.any():
+        return out
+    lab, n = ndimage.label(heavy, np.ones((3, 3)))
+    if n == 0:
+        return out
+    sizes = np.bincount(lab.ravel())
+    small = np.isin(lab, np.flatnonzero(sizes < min_px)) & heavy
+    if not small.any():
+        return out
+    # what the neighbourhood says, ignoring the speck itself
+    nb = np.zeros_like(cls)
+    body = np.where(heavy, 0, cls)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy == 0 and dx == 0:
+                continue
+            nb = np.maximum(nb, np.roll(np.roll(body, dy, 0), dx, 1))
+    out[small] = np.maximum(nb[small], 1)
+    return out
+
+
 # The same six steps for air below freezing, matching maps_meps.SNOW_ANCHORS
 # so the model column and the radar column say the same thing in the same
 # colour. Top step stays orange: at that rate the rate is the point.
@@ -1231,7 +1284,8 @@ def radar_composite(frames_back: int = 3) -> None:
         # overlay's own pixels those coordinates point at nothing, which is why
         # beams kept surviving however the test was tuned.
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
-        cur = _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))
+        cur = _despeckle_intensity(
+            _remove_beam_lines(_remove_beams_polar(_despeckle(cur))))
         canvas.alpha_composite(_recolor(cur, cold, code))
 
     if newest is None:
@@ -1359,7 +1413,8 @@ def radar_backfill(hours_back: int = 168) -> None:
                     continue
                 # Warp first, clean second — see the note in radar_composite.
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
-                grid = _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))
+                grid = _despeckle_intensity(
+                    _remove_beam_lines(_remove_beams_polar(_despeckle(grid))))
                 canvas.alpha_composite(_recolor(grid, cold, code))
                 used.append(best["time"])
                 got = True
