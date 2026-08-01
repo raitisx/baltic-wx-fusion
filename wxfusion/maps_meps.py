@@ -101,7 +101,28 @@ def latest_run() -> str:
     return list_runs()[-1]
 
 
-def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
+ARCHIVE_CAT = "https://thredds.met.no/thredds/catalog/meps25epsarchive"
+ARCHIVE_DAP = "https://thredds.met.no/thredds/dodsC/meps25epsarchive"
+
+
+def archive_runs(day: dt.date) -> list[str]:
+    """Full OPeNDAP URLs for a past day's deterministic runs.
+
+    mepslatest only holds about a day, which is why re-rendering history
+    looked impossible. It is not: MET Norway keeps meps25epsarchive going back
+    years, one directory per day, and the archived meps_det_2_5km files carry
+    everything we draw — cloud_base_altitude, precipitation_amount_acc,
+    low_type_cloud_area_fraction and fog_area_fraction, 67 time steps each.
+    """
+    r = session().get(f"{ARCHIVE_CAT}/{day:%Y/%m/%d}/catalog.xml", timeout=60)
+    if r.status_code != 200:
+        return []
+    names = re.findall(r'<dataset name="(meps_det_2_5km_\d{8}T\d{2}Z\.nc)"', r.text)
+    return [f"{ARCHIVE_DAP}/{day:%Y/%m/%d}/{n}" for n in sorted(set(names))]
+
+
+def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
+                  datasets: list[str] | None = None) -> None:
     """Render short-lead frames from PAST runs still on thredds (the catalog
     keeps roughly the last day of runs) so today's already-passed hours get
     near-analysis maps. Registers them in maps/meps/archive.json; an hour is
@@ -135,7 +156,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     tmp = tempfile.mkdtemp()
 
-    runs = list_runs()[:-1][-max_runs:]  # past runs, oldest -> newest
+    runs = datasets if datasets is not None else list_runs()[:-1][-max_runs:]
     log.info("meps backfill: %d candidate runs", len(runs))
     for ds_name in runs:
         run_tag = re.search(r"(\d{8}T\d{2})Z", ds_name).group(1)
@@ -146,7 +167,8 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
         if all(arch["hours"].get(k, "") >= run_tag for k in hour_keys):
             continue  # newer or same coverage already present
         try:
-            ds = nc.Dataset(DAP_BASE + ds_name)
+            ds = nc.Dataset(ds_name if ds_name.startswith("http")
+                            else DAP_BASE + ds_name)
             lat = np.array(ds.variables["latitude"][:])
             lon = np.array(ds.variables["longitude"][:])
             m = (lat >= BBOX[0]) & (lat <= BBOX[1]) & \

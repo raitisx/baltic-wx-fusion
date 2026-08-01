@@ -26,8 +26,12 @@ on:
         description: "radar-maps / meps-maps: re-render hours already archived (apply new styling/cleaning)"
         type: boolean
         default: false
+      days:
+        description: "meps-maps: how many days of history to re-render from the MET archive (0 = today only)"
+        type: string
+        default: "0"
       runs:
-        description: "meps-maps: how many past MEPS runs to render (thredds keeps ~1 day)"
+        description: "meps-maps: how many past MEPS runs to render from the live catalog"
         type: string
         default: "12"
       lvgmc:
@@ -98,6 +102,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           MEPS_RUNS: ${{ inputs.runs }}
+          MEPS_DAYS: ${{ inputs.days }}
           BACKFILL_FORCE: ${{ inputs.force && '1' || '0' }}
         run: python jobs/run_meps_backfill.py
 
