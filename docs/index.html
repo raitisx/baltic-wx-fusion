@@ -1240,6 +1240,18 @@ const OPS_JOBS = [
    title:"Archive observations",
    blurb:"Moves observations out of the hot table once they are past the window.",
    args:[{k:"obs_prune", t:"bool", def:true, label:"delete the hot rows after"}]},
+  {group:"history", file:"backfill.yml", target:"stations",
+   title:"Refresh station coordinates",
+   blurb:"Where the 240 Latvian, Lithuanian and Estonian stations actually are. "
+        +"The observation feeds key on a station id and never said; without "
+        +"this nothing can look up what the radar was painting over a gauge."},
+  {group:"history", file:"backfill.yml", target:"radar-calibrate",
+   title:"Calibrate the radars against the gauges",
+   blurb:"Pairs every raining gauge-hour with the colour its own national radar "
+        +"was painting overhead. Results accumulate across runs — one pass gets "
+        +"the ordering and the light end, the heavy end arrives when heavy rain "
+        +"next falls over a gauge. Needs the station coordinates first.",
+   args:[{k:"hours", t:"text", def:"168", label:"hours back"}]},
   {group:"history", file:"backfill.yml", target:"radar-verify",
    title:"Score the forecasts against radar",
    blurb:"Samples the radar archive at every forecast point, so precipitation "
@@ -1770,7 +1782,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v52",
+    "page v53",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

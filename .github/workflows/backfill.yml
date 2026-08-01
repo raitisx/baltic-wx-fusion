@@ -19,6 +19,8 @@ on:
           - um-maps
           - gfs-maps
           - radar-verify
+          - stations
+          - radar-calibrate
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -93,6 +95,8 @@ jobs:
             um-maps)          pip install pillow numpy pyproj boto3 ;;
             gfs-maps)         pip install eccodes matplotlib numpy pillow pyproj boto3 ;;
             radar-verify)     pip install pillow numpy pyproj boto3 ;;
+            stations)         pip install psycopg[binary] ;;
+            radar-calibrate)  pip install pillow numpy pyproj boto3 psycopg[binary] ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -214,3 +218,20 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           RADAR_VERIFY_HOURS: ${{ inputs.hours }}
         run: python jobs/run_radar_verify.py
+
+      - name: Station coordinates -> wx.points
+        if: inputs.target == 'stations'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python jobs/run_stations.py
+
+      - name: Radar calibration against rain gauges
+        if: inputs.target == 'radar-calibrate'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          CAL_HOURS: ${{ inputs.hours }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_radar_calibrate.py

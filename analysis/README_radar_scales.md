@@ -119,3 +119,46 @@ Estonia's ingest already parses lat/lon and throws it away
 step is: extract station coordinates in all three ingests, write them into
 `wx.points`, then sample each feed's own colour at its own country's stations
 for every raining hour and read the ramp straight off the pairs.
+
+---
+
+# Attempt 3: the gauges. This works, and it needs time.
+
+Station coordinates now exist (`wxfusion/ingest/stations.py`, 240 sites:
+34 LVĢMC, 52 meteo.lt, 154 ilmateenistus), so a gauge reading can be matched to
+the radar pixel above it. Ran over 30 raining hours, 3,554 gauge readings.
+
+**The legend's order is right.** Ranking each feed's colours by where they sit
+on its own published ramp, against what the gauges under them measured:
+
+| feed | colours | Spearman |
+|------|--------:|---------:|
+| Lithuania | 12 | +0.93 |
+| Estonia | 7 | +0.89 |
+| Latvia | 6 | +0.77 |
+
+**The legend's rates are not.** Lithuania's cyan, which the legend puts at
+8.7 mm/h: the gauges under it recorded a mean of 0.18-0.22 mm/h, and the
+cross-radar attempt independently said 0.72. Three ways of asking, two of them
+agreeing on "under 1", one of them saying "nearly nine".
+
+Sanity check passes: where a feed painted nothing, 4-9% of gauge-hours were wet;
+under each feed's strongest sampled colour, 80-100% were.
+
+## What is still missing
+
+Every feed's *sampled* range tops out between 1.4 and 2.5 mm/h, because in 30
+hours no heavy core happened to sit over a gauge. Fitting the ramp anyway
+(log-linear in position, weighted by sample count) extrapolates Latvia's whole
+scale into 0.9-4.2 mm/h, which cannot be right — its top step is maroon, and
+the legend calls that 50 mm/h.
+
+So the tables are not written yet, and the classifier still uses the hue rules.
+What exists is the machinery: `radar-calibrate` in the backfill workflow pairs
+gauge-hours with radar colours and accumulates them in R2 across runs. Run it
+on a schedule and the heavy end fills in as heavy rain falls; when each feed's
+top third has a few hundred samples, the ramp can be fitted properly and wired
+into `_classify_intensity`.
+
+That is slower than a one-shot fix and it is the honest shape of the problem:
+you cannot calibrate a radar against rain that has not fallen yet.
