@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 import logging
 import re
 
@@ -39,6 +40,14 @@ from .maps_meps import (BBOX, DAP_BASE, FILL, THRESHOLDS, _gate_ceiling,
 log = logging.getLogger(__name__)
 
 GRID_PREFIX = "maps/meps_grid"
+# Stored in a format Deno can open with nothing but DecompressionStream, so the
+# edge function can draw an old hour while you wait instead of queueing it:
+#
+#   "WXG1" | uint32 header length | JSON header | raw arrays, back to back
+#
+# all deflate-compressed. npz would have been the obvious choice and is a zip,
+# which Deno has no way to read without pulling in a library.
+MAGIC = b"WXG1"
 CLEAR = 65535           # cb sentinel: no cloud base at all
 KEEP_DAYS = 365
 FRAME_KEEP_DAYS = 14
@@ -46,7 +55,44 @@ REQ_KEEP_HOURS = 24
 
 
 def _key(hour: dt.datetime) -> str:
-    return f"{GRID_PREFIX}/{hour:%Y/%m/%d}/{hour:%Y%m%dT%H}.npz"
+    return f"{GRID_PREFIX}/{hour:%Y/%m/%d}/{hour:%Y%m%dT%H}.wxg"
+
+
+def pack(arrays: dict, meta: dict) -> bytes:
+    """{name: ndarray} -> one deflate blob. See MAGIC."""
+    import zlib
+
+    header = {"meta": meta, "arrays": [
+        {"name": k, "dtype": v.dtype.str, "shape": list(v.shape)}
+        for k, v in arrays.items()]}
+    hb = json.dumps(header).encode()
+    # Every section padded to 8 bytes. A typed-array view in JS must start on a
+    # multiple of its element size, and a JSON header is whatever length it is:
+    # without this the reader throws "start offset should be a multiple of 2"
+    # on the first uint16 field. Caught in test before it ever ran.
+    hb += b" " * (-len(hb) % 8)
+    parts = [MAGIC + len(hb).to_bytes(4, "little") + b"\0" * 8 + hb]
+    for v in arrays.values():
+        b = np.ascontiguousarray(v).tobytes()
+        parts.append(b + b"\0" * (-len(b) % 8))
+    return zlib.compress(b"".join(parts), 6)
+
+
+def unpack(blob: bytes) -> tuple[dict, dict]:
+    import zlib
+
+    raw = zlib.decompress(blob)
+    if raw[:4] != MAGIC:
+        raise ValueError("not a wxg blob")
+    hlen = int.from_bytes(raw[4:8], "little")
+    header = json.loads(raw[16:16 + hlen])
+    out, off = {}, 16 + hlen
+    for spec in header["arrays"]:
+        a = np.frombuffer(raw, dtype=np.dtype(spec["dtype"]),
+                          count=int(np.prod(spec["shape"])), offset=off)
+        out[spec["name"]] = a.reshape(spec["shape"])
+        off += a.nbytes + (-a.nbytes % 8)
+    return out, header["meta"]
 
 
 def store_run(url: str, leads=(1, 2, 3)) -> int:
@@ -93,19 +139,15 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
         pr = np.clip(acc[i + 1] - acc[i], 0, None)
         cbq = np.where(cb[i] > FILL, CLEAR,
                        np.clip(cb[i], 0, 20000)).astype(np.uint16)
-        buf = io.BytesIO()
-        np.savez_compressed(
-            buf,
-            cb=cbq,
-            lcc=(np.clip(lcc[i], 0, 1) * 100).astype(np.uint8),
-            fog=(np.clip(fog[i], 0, 1) * 100).astype(np.uint8),
-            pr=(np.clip(pr, 0, 650) * 100).astype(np.uint16),
-            lat=lat[y0:y1 + 1, x0:x1 + 1].astype(np.float32),
-            lon=lon[y0:y1 + 1, x0:x1 + 1].astype(np.float32),
-            run=np.array([run.timestamp()]),
-        )
+        blob = pack({
+            "cb": cbq,
+            "lcc": (np.clip(lcc[i], 0, 1) * 100).astype(np.uint8),
+            "fog": (np.clip(fog[i], 0, 1) * 100).astype(np.uint8),
+            "pr": (np.clip(pr, 0, 650) * 100).astype(np.uint16),
+        }, {"run": run.strftime("%Y%m%dT%H"), "hour": hour.strftime("%Y%m%dT%H"),
+            "rows": int(y1 - y0 + 1), "cols": int(x1 - x0 + 1)})
         s3.put_object(Bucket=config.R2_BUCKET, Key=_key(hour),
-                      Body=buf.getvalue(), ContentType="application/octet-stream",
+                      Body=blob, ContentType="application/octet-stream",
                       CacheControl="public, max-age=31536000")
         written += 1
     log.info("grid: %s -> %d hours", m.group(1), written)
@@ -119,15 +161,33 @@ def read_hour(hour: dt.datetime) -> dict | None:
         body = s3.get_object(Bucket=config.R2_BUCKET, Key=_key(hour))["Body"].read()
     except Exception:
         return None
-    z = np.load(io.BytesIO(body))
+    z, meta = unpack(body)
     cb = z["cb"].astype(np.float32)
     cb = np.where(cb >= CLEAR, np.nan, cb)
     lcc = z["lcc"].astype(np.float32) / 100.0
     fog = z["fog"].astype(np.float32) / 100.0
     gated, fogm = _gate_ceiling(cb, lcc, fog)
+    lat, lon = _window_latlon()
     return {"cb": gated, "fogm": fogm, "pr": z["pr"].astype(np.float32) / 100.0,
-            "lat": z["lat"], "lon": z["lon"],
-            "run": dt.datetime.fromtimestamp(float(z["run"][0]), dt.timezone.utc)}
+            "lat": lat, "lon": lon,
+            "run": dt.datetime.strptime(meta["run"], "%Y%m%dT%H").replace(
+                tzinfo=dt.timezone.utc)}
+
+
+_LATLON = None
+
+
+def _window_latlon():
+    """MEPS lat/lon over our window. Fixed grid, so fetched once and cached —
+    no reason to carry it in every hour's blob."""
+    global _LATLON
+    if _LATLON is None:
+        s3 = r2_client()
+        blob = s3.get_object(Bucket=config.R2_BUCKET,
+                             Key=f"{GRID_PREFIX}/latlon.wxg")["Body"].read()
+        z, _ = unpack(blob)
+        _LATLON = (z["lat"], z["lon"])
+    return _LATLON
 
 
 def have_hour(hour: dt.datetime) -> bool:
@@ -177,7 +237,7 @@ def prune(keep_days: int = KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS,
     now = dt.datetime.now(dt.timezone.utc)
     out = {
         "grid": _prune_prefix(GRID_PREFIX + "/", now - dt.timedelta(days=keep_days),
-                              r"/(\d{8}T\d{2})\.npz$"),
+                              r"/(\d{8}T\d{2})\.wxg$"),
         "frames": _prune_prefix("maps/meps/", now - dt.timedelta(days=frame_days),
                                 r"/(\d{8}T\d{2})_alt\d+\.png$"),
         "requested": _prune_prefix("maps/meps_req/", now - dt.timedelta(hours=req_hours),
@@ -255,3 +315,74 @@ def _register(run_tag: str, vtag: str) -> None:
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/meps/archive.json",
                   Body=json.dumps(arch).encode(), ContentType="application/json",
                   CacheControl="public, max-age=300")
+
+
+def build_static() -> dict:
+    """Write the three fixed things the edge renderer needs, once.
+
+    latlon.wxg   MEPS lat/lon over our window, so hourly blobs need not carry it
+    index.wxg    for every one of the 570x690 output pixels, which source cell
+                 it comes from — the whole reprojection, precomputed, because
+                 Deno has no pyproj and this grid never moves
+    borders.wxg  the coastline and frontier drawn once into a mask
+
+    About 1.5 MB together, fetched once per edge instance and kept in memory.
+    """
+    import json as _json
+
+    import netCDF4 as nc
+
+    from . import proj3059 as P
+    from .maps_meps import BORDERS_FILE, latest_run
+
+    ds = nc.Dataset(DAP_BASE + latest_run())
+    lat = np.array(ds.variables["latitude"][:])
+    lon = np.array(ds.variables["longitude"][:])
+    win = (lat >= BBOX[0]) & (lat <= BBOX[1]) & (lon >= BBOX[2]) & (lon <= BBOX[3])
+    ys, xs = np.where(win)
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    latw = lat[y0:y1 + 1, x0:x1 + 1].astype(np.float32)
+    lonw = lon[y0:y1 + 1, x0:x1 + 1].astype(np.float32)
+    rows, cols = latw.shape
+
+    # Nearest source cell for every output pixel. Brute force over a 300x248
+    # source is 29 billion distance pairs, so go via the projected plane and a
+    # KD-tree instead: seconds, and exact.
+    from scipy.spatial import cKDTree
+
+    sx, sy = P.to_xy(lonw.ravel(), latw.ravel())
+    tree = cKDTree(np.c_[sx, sy])
+    gx, gy = np.meshgrid(np.arange(P.W), np.arange(P.H))
+    mx = P.X0 + (gx + 0.5) * (P.X1 - P.X0) / P.W
+    my = P.Y1 - (gy + 0.5) * (P.Y1 - P.Y0) / P.H
+    dist, idx = tree.query(np.c_[mx.ravel(), my.ravel()], k=1)
+    # Beyond half a grid step there is no data, only extrapolation.
+    idx = np.where(dist <= 3500, idx, 0xFFFFFFFF).astype(np.uint32)
+
+    # Borders, rasterised the same way the Python renderer draws them.
+    from PIL import Image as PILImage
+    from PIL import ImageDraw
+
+    im = PILImage.new("L", (P.W, P.H), 0)
+    d = ImageDraw.Draw(im)
+    for c in _json.load(open(BORDERS_FILE)):
+        for line in c["lines"]:
+            px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
+            pts = list(zip(px.tolist(), py.tolist()))
+            d.line(pts, fill=1, width=3)      # halo
+            d.line(pts, fill=2, width=1)      # core
+    border = np.array(im, dtype=np.uint8)
+
+    s3 = r2_client()
+    out = {}
+    for name, arrays, meta in (
+            ("latlon", {"lat": latw, "lon": lonw}, {"rows": rows, "cols": cols}),
+            ("index", {"idx": idx}, {"w": P.W, "h": P.H, "rows": rows, "cols": cols}),
+            ("borders", {"mask": border}, {"w": P.W, "h": P.H})):
+        blob = pack(arrays, meta)
+        s3.put_object(Bucket=config.R2_BUCKET, Key=f"{GRID_PREFIX}/{name}.wxg",
+                      Body=blob, ContentType="application/octet-stream",
+                      CacheControl="public, max-age=31536000")
+        out[name] = len(blob)
+    log.info("static: %s", ", ".join(f"{k} {v/1024:.0f} KiB" for k, v in out.items()))
+    return out

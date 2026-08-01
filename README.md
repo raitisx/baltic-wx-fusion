@@ -92,16 +92,27 @@ pictures are treated as disposable:
 |---|---|---|---|
 | grid | `maps/meps_grid/YYYY/MM/DD/<hour>.npz` | 365 days | 141 KiB/h, 3.3 MiB/day, 1.2 GiB/year |
 | frames | `maps/meps/<run>/<hour>_alt<thr>.png` | 14 days | 5 PNGs per hour |
-| on demand | `maps/meps_req/<hour>_alt<thr>.png` | 1 day | drawn when asked for |
+| on demand | `maps/meps_req/<hour>_alt<thr>.png` | 1 day | only for hours older than the grid |
 
 Inside the year, re-rendering an hour is one object read and about a second of
 drawing — no thredds call. Outside it, the hour is fetched from MET Norway's
 `meps25epsarchive`, which goes back years.
 
-The page has no server behind it, so an hour older than the frame window cannot
-be drawn during a page load. Clicking one writes a row through `wx_request_map`
-and the hourly tick draws it, which is why the caption says "drawn within the
-hour". Requests are capped server-side at 200 pending.
+An hour older than the frame window is drawn on the spot by the `wx-map` edge
+function: it reads the hour's grid and two fixed assets from R2 and writes an
+indexed PNG itself, in tens of milliseconds. No Python, no queue, no wait.
+
+  GET /functions/v1/wx-map?hour=20260622T08&thr=700
+
+The two fixed assets are the reason it can: `index.wxg` holds, for each of the
+570x690 output pixels, which source cell it comes from — the whole
+reprojection, precomputed, because Deno has no pyproj — and `borders.wxg` is
+the outline rasterised once. About 1.5 MB together, fetched once per edge
+instance. Build them with `backfill` -> `meps-static`.
+
+Only hours older than the stored year fall back to the queue: those need an
+OPeNDAP read from MET Norway, which Deno cannot do. `wx_request_map` takes the
+row, the hourly tick renders it, and the caption says so.
 
 Filling the year: `backfill` → `meps-grid` with `grid_from` / `grid_to`, a
 month per run. Reading one run is about 6 s, so a month is ~25 min and the year

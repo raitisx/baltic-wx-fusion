@@ -11,6 +11,7 @@ on:
           - radar-maps
           - meps-maps
           - meps-grid
+          - meps-static
           - station-obs
           - forecast-archive
           - obs-archive
@@ -85,6 +86,7 @@ jobs:
             radar-maps)       pip install pillow numpy pyproj scipy scikit-image ;;
             meps-maps)        pip install netCDF4 matplotlib numpy pillow pyproj ;;
             meps-grid)        pip install netCDF4 matplotlib numpy pillow pyproj boto3 ;;
+            meps-static)      pip install netCDF4 numpy pillow pyproj scipy boto3 ;;
             forecast-archive) pip install pyarrow boto3 ;;
             obs-archive)      pip install pyarrow boto3 ;;
             um-archive)       pip install boto3 ;;
@@ -129,6 +131,16 @@ jobs:
           GRID_TO: ${{ inputs.grid_to }}
           GRID_RENDER_DAYS: "0"
         run: python jobs/run_meps_grid.py
+
+      # One-off: the reprojection table and border mask the edge renderer uses.
+      - name: MEPS static assets -> R2
+        if: inputs.target == 'meps-static'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_meps_static.py
 
       - name: Station observation backfill -> Supabase
         if: inputs.target == 'station-obs'
