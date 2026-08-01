@@ -41,6 +41,20 @@ def main() -> int:
         conn.rollback()
         log.exception("skill snapshot failed")
 
+    # Rebuild the weights the page reads. It used to aggregate the whole
+    # comparison table live on every load — 55 MB scanned to produce 15 kB of
+    # JSON — which was fine warm and a 500 whenever the table was busy or the
+    # cache was cold, because anonymous requests are cut off at three seconds.
+    # Weights move over days, so a snapshot refreshed here is not a compromise.
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select public.wx_refresh_weights()")
+            log.info("weights refreshed: %s", cur.fetchone()[0])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        log.exception("weight refresh failed")
+
     try:
         with conn.cursor() as cur:
             cur.execute("select public.wx_prune_pairs(%s)", (PAIR_KEEP_DAYS,))

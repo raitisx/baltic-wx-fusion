@@ -1233,7 +1233,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v41",
+    "page v42",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1274,7 +1274,10 @@ async function load(){
     const [fc,obs,w]=await Promise.all([
       rpc("wx_point_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
       rpc("wx_point_obs_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
-      rpc("wx_weights",{}),
+      // Skill weights sharpen the blend; they are not what makes it work.
+      // If they fail to load the fusion falls back to equal weights and says
+      // so in the footer, which is a far better outcome than a blank page.
+      rpc("wx_weights",{}).catch(e=>{ console.warn("weights:",e); return []; }),
     ]);
     FC=expandWide(fc); OBS=obs; WEIGHTS=w; liveSource="db";
     const now=Date.now();
