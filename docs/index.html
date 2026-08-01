@@ -285,7 +285,8 @@ const OM_MODELS = {icon:"icon_seamless", meps:"metno_seamless", ifs:"ecmwf_ifs02
 const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m:"rh",
   precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
   wind_direction_10m:"wdir", pressure_msl:"pres_msl", cloud_cover:"cc_total",
-  cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high"};
+  cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high",
+  visibility:"vis"};
 async function fetchOpenMeteoDirect(lat, lon, pastDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
   u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
@@ -336,9 +337,11 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays){
 // below it cloud is scattered and there is no ceiling to report. Verified
 // against 3 days of METAR ceilings: gating cuts ICON's mean error from
 // ~920 m to ~530 m and MEPS's from ~918 m to ~559 m.
+// Fog by visibility: below 1 km is fog, 300 m or less is as bad as the bar goes.
+const FOG_VIS_M=1000, DENSE_VIS_M=300;
 const CEILING_COVER=60;
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
-  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb"];
+  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis"];
 function expandWide(rows){
   const out=[];
   for(const r of rows||[]){
@@ -375,7 +378,7 @@ function fuse(){
   for(let h=0; h<HOURS; h++){
     const ts = t0 + h*3600e3;
     const row = {ts, hourOfDay: rigaHour(new Date(ts))};
-    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","pres_msl"]){
+    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","pres_msl","vis"]){
       const per = (idx[p]||{})[ts] || {};
       const vals = MODELS.map(m=>per[m] ?? null);
       const ws = MODELS.map(m=>{
@@ -425,7 +428,20 @@ function fuse(){
     const rhAll = MODELS.filter(m=>rhv[m]!=null);
     row.fog_n = rhAll.filter(m=>rhv[m] >= 97).length;
     row.fog_of = rhAll.length;
-    row.fog = row.fog_n > 0 || (row.cb!=null && row.cb < 100);
+    // Visibility decides when we have it. Saturation at 2 m was the best test
+    // available before, but it is a poor one on its own: over the week ahead
+    // it flagged 51 hours as fog, and the models put the visibility at 15-19
+    // km through most of them. A damp night is not fog.
+    row.fog = row.vis != null
+      ? row.vis <= FOG_VIS_M
+      : (row.fog_n > 0 || (row.cb != null && row.cb < 100));
+    // Intensity, not just presence. Visibility is the quantity fog is measured
+    // by everywhere else, and Open-Meteo carries it for icon, meps and gfs
+    // (ifs returns nothing, so this is a three-model mean). Full bar at 300 m
+    // or less, nothing at 1 km — the standard fog threshold.
+    row.fog_i = row.vis!=null
+      ? Math.max(0, Math.min(1, (FOG_VIS_M - row.vis) / (FOG_VIS_M - DENSE_VIS_M)))
+      : (row.fog ? 0.55 : 0);            // saturated but no visibility figure
     FUSED.push(row);
   }
   shiftPrecipToHourStart();
@@ -733,8 +749,16 @@ function render(){
       svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:1.8,fill:css("--cloud")},svg);
     for(const o of (obsIdx.cb_ceiling||[]))
       svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:2.6,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1},svg);
-    for(const r of FUSED) if(r.fog)
-      svgEl("rect",{x:xPos(r.ts)+0.5,y:bot-fogH+3,width:xPos(r.ts+3600e3)-xPos(r.ts)-1,height:fogH-6,fill:css("--fog"),opacity:.9},svg);
+    // Fog band, drawn to its intensity rather than as a flat on/off stripe:
+    // a full-height bar is visibility of 300 m or worse, a short one is around
+    // a kilometre. Hover gives the metres.
+    for(const r of FUSED){
+      if(!r.fog) continue;
+      const i=Math.max(0.18, r.fog_i ?? 0.55);
+      const h=Math.max(2,(fogH-4)*i);
+      svgEl("rect",{x:xPos(r.ts)+0.5,y:bot-2-h,width:xPos(r.ts+3600e3)-xPos(r.ts)-1,
+                    height:h,fill:css("--fog"),opacity:.9},svg);
+    }
   }
 
   for(const r of FUSED){
@@ -772,7 +796,9 @@ function render(){
       ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
       ["--dew","dew pt",f(r.td2m)+" °C"],
       ["--humid","rel.humid",f(r.rh,0)+" %"],
-      ...(r.fog?[["--fog","fog",`${r.fog_n}/${r.fog_of} models saturated`]]:[]),
+      ...(r.fog?[["--fog","fog", r.vis!=null
+          ? `visibility ${Math.round(r.vis)} m · ${r.fog_n}/${r.fog_of} saturated`
+          : `${r.fog_n}/${r.fog_of} models saturated`]]:[]),
       ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
@@ -1158,7 +1184,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v36",
+    "page v37",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

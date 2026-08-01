@@ -34,6 +34,10 @@ HOURLY_VARS = {
     "cloud_cover_low": "cc_low",
     "cloud_cover_mid": "cc_mid",
     "cloud_cover_high": "cc_high",
+    # Fog has an intensity, and this is it. Open-Meteo serves visibility for
+    # icon, metno (MEPS) and gfs; ecmwf_ifs025 returns nulls, so the fused
+    # value is a three-model mean where it exists at all.
+    "visibility": "vis",
 }
 
 
