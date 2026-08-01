@@ -33,22 +33,24 @@ const FOG_CEILING_M = 60;
 const CLEAR = 65535;
 
 // Palette: 0 transparent, 1 pink ceiling, 2 orange fog, 3-8 rain light->heavy,
-// 9 border halo, 10 border core. Matches RAIN_STEPS and the pink/orange in
-// maps_meps, so an on-demand frame is indistinguishable from a rendered one.
+// 9 border halo, 10 border core. The rain steps and the breakpoints below are
+// the same ones maps_meps draws with (RAIN_ANCHORS / RAIN_LEVELS), measured
+// off a meteo.pl frame: pale cream-yellow for the lightest, darkening through
+// green, orange for the heavy cores, and no yellow in the middle.
 const PALETTE: [number, number, number, number][] = [
   [0, 0, 0, 0],
   [243, 184, 180, 191],
   [232, 163, 61, 204],
-  [205, 234, 176, 160],
-  [143, 208, 106, 195],
-  [70, 177, 60, 225],
-  [242, 212, 58, 240],
-  [243, 148, 31, 250],
-  [226, 86, 15, 255],
+  [252, 255, 173, 230],
+  [230, 255, 120, 240],
+  [0, 227, 0, 245],
+  [0, 168, 0, 250],
+  [0, 103, 9, 253],
+  [255, 120, 0, 255],
   [247, 241, 226, 230],
   [85, 80, 63, 255],
 ];
-const RAIN_EDGES = [0.1, 0.4, 1.0, 2.0, 4.0, 8.0];   // mm/h -> classes 3..8
+const RAIN_EDGES = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0];  // mm/h -> classes 3..8
 
 async function inflate(buf: ArrayBuffer): Promise<Uint8Array> {
   const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream("deflate"));

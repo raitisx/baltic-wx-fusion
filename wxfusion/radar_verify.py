@@ -29,7 +29,8 @@ import numpy as np
 
 from . import config
 from .http import session
-from .scrape_maps import LEGACY_RAIN_STEPS, RAIN_STEPS, r2_client
+from .scrape_maps import (LEGACY_RAIN_STEPS, LEGACY_RAIN_STEPS_2,
+                          RAIN_STEPS, r2_client)
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,8 @@ def _palette() -> np.ndarray:
     # Both palettes: frames rendered before 01.08 carry the old all-green ramp
     # and still have to be scoreable.
     return np.array([[0, 0, 0, 0]] + [list(c) for c in RAIN_STEPS]
-                    + [list(c) for c in LEGACY_RAIN_STEPS], dtype=int)
+                    + [list(c) for c in LEGACY_RAIN_STEPS]
+                    + [list(c) for c in LEGACY_RAIN_STEPS_2], dtype=int)
 
 
 # Nearest-colour alone is not enough: the frames have country borders baked

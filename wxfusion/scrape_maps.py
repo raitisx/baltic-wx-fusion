@@ -72,17 +72,30 @@ LT_SW = (49.876389, 15.618611)
 LT_NE = (59.701667, 34.313611)
 LT_MAXSIZE = 1400  # downscale the 4000px source before classification
 
-# Rain colours, meteo.pl's ordering: light green for drizzle through to orange
-# for the heaviest. An all-green ramp made the difference between 0.5 mm/h and
-# 20 mm/h a matter of shade, which is the one distinction that decides whether
-# you fly. The model maps use the same anchors (maps_meps.RAIN_ANCHORS), so
-# radar and forecast read the same.
-RAIN_STEPS = [(205, 234, 176, 160), (143, 208, 106, 195), (70, 177, 60, 225),
-              (242, 212, 58, 240), (243, 148, 31, 250), (226, 86, 15, 255)]
-# The palette archived frames were recoloured with before 01.08. radar_verify
-# has to recognise both to score history.
+# Rain colours, measured off a meteo.pl sample rather than guessed. Counting
+# the saturated pixels in their UM frame, the ramp is:
+#
+#   #fcffad  pale cream-yellow   the lightest rain
+#   #e6ff78  yellow-green
+#   #00e300  bright green
+#   #00a800  green
+#   #006709  dark green
+#   #ff7800  orange              the heavy cores  (833 px, the modal colour)
+#   #cc2222  red                 rare, 112 px in the whole frame
+#
+# The thing I had wrong: there is no yellow in the MIDDLE. Their yellow tones
+# are the weakest rain and the scale darkens through green before jumping to
+# orange, so a heavy core reads as orange against dark green. Ours put yellow
+# at step 4 of 6, which is why the middle of a rain area came out yellow.
+RAIN_STEPS = [(252, 255, 173, 170), (230, 255, 120, 200), (0, 227, 0, 225),
+              (0, 168, 0, 240), (0, 103, 9, 250), (255, 120, 0, 255)]
+# Palettes archived frames were recoloured with before this. radar_verify has
+# to recognise all of them, or history stops being scoreable the moment the
+# colours change.
 LEGACY_RAIN_STEPS = [(200, 230, 176, 150), (137, 199, 116, 190), (87, 182, 71, 220),
                      (28, 122, 28, 235), (11, 77, 11, 255), (5, 45, 5, 255)]
+LEGACY_RAIN_STEPS_2 = [(205, 234, 176, 160), (143, 208, 106, 195), (70, 177, 60, 225),
+                       (242, 212, 58, 240), (243, 148, 31, 250), (226, 86, 15, 255)]
 GREEN_STEPS = RAIN_STEPS          # name kept for callers
 
 

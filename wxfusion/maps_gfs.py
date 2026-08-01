@@ -30,7 +30,7 @@ import numpy as np
 
 from . import config
 from .http import session
-from .maps_meps import RAIN_ANCHORS, THRESHOLDS
+from .maps_meps import RAIN_ANCHORS, RAIN_LEVELS, THRESHOLDS
 
 log = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import BoundaryNorm, ListedColormap
     from PIL import Image as PILImage
 
     from . import proj3059 as P
@@ -197,8 +197,9 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     log.info("gfs: run %s, leads %d..%d", run_tag, start_lead, end_lead)
 
     s3 = r2_client()
-    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
-    pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
+    greens = ListedColormap(RAIN_ANCHORS)
+    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
+    pink = ListedColormap(["#f3b8b4"])
     borders = json.load(open(os.path.join(
         os.path.dirname(__file__), "assets", "borders_baltic.json")))
     tmp = tempfile.mkdtemp()
@@ -304,7 +305,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
             ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
                           alpha=0.75, shading="auto")
             if prm is not None:
-                ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
+                ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
                               alpha=0.9, shading="auto")
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")

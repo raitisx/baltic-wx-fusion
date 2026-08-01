@@ -36,10 +36,16 @@ DAP_BASE = "https://thredds.met.no/thredds/dodsC/mepslatest/"
 BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 THRESHOLDS = [100, 300, 650, 700, 1000]
 FILL = 1e30  # cloud_base_altitude fill => clear sky
-# Rain ramp, meteo.pl's ordering: light green for drizzle, orange for the
-# heaviest. Anchors match scrape_maps.RAIN_STEPS so the radar column and the
-# forecast columns read as one scale.
-RAIN_ANCHORS = ["#cdeab0", "#8fd06a", "#46b13c", "#f2d43a", "#f3941f", "#e2560f"]
+# Rain ramp measured off a meteo.pl frame (see scrape_maps.RAIN_STEPS for the
+# pixel counts): pale cream-yellow for the lightest rain, darkening through
+# green, then orange for the heavy cores. No yellow in the middle.
+RAIN_ANCHORS = ["#fcffad", "#e6ff78", "#00e300", "#00a800", "#006709", "#ff7800"]
+# Discrete, not a smooth ramp, and on the same breakpoints as the radar classes
+# so the two columns can be compared directly. The old continuous scale ran
+# 0.1-4 mm/h linearly, which put everything above 4 mm/h at full orange — most
+# of a rain area, so the map read as a solid orange blob where meteo.pl showed
+# green with small orange cores.
+RAIN_LEVELS = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0, 1e6]
 # A ceiling needs broken-or-more low cloud, the same 5-okta rule the meteogram
 # applies. MEPS publishes cloud_base_altitude wherever it finds any cloud base
 # at all, and below 700 m that is almost never a ceiling: over the Baltic
@@ -132,12 +138,13 @@ def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
     from PIL import Image as PILImage
 
     from . import proj3059 as P
 
-    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
+    greens = ListedColormap(RAIN_ANCHORS)
+    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     borders = json.load(open(BORDERS_FILE))
@@ -156,7 +163,7 @@ def draw_hour(cb, fogm, pr, latw, lonw) -> dict:
                       shading="auto")
         ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange, vmin=0,
                       vmax=1, alpha=0.8, shading="auto")
-        ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4, alpha=0.9,
+        ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm, alpha=0.9,
                       shading="auto")
         for c in borders:
             for line in c["lines"]:
@@ -191,7 +198,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
     import netCDF4 as nc
     from PIL import Image as PILImage
     from . import proj3059 as P
@@ -205,7 +212,8 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
         arch = {"hours": {}, "thresholds": THRESHOLDS}
 
     borders = json.load(open(BORDERS_FILE))
-    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
+    greens = ListedColormap(RAIN_ANCHORS)
+    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     tmp = tempfile.mkdtemp()
@@ -273,7 +281,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 # Fog in orange: a different decision from a low ceiling.
                 ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
                               vmin=0, vmax=1, alpha=0.8, shading="auto")
-                ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
+                ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
                               alpha=0.9, shading="auto")
                 for country in borders_xy:
                     for bx, by in country:
@@ -301,7 +309,7 @@ def render_run(max_hours: int = 66) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
     import netCDF4 as nc
 
     ds_name = latest_run()
@@ -331,7 +339,8 @@ def render_run(max_hours: int = 66) -> None:
     from . import proj3059 as P
 
     borders = json.load(open(BORDERS_FILE))
-    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
+    greens = ListedColormap(RAIN_ANCHORS)
+    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
 
@@ -394,7 +403,7 @@ def render_run(max_hours: int = 66) -> None:
                           alpha=0.75, shading="auto")
             ax.pcolormesh(xw, yw, np.where(fg, 1.0, np.nan), cmap=orange,
                           vmin=0, vmax=1, alpha=0.8, shading="auto")
-            ax.pcolormesh(xw, yw, prm, cmap=greens, vmin=0.1, vmax=4,
+            ax.pcolormesh(xw, yw, prm, cmap=greens, norm=rain_norm,
                           alpha=0.9, shading="auto")
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
