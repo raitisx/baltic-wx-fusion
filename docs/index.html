@@ -35,7 +35,6 @@
   }
   .side select{width:100%}
   button{cursor:pointer}
-  #btnReload{width:100%;margin-top:10px}
   .smapwrap{position:relative;width:100%;aspect-ratio:570/690;margin-top:12px;
     border:1px solid var(--gridday);border-radius:4px;overflow:hidden;background:var(--panel);cursor:crosshair}
   .smapwrap img{position:absolute;inset:0;width:100%;height:100%}
@@ -88,10 +87,10 @@
   /* The cloud-base limit sits in the meteogram's own gutter, level with the
      dashed line it controls. Positioned in percent so it tracks the SVG as it
      scales. */
-  #cbBox{position:absolute;transform:translateY(-50%);width:58px;left:4px}
-  #cbBox select{width:100%;padding:2px 3px;font-size:11px;font-weight:700;
+  .limbox{position:absolute;transform:translateY(-50%);width:58px;left:4px}
+  .limbox select{width:100%;padding:2px 3px;font-size:11px;font-weight:700;
     color:var(--threshold);border-color:var(--threshold)}
-  #cbBox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
+  .limbox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
     text-align:center;margin-top:1px;line-height:1.1}
   svg text{font-family:inherit}
   .tip{
@@ -141,23 +140,36 @@
   <aside class="sidebar side">
     <h1 id="title">BALTIC_WX</h1>
     <div class="sel" id="selNote"></div>
-    <!-- The cloud-base limit is moved onto the ceiling panel on load, level
-         with its middle — see placeCbBox(). Moved rather than duplicated, so
-         there is only ever one of it. -->
+    <!-- Both limits are moved onto the panel they draw a line on — see
+         placeLimitBox(). Moved rather than duplicated, so there is only ever
+         one of each. The ceiling list is fine-grained on purpose: the decision
+         it drives is not a round number, it is whatever the job needs. -->
     <select id="selCb" hidden>
+      <option value="50">50</option>
+      <option value="70">70</option>
       <option value="100">100</option>
+      <option value="120">120</option>
+      <option value="150">150</option>
+      <option value="200">200</option>
+      <option value="250">250</option>
       <option value="300">300</option>
+      <option value="350">350</option>
+      <option value="400">400</option>
+      <option value="450">450</option>
+      <option value="500">500</option>
+      <option value="550">550</option>
+      <option value="600">600</option>
       <option value="700" selected>700</option>
+      <option value="800">800</option>
       <option value="1000">1000</option>
     </select>
-    <label>Gust limit</label>
-    <select id="selWg">
-      <option value="8">8 m/s</option>
-      <option value="10" selected>10 m/s</option>
-      <option value="12">12 m/s</option>
-      <option value="15">15 m/s</option>
+    <select id="selWg" hidden>
+      <option value="5">5</option>
+      <option value="8">8</option>
+      <option value="10" selected>10</option>
+      <option value="12">12</option>
+      <option value="15">15</option>
     </select>
-    <button id="btnReload">Reload</button>
     <div class="smapwrap" id="smap">
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
@@ -772,47 +784,58 @@ function linePath(rows, key, y){
   return d;
 }
 
-// The cloud-base selector is a real <select>, not SVG, so it is an absolutely
-// positioned overlay. Percentages rather than pixels because the SVG scales
-// with the window and the line has to stay under it.
-// Held in variables, not looked up. Once the selector has been moved into the
+// Both limits are real <select>s, not SVG, so they ride the chart as absolutely
+// positioned overlays. Percentages rather than pixels because the SVG scales
+// with the window and each has to stay on its own panel.
+//
+// Held in variables, not looked up. Once a selector has been moved into the
 // chart it is a child of #chart, and #chart is emptied on every render — so a
 // getElementById for it returns null for the rest of the frame. That is not a
 // hypothetical: it took the page down with "Cannot read properties of null".
-// Two defences, because either alone is one edit away from breaking again:
-// the box is skipped when the chart is cleared, and every read goes through
-// cbLimit() rather than the DOM.
-let CB_BOX=null, CB_SEL=null;
-function cbSel(){
-  return CB_SEL || (CB_SEL=document.getElementById("selCb"));
+// Two defences, because either alone is one edit away from breaking again: the
+// boxes are skipped when the chart is cleared, and every read goes through
+// limitOf() rather than the DOM.
+const LIMITS={
+  cb: {sel:"selCb", cap:"cloud limit", fallback:700, box:null, el:null},
+  wg: {sel:"selWg", cap:"gust limit",  fallback:10,  box:null, el:null},
+};
+function limSel(k){
+  const L=LIMITS[k];
+  return L.el || (L.el=document.getElementById(L.sel));
 }
-function cbLimit(){
-  const v=+(cbSel()?.value);
-  return Number.isFinite(v) ? v : 700;
+function limitOf(k){
+  const v=+(limSel(k)?.value);
+  return Number.isFinite(v) ? v : LIMITS[k].fallback;
 }
-function placeCbBox(yVB, totalH){
-  if(!CB_BOX){
-    CB_BOX=document.createElement("div");
-    CB_BOX.id="cbBox";
-    const sel=cbSel();
+const cbLimit = () => limitOf("cb");
+const wgLimit = () => limitOf("wg");
+function placeLimitBox(k, yVB, totalH){
+  const L=LIMITS[k];
+  if(!L.box){
+    L.box=document.createElement("div");
+    L.box.className="limbox";
+    const sel=limSel(k);
     sel.hidden=false;
-    CB_BOX.appendChild(sel);
-    const cap=document.createElement("div");
-    cap.className="cbcap"; cap.textContent="cloud limit";
-    CB_BOX.appendChild(cap);
+    L.box.appendChild(sel);
+    if(L.cap){
+      const cap=document.createElement("div");
+      cap.className="cbcap"; cap.textContent=L.cap;
+      L.box.appendChild(cap);
+    }
   }
-  CB_BOX.style.top=(yVB/totalH*100).toFixed(3)+"%";
-  document.getElementById("chart").appendChild(CB_BOX);
+  L.box.style.top=(yVB/totalH*100).toFixed(3)+"%";
+  document.getElementById("chart").appendChild(L.box);
 }
+const isLimitBox = n => Object.values(LIMITS).some(L=>L.box===n);
 
 function render(){
   const chart=document.getElementById("chart");
-  // Everything except the selector overlay, which has to stay in the document
-  // between frames — see the note above cbSel().
-  for(const n of [...chart.childNodes]) if(n!==CB_BOX) chart.removeChild(n);
+  // Everything except the selector overlays, which have to stay in the document
+  // between frames — see the note above limSel().
+  for(const n of [...chart.childNodes]) if(!isLimitBox(n)) chart.removeChild(n);
   if(!FUSED.length) return;
   const cbLim=cbLimit();
-  const wgLim=+document.getElementById("selWg").value;
+  const wgLim=wgLimit();
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -935,6 +958,9 @@ function render(){
     const hi=Math.max(Math.ceil(Math.max(0,...vals,wgLim+2)/5)*5,10);
     const y=scaffold(p,0,hi,niceTicks(0,hi,4));
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
+    // Directly under the panel's own labels, so the control sits in the legend
+    // it belongs to rather than in a sidebar three columns away.
+    placeLimitBox("wg", panelTop[p.id] + p.h*p.at + 20, totalH);
     let d="",pen=false;
     for(const r of FUSED){
       if(r.ws10m==null){pen=false;continue;}
@@ -978,7 +1004,7 @@ function render(){
     // sank towards the hour labels, at 1000 m it met the cloud band, and it
     // moved every time you changed it, so the control was never twice in the
     // same place. Fixed, it is where the hand already is.
-    placeCbBox(top + p.h / 2, totalH);
+    placeLimitBox("cb", top + p.h / 2, totalH);
     const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
@@ -1734,7 +1760,7 @@ async function initMapsViewer(){
     btn.textContent="⏸ stop";
     MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),500);
   });
-  cbSel().addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
+  limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
     if(MV.playing) return;
@@ -1742,7 +1768,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v50",
+    "page v51",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1831,7 +1857,7 @@ async function load(){
 }
 
 async function init(){
-  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg"," m/s"]]){
+  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg",""]]){
     if(qv==null || !isFinite(qv)) continue;
     const sel=document.getElementById(selId);
     if(![...sel.options].some(o=>+o.value===qv)){
@@ -1855,9 +1881,7 @@ async function init(){
   if(startPt) setPoint(startPt.point_id,
     isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
                        : `▣ ${startPt.name ?? "map cell"} · 25 km`);
-  cbSel().addEventListener("change",()=>{render();});
-  document.getElementById("selWg").addEventListener("change",()=>{render();});
-  document.getElementById("btnReload").addEventListener("click",load);
+  for(const k of ["cb","wg"]) limSel(k).addEventListener("change",()=>{render();});
   opsInit();
   document.getElementById("wPrev").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()-7*86400e3);load();});
   document.getElementById("wNext").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()+7*86400e3);load();});
