@@ -35,6 +35,10 @@ DAP_BASE = "https://thredds.met.no/thredds/dodsC/mepslatest/"
 BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 THRESHOLDS = [100, 300, 650, 700, 1000]
 FILL = 1e30  # cloud_base_altitude fill => clear sky
+# Rain ramp, meteo.pl's ordering: light green for drizzle, orange for the
+# heaviest. Anchors match scrape_maps.RAIN_STEPS so the radar column and the
+# forecast columns read as one scale.
+RAIN_ANCHORS = ["#cdeab0", "#8fd06a", "#46b13c", "#f2d43a", "#f3941f", "#e2560f"]
 # A ceiling needs broken-or-more low cloud, the same 5-okta rule the meteogram
 # applies. MEPS publishes cloud_base_altitude wherever it finds any cloud base
 # at all, and below 700 m that is almost never a ceiling: over the Baltic
@@ -119,8 +123,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3)) -> None:
         arch = {"hours": {}, "thresholds": THRESHOLDS}
 
     borders = json.load(open(BORDERS_FILE))
-    greens = LinearSegmentedColormap.from_list(
-        "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
+    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     tmp = tempfile.mkdtemp()
@@ -245,8 +248,7 @@ def render_run(max_hours: int = 66) -> None:
     from . import proj3059 as P
 
     borders = json.load(open(BORDERS_FILE))
-    greens = LinearSegmentedColormap.from_list(
-        "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
+    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
 

@@ -29,7 +29,7 @@ import numpy as np
 
 from . import config
 from .http import session
-from .scrape_maps import GREEN_STEPS, r2_client
+from .scrape_maps import LEGACY_RAIN_STEPS, RAIN_STEPS, r2_client
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +43,10 @@ RAIN_CLASS = 1  # class at or above which we call it rain
 
 
 def _palette() -> np.ndarray:
-    return np.array([[0, 0, 0, 0]] + [list(c) for c in GREEN_STEPS], dtype=int)
+    # Both palettes: frames rendered before 01.08 carry the old all-green ramp
+    # and still have to be scoreable.
+    return np.array([[0, 0, 0, 0]] + [list(c) for c in RAIN_STEPS]
+                    + [list(c) for c in LEGACY_RAIN_STEPS], dtype=int)
 
 
 # Nearest-colour alone is not enough: the frames have country borders baked
@@ -62,8 +65,11 @@ def classify(arr: np.ndarray) -> np.ndarray:
     a = arr[..., 3].astype(int)
     rgb = arr[..., :3].astype(int)
     d = ((rgb[:, :, None, :] - pal[None, None, :, :3]) ** 2).sum(axis=3)
-    cls = d.argmin(axis=2).astype(np.uint8)
-    nearest = np.take_along_axis(d, cls[:, :, None], axis=2)[:, :, 0]
+    idx = d.argmin(axis=2).astype(np.uint8)
+    nearest = np.take_along_axis(d, idx[:, :, None], axis=2)[:, :, 0]
+    # The palette holds the current six colours then the six legacy ones, so
+    # fold the second half back onto the same classes.
+    cls = np.where(idx == 0, 0, ((idx - 1) % 6) + 1).astype(np.uint8)
     cls[nearest > MAX_COLOUR_DIST ** 2] = 0
     cls[a <= 40] = 0
     return cls

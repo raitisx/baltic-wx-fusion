@@ -30,7 +30,7 @@ import numpy as np
 
 from . import config
 from .http import session
-from .maps_meps import THRESHOLDS
+from .maps_meps import RAIN_ANCHORS, THRESHOLDS
 
 log = logging.getLogger(__name__)
 
@@ -197,8 +197,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     log.info("gfs: run %s, leads %d..%d", run_tag, start_lead, end_lead)
 
     s3 = r2_client()
-    greens = LinearSegmentedColormap.from_list(
-        "g", ["#c8e6b0", "#57b647", "#1c7a1c", "#0b4d0b"])
+    greens = LinearSegmentedColormap.from_list("g", RAIN_ANCHORS)
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     borders = json.load(open(os.path.join(
         os.path.dirname(__file__), "assets", "borders_baltic.json")))

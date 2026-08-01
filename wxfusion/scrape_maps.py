@@ -72,9 +72,18 @@ LT_SW = (49.876389, 15.618611)
 LT_NE = (59.701667, 34.313611)
 LT_MAXSIZE = 1400  # downscale the 4000px source before classification
 
-# Our precip colours (match maps_meps.py greens)
-GREEN_STEPS = [(200, 230, 176, 150), (137, 199, 116, 190), (87, 182, 71, 220),
-               (28, 122, 28, 235), (11, 77, 11, 255), (5, 45, 5, 255)]
+# Rain colours, meteo.pl's ordering: light green for drizzle through to orange
+# for the heaviest. An all-green ramp made the difference between 0.5 mm/h and
+# 20 mm/h a matter of shade, which is the one distinction that decides whether
+# you fly. The model maps use the same anchors (maps_meps.RAIN_ANCHORS), so
+# radar and forecast read the same.
+RAIN_STEPS = [(205, 234, 176, 160), (143, 208, 106, 195), (70, 177, 60, 225),
+              (242, 212, 58, 240), (243, 148, 31, 250), (226, 86, 15, 255)]
+# The palette archived frames were recoloured with before 01.08. radar_verify
+# has to recognise both to score history.
+LEGACY_RAIN_STEPS = [(200, 230, 176, 150), (137, 199, 116, 190), (87, 182, 71, 220),
+                     (28, 122, 28, 235), (11, 77, 11, 255), (5, 45, 5, 255)]
+GREEN_STEPS = RAIN_STEPS          # name kept for callers
 
 
 def r2_client():
@@ -875,7 +884,7 @@ def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
 
 def _recolor(cls: np.ndarray) -> Image.Image:
     out = np.zeros((*cls.shape, 4), dtype=np.uint8)
-    for i, rgba in enumerate(GREEN_STEPS, start=1):
+    for i, rgba in enumerate(RAIN_STEPS, start=1):
         out[cls == i] = rgba
     return Image.fromarray(out, "RGBA")
 

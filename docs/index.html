@@ -135,7 +135,7 @@
       <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · orange: fog · green: rain in the hour starting here</span></div>
+          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit · orange: fog · rain green→orange, hour starting here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -339,6 +339,8 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays){
 // ~920 m to ~530 m and MEPS's from ~918 m to ~559 m.
 // Fog by visibility: below 1 km is fog, 300 m or less is as bad as the bar goes.
 const FOG_VIS_M=1000, DENSE_VIS_M=300;
+// Full-strength fog draws up to the 300 m line on the ceiling scale.
+const FOG_FULL_M=300;
 const CEILING_COVER=60;
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
   "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis"];
@@ -571,14 +573,16 @@ function render(){
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
   const headerH=34;
-  const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+16,0) + 20;
+  const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+3,0) + 20;
   const svg=svgEl("svg",{viewBox:`0 0 ${P.width} ${totalH}`, "aria-label":"7-day flight meteogram"});
   chart.appendChild(svg);
 
   let yCursor=headerH;
   const panelTop={};
-  for(const p of PANELS){ panelTop[p.id]=yCursor; yCursor+=p.h+16; }
-  const plotBottom = yCursor-16;
+  // 3 px between panels: the axis labels sit inside each panel, so the gap was
+  // only ever separating frames that already have their own background.
+  for(const p of PANELS){ panelTop[p.id]=yCursor; yCursor+=p.h+3; }
+  const plotBottom = yCursor-3;
   const plotTop = panelTop[PANELS[0].id];
 
   for(const p of PANELS)
@@ -631,7 +635,11 @@ function render(){
     }
     for(const tv of ticks){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      const t=svgEl("text",{x:P.left-6,y:y(tv)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+      // Keep the label inside its own panel. At 3 px spacing the top tick of
+      // one panel and the bottom tick of the one above land on the same line
+      // and overprint each other.
+      const ly=Math.min(bot-2, Math.max(top+9, y(tv)+4));
+      const t=svgEl("text",{x:P.left-6,y:ly,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
@@ -697,8 +705,10 @@ function render(){
   {
     const p=PANELS[3];
     const top=panelTop[p.id], bot=top+p.h;
-    const bandH=44, fogH=12;
-    const y0=bot-fogH, yTopDetail=top+bandH+4;
+    // No separate fog strip any more — fog is drawn against this same scale,
+    // so zero metres is the floor of the panel.
+    const bandH=44;
+    const y0=bot-2, yTopDetail=top+bandH+4;
     const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
     for(const r of FUSED){
       if(r.hourOfDay%6!==0) continue;
@@ -710,7 +720,7 @@ function render(){
     }
     for(const tv of [0,150,300,500,1000]){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      const t=svgEl("text",{x:P.left-6,y:y(tv)+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+      const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
     const cbLimV=+document.getElementById("selCb").value;
@@ -749,15 +759,16 @@ function render(){
       svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:1.8,fill:css("--cloud")},svg);
     for(const o of (obsIdx.cb_ceiling||[]))
       svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:2.6,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1},svg);
-    // Fog band, drawn to its intensity rather than as a flat on/off stripe:
-    // a full-height bar is visibility of 300 m or worse, a short one is around
-    // a kilometre. Hover gives the metres.
+    // Fog, on the ceiling panel's own scale: a bar reaching the 300 m gridline
+    // is fog at full strength, and a shorter one is proportionally thinner. It
+    // reads directly against the ceiling trace above it rather than as a
+    // separate stripe with a private scale of its own.
     for(const r of FUSED){
       if(!r.fog) continue;
-      const i=Math.max(0.18, r.fog_i ?? 0.55);
-      const h=Math.max(2,(fogH-4)*i);
-      svgEl("rect",{x:xPos(r.ts)+0.5,y:bot-2-h,width:xPos(r.ts+3600e3)-xPos(r.ts)-1,
-                    height:h,fill:css("--fog"),opacity:.9},svg);
+      const i=Math.max(0.12, r.fog_i ?? 0.55);
+      const yTop=y(FOG_FULL_M*i);
+      svgEl("rect",{x:xPos(r.ts)+0.5,y:yTop,width:xPos(r.ts+3600e3)-xPos(r.ts)-1,
+                    height:Math.max(2,y0-yTop),fill:css("--fog"),opacity:.85},svg);
     }
   }
 
@@ -981,7 +992,7 @@ function mepsSrc(iso){
   const thr=mepsThr();
   if(!meps) return gfsSrc(iso, thr);
   if(meps.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · orange: fog · green: rain in the hour starting here"};
+    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · orange: fog · rain green→orange, hour starting here"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
@@ -1184,7 +1195,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v37",
+    "page v38",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
