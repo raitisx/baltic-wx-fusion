@@ -1150,6 +1150,29 @@ def _weak_alpha(feed: str) -> np.ndarray:
     return np.clip((lim - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
 
 
+def draw_borders(canvas: Image.Image) -> None:
+    """Coast and frontier onto the overlay, cased so it reads without a
+    background underneath.
+
+    Module level because two paths drew it and they drew it differently — the
+    live composite a single hairline in one grey, the backfill a pale halo
+    under a dark core. Re-rendering an hour therefore changed how it looked
+    even when nothing about the weather had. One implementation now.
+    """
+    from PIL import ImageDraw
+
+    from . import proj3059 as P
+    borders = json.load(open(os.path.join(
+        os.path.dirname(__file__), "assets", "borders_baltic.json")))
+    d = ImageDraw.Draw(canvas)
+    for c in borders:
+        for line in c["lines"]:
+            px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
+            pts = list(zip(px.tolist(), py.tolist()))
+            d.line(pts, fill=(247, 241, 226, 230), width=3)
+            d.line(pts, fill=(85, 80, 63, 255), width=1)
+
+
 def _fade_edges(canvas: Image.Image) -> Image.Image:
     a = np.array(canvas)
     a[..., 3] = (a[..., 3].astype(np.float32) * _coverage_alpha()).astype(np.uint8)
@@ -1214,17 +1237,7 @@ def radar_composite(frames_back: int = 3) -> None:
     if newest is None:
         raise RuntimeError("no radar frames fetched")
     canvas = _fade_edges(canvas)
-    # thin borders on the overlay itself (readable even without background)
-    from PIL import ImageDraw
-    borders_file = os.path.join(os.path.dirname(__file__), "assets",
-                                "borders_baltic.json")
-    draw = ImageDraw.Draw(canvas)
-    for c in json.load(open(borders_file)):
-        for line in c["lines"]:
-            px, py = P.to_px([latv for _, latv in line],
-                             [lonv for lonv, _ in line])
-            draw.line(list(zip(px.tolist(), py.tolist())),
-                      fill=(107, 101, 82, 255), width=1)
+    draw_borders(canvas)
     vtag = newest.strftime("%Y%m%dT%H%M")
     buf = io.BytesIO()
     canvas.save(buf, "PNG", optimize=True)
@@ -1300,18 +1313,6 @@ def radar_backfill(hours_back: int = 168) -> None:
         arch = {"path": "maps/radar/frames3059", "hours": {}}
 
     from . import proj3059 as P
-    from PIL import ImageDraw
-    borders = json.load(open(os.path.join(
-        os.path.dirname(__file__), "assets", "borders_baltic.json")))
-
-    def draw_borders(canvas):
-        d = ImageDraw.Draw(canvas)
-        for c in borders:
-            for line in c["lines"]:
-                px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
-                pts = list(zip(px.tolist(), py.tolist()))
-                d.line(pts, fill=(247, 241, 226, 230), width=3)
-                d.line(pts, fill=(85, 80, 63, 255), width=1)
 
     force = os.environ.get("BACKFILL_FORCE", "") == "1"
     if force:

@@ -1204,11 +1204,25 @@ const OPS_JOBS = [
    title:"Re-fetch the UM frames",
    blurb:"meteo.pl's 4 km model, scraped a tile at a time from their own cache. "
         +"Slow and deliberately polite; expect it to take a while."},
-  {group:"maps", file:"backfill.yml", target:"radar-maps",
+  {group:"maps", file:"backfill.yml", target:"radar-render",
    title:"Re-render the radar frames",
-   blurb:"From the meteolapa archive, recoloured and cleaned. Force rewrites "
-        +"hours already stored — needed after a colour change or a change to "
-        +"the beam removal, since old frames keep the old look.",
+   blurb:"From the originals kept in R2, not from meteolapa — reads nothing "
+        +"upstream, so a colour or cleaning change costs seconds instead of a "
+        +"scrape of the whole archive. Force rewrites hours that already have "
+        +"a frame, which is what you want when the change is to how they look.",
+   args:[{k:"hours", t:"text", def:"336", label:"hours back"},
+         {k:"force", t:"bool", def:true, label:"force"}]},
+  {group:"maps", file:"backfill.yml", target:"radar-sources",
+   title:"Fetch radar originals",
+   blurb:"Pulls the source overlays as meteolapa serves them and keeps them a "
+        +"year — 256 kB an hour, 2.3 GB a year. The hourly tick does this "
+        +"anyway; this is for filling in history you did not have before.",
+   args:[{k:"hours", t:"text", def:"336", label:"hours back"}]},
+  {group:"maps", file:"backfill.yml", target:"radar-maps",
+   title:"Re-render the radar frames (from meteolapa)",
+   blurb:"The old path: re-fetches every overlay from meteolapa. Only needed "
+        +"for hours older than the stored originals go back. Slow and rude to "
+        +"them; prefer the one above.",
    args:[{k:"hours", t:"text", def:"264", label:"hours back"},
          {k:"force", t:"bool", def:true, label:"force"}]},
 
@@ -1815,7 +1829,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v56",
+    "page v57",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

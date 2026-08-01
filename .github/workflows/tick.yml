@@ -49,6 +49,18 @@ jobs:
         run: python jobs/run_observations.py
 
       # always(): a Supabase blip must not take the radar pipeline down with it.
+      # Keep the originals first, so the composite below is drawn from
+      # something that will still be here when the drawing rules change.
+      - name: Radar sources -> R2
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_STORE_HOURS: "6"
+        run: python jobs/run_radar_store.py
+
       - name: Radar composite
         if: always()
         continue-on-error: true

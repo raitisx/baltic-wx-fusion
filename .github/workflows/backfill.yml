@@ -27,6 +27,8 @@ on:
           - radar-verify
           - stations
           - radar-calibrate
+          - radar-sources
+          - radar-render
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -103,6 +105,8 @@ jobs:
             radar-verify)     pip install pillow numpy pyproj boto3 ;;
             stations)         pip install psycopg[binary] ;;
             radar-calibrate)  pip install pillow numpy pyproj boto3 psycopg[binary] ;;
+            radar-sources)    pip install pillow numpy pyproj boto3 ;;
+            radar-render)     pip install pillow numpy pyproj boto3 scipy scikit-image ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -241,3 +245,24 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
         run: python jobs/run_radar_calibrate.py
+
+      - name: Radar sources -> R2 (originals, kept a year)
+        if: inputs.target == 'radar-sources'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_STORE_HOURS: ${{ inputs.hours }}
+        run: python jobs/run_radar_store.py
+
+      - name: Radar composites from the stored originals
+        if: inputs.target == 'radar-render'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_RENDER_HOURS: ${{ inputs.hours }}
+          RADAR_RENDER_FORCE: ${{ inputs.force && '1' || '' }}
+        run: python jobs/run_radar_render.py
