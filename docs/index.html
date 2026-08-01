@@ -1275,32 +1275,32 @@ let OPS_RUNS = [];
 // with — so thirteen backfill jobs all looked like one another, and starting
 // one of them lit up all thirteen. backfill.yml now writes its target into the
 // run name, which is the one field the API does carry, and a row claims the
-// newest run whose name mentions its target. Runs started before that change
-// have no target in the name; those rows say so rather than guessing.
+// newest run whose name mentions its target.
+//
+// A run with no target in its name claims NOTHING. Showing it on every row of
+// its file with a caveat was still thirteen amber badges, and a caveat does not
+// undo thirteen amber badges. It goes in the summary line instead, where one
+// run reads as one run.
+const opsTargeted = r => (r.title||"").includes("·");
 function opsFind(job){
-  let legacy=null;
   for(const r of OPS_RUNS){
     if(r.file!==job.file) continue;
     if(!job.target) return r;
-    if((r.title||"").includes(job.target)) return r;
-    // Started before the run name carried a target. Still worth showing on
-    // every row of that file, but marked, because it could be any of them.
-    if(!legacy && !(r.title||"").includes("·")) legacy={...r, vague:true};
+    if(opsTargeted(r) && r.title.includes(job.target)) return r;
   }
-  return legacy;
+  return null;
 }
 
 function opsChip(last){
   if(!last) return `<span class="opschip c-none">never run</span>`;
-  const tag=last.vague ? " (this file, target unknown)" : "";
   if(last.status!=="completed")
-    return `<span class="opschip c-run">running</span> ${opsAgo(last.started)}${tag}`;
+    return `<span class="opschip c-run">running</span> ${opsAgo(last.started)}`;
   const good=last.conclusion==="success";
   const mins=last.ended
     ? Math.max(1,Math.round((Date.parse(last.ended)-Date.parse(last.started))/60000))
     : null;
   return `<span class="opschip ${good?"c-ok":"c-bad"}">${last.conclusion}</span> `
-       + `${opsAgo(last.started)}${mins?` · ${mins} min`:""}${tag}`;
+       + `${opsAgo(last.started)}${mins?` · ${mins} min`:""}`;
 }
 
 function opsRender(){
@@ -1360,9 +1360,16 @@ async function opsStatus(){
       seen.add(k);
       if(r.conclusion==="failure") failed.push(k);
     }
-    sum.textContent = running ? `${running} running`
-                    : failed.length ? `${failed.length} failing`
-                    : "all green";
+    // Runs whose target nobody recorded — started before backfill.yml began
+    // naming them. They belong to no row, so they are named here or nowhere.
+    const orphan=OPS_RUNS.filter(r=>r.status!=="completed"
+                                 && r.file==="backfill.yml" && !opsTargeted(r));
+    const bits=[];
+    if(running) bits.push(`${running} running`);
+    if(!running && failed.length) bits.push(`${failed.length} failing`);
+    if(!running && !failed.length) bits.push("all green");
+    if(orphan.length) bits.push(`${orphan.length} backfill with no target recorded`);
+    sum.textContent = bits.join(" · ");
   }catch(e){
     sum.textContent=`status unavailable (${e.message})`;
   }
@@ -1808,7 +1815,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v55",
+    "page v56",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
