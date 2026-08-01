@@ -88,7 +88,7 @@
   /* The cloud-base limit sits in the meteogram's own gutter, level with the
      dashed line it controls. Positioned in percent so it tracks the SVG as it
      scales. */
-  #cbBox{position:absolute;transform:translateY(-50%);width:60px;left:3px}
+  #cbBox{position:absolute;transform:translateY(-50%);width:58px;left:4px}
   #cbBox select{width:100%;padding:2px 3px;font-size:11px;font-weight:700;
     color:var(--threshold);border-color:var(--threshold)}
   #cbBox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
@@ -141,14 +141,14 @@
   <aside class="sidebar side">
     <h1 id="title">BALTIC_WX</h1>
     <div class="sel" id="selNote"></div>
-    <!-- The cloud-base limit is moved onto the ceiling panel on load, beside
-         the line it draws — see placeCbBox(). Moved rather than duplicated so
+    <!-- The cloud-base limit is moved onto the ceiling panel on load, level
+         with its middle — see placeCbBox(). Moved rather than duplicated, so
          there is only ever one of it. -->
     <select id="selCb" hidden>
-      <option value="100">100 m</option>
-      <option value="300">300 m</option>
-      <option value="700" selected>700 m</option>
-      <option value="1000">1000 m</option>
+      <option value="100">100</option>
+      <option value="300">300</option>
+      <option value="700" selected>700</option>
+      <option value="1000">1000</option>
     </select>
     <label>Gust limit</label>
     <select id="selWg">
@@ -973,9 +973,12 @@ function render(){
     const cbLimV=cbLimit();
     svgEl("rect",{x:P.left,y:y(cbLimV),width:P.width-P.left-P.right,height:y0-y(cbLimV),fill:css("--belowzone")},svg);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(cbLimV),y2:y(cbLimV),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
-    // The selector rides the dashed line it sets, so the number and the line
-    // are one object and there is nothing to go and look up elsewhere.
-    placeCbBox(y(cbLimV), totalH);
+    // Parked at the middle of this panel rather than riding the dashed line it
+    // sets. Following the line read as tidier and was worse to use: at 100 m it
+    // sank towards the hour labels, at 1000 m it met the cloud band, and it
+    // moved every time you changed it, so the control was never twice in the
+    // same place. Fixed, it is where the hand already is.
+    placeCbBox(top + p.h / 2, totalH);
     const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
@@ -1739,7 +1742,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v48",
+    "page v50",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1828,7 +1831,7 @@ async function load(){
 }
 
 async function init(){
-  for(const [qv,selId,unit] of [[Q.cb,"selCb"," m"],[Q.wg,"selWg"," m/s"]]){
+  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg"," m/s"]]){
     if(qv==null || !isFinite(qv)) continue;
     const sel=document.getElementById(selId);
     if(![...sel.options].some(o=>+o.value===qv)){
