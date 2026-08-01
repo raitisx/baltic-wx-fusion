@@ -1215,7 +1215,8 @@ const OPS_JOBS = [
   {group:"maps", file:"backfill.yml", target:"radar-sources",
    title:"Fetch radar originals",
    blurb:"Pulls the source overlays as meteolapa serves them and keeps them a "
-        +"year — 256 kB an hour, 2.3 GB a year. The hourly tick does this "
+        +"year, re-encoded as palette PNG — 98 kB an hour, 0.9 GB a year, and "
+        +"bit-identical for Latvia and Estonia. The hourly tick does this "
         +"anyway; this is for filling in history you did not have before.",
    args:[{k:"hours", t:"text", def:"336", label:"hours back"}]},
   {group:"maps", file:"backfill.yml", target:"radar-maps",
@@ -1829,7 +1830,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v57",
+    "page v58",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

@@ -14,15 +14,17 @@ with no call upstream. This does the same for radar.
   maps/radar_src/YYYY/MM/DD/index.json                 what is there, with bounds
   maps/radar/frames3059/<stamp>.png                    rendered, rolling 14 days
 
-Measured: the three sources are 256 kB an hour together — Lithuania is 208 kB
-of that, a full-colour PNG with compression noise in it — so a year of
-originals is 2.3 GB. The rendered composites are 31.5 kB an hour, 0.28 GB a
-year, and now only a fortnight of them is kept at a time. Re-encoding the
-originals was tried and saves nothing; they are already optimal PNG.
+Sizes, measured on live frames rather than guessed. As served the three
+sources are 248 kB an hour together, Lithuania 204 kB of that. Stored as
+palette PNG they are 98 kB — 0.88 GB for a year rather than 2.2 — and for
+Estonia and Latvia that is bit-for-bit the same image. See REENCODE for what
+is and is not lost. The rendered composites are 31.5 kB an hour, and only a
+fortnight of them is kept now.
 
-Storing the originals rather than the classified grids is deliberate. The
+Storing the sources rather than the classified grids is deliberate. The
 classifier is the part that keeps changing — the whole gauge calibration
-exists to change it — and a stored class grid could not be reclassified.
+exists to change it — and a stored class grid could not be reclassified. A
+palette PNG still cannot: it is the same image with a smaller colour table.
 """
 from __future__ import annotations
 
@@ -47,10 +49,59 @@ SRC_PREFIX = "maps/radar_src"
 FRAME_PREFIX = "maps/radar/frames3059"
 ARCHIVE_KEY = "maps/radar/archive.json"
 SRC_KEEP_DAYS = 365
+# Re-encode the originals as palette PNG before storing. Measured on live
+# frames: 248 kB an hour becomes 98 kB, so a year of originals is 0.9 GB
+# instead of 2.2.
+#
+# Nothing is lost for Estonia (8 distinct RGBA values in a frame) or Latvia
+# (15) — the palette is built from the exact colours and the round trip is
+# bit-for-bit. Lithuania serves 6,561 colours, nearly all of them compression
+# noise around a much smaller real ramp, and gets median-cut to 255: 99.47% of
+# echo pixels classify identically and 90% of the rest move by exactly one
+# class, which is a boundary pixel changing its mind.
+#
+# Tried and rejected: plain grayscale, which destroys the classification
+# outright (0% agreement) because different hues share a luminance —
+# Lithuania's cyan is 156 and its bright green 167. And picking Lithuania's
+# palette by frequency instead of median-cut, which scored WORSE (97.81%)
+# even though the top 256 colours cover 97.2% of pixels. On a radar image the
+# rare colours are the heavy cores, and those are the ones worth keeping.
+REENCODE = True
 FRAME_KEEP_DAYS = 14
 # How far a sweep may be from the hour it is filed under. The sources run on
 # their own ~10 minute cadence and do not line up with the clock.
 NEAR_MIN = 40
+
+
+def _to_palette(body: bytes) -> tuple[bytes, str]:
+    """Original PNG bytes -> palette PNG bytes, and which route was taken."""
+    import numpy as np
+
+    im = Image.open(io.BytesIO(body)).convert("RGBA")
+    a = np.array(im)
+    flat = a.reshape(-1, 4)
+    uniq, inv = np.unique(flat, axis=0, return_inverse=True)
+    if len(uniq) <= 256:
+        idx = inv.reshape(a.shape[:2]).astype(np.uint8)
+        pal = uniq
+        how = "exact"
+    else:
+        q = im.convert("RGB").quantize(colors=255,
+                                       method=Image.Quantize.MEDIANCUT,
+                                       dither=Image.Dither.NONE)
+        qp = np.array(q.getpalette()[:255 * 3], np.uint8).reshape(-1, 3)
+        # index 255 is the transparent one, on the same >60 test the
+        # classifier uses to decide a pixel is painted at all
+        idx = np.where(a[..., 3] > 60, np.array(q), 255).astype(np.uint8)
+        pal = np.vstack([np.c_[qp, np.full(len(qp), 255, np.uint8)],
+                         np.array([[0, 0, 0, 0]], np.uint8)])
+        how = "medcut255"
+    p = Image.fromarray(idx, "P")
+    p.putpalette(pal[:, :3].astype(np.uint8).ravel().tolist())
+    out = io.BytesIO()
+    p.save(out, "PNG", optimize=True,
+           transparency=bytes(pal[:, 3].astype(np.uint8)))
+    return out.getvalue(), how
 
 
 def _day_prefix(t: dt.datetime) -> str:
@@ -115,11 +166,20 @@ def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
                 except Exception:
                     log.exception("store: fetch failed %s", o["url"])
                     continue
-                s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=r.content,
+                body, how = r.content, "as-served"
+                if REENCODE:
+                    try:
+                        body, how = _to_palette(r.content)
+                    except Exception:
+                        log.exception("store: re-encode failed for %s, "
+                                      "keeping the original", key)
+                        body, how = r.content, "as-served"
+                s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=body,
                               ContentType="image/png",
                               CacheControl="public, max-age=31536000, immutable")
                 idx["frames"].append({
-                    "key": key, "code": code,
+                    "key": key, "code": code, "enc": how,
+                    "bytes": len(body), "src_bytes": len(r.content),
                     "time": o["time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "sw": list(o["sw"]), "ne": list(o["ne"]),
                 })
