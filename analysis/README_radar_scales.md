@@ -70,3 +70,52 @@ The fix is a cross-calibration from the overlap rather than from the legend:
 one frame already gives 17,717 pixels where two radars see the same rain, and
 Latvia is the one whose scale checks out. Collect those pairs over a range of
 weather and the LT and EE colour-to-class tables fall out of the data.
+
+---
+
+# Attempt 2: cross-calibrate from the overlap. It does not work.
+
+Harvested every pixel where Latvia and another feed reported echo in the same
+frame, over 45 frames spanning a week, taking Latvia's rate as known.
+49,952 pairs for Lithuania, 18,400 for Estonia.
+
+The result is a flat line. Lithuania's entire colour range — cyan, through
+every green, to yellow — maps to Latvian rates between **1.34 and 2.19 mm/h**.
+Estonia's, including its red, maps to between **0.72 and 1.34**. Colour
+carries almost no information about the rate the other radar reports.
+
+That is geometry, not noise. The only place two of these radars see the same
+sky is a narrow border strip where *both* are at 150-200 km, which is where
+both are looking through the top of the weather. The overlap is the worst
+place in the domain to calibrate, not the best. I had this backwards.
+
+It does settle one thing. The legend claims Lithuanian cyan is 8.7 mm/h;
+Latvia's radar, looking at the same rain, says 0.7. A factor of twelve over
+49,952 pixels. Whatever meteolapa's LT row describes, it is not the tiles they
+serve — so not shipping attempt 1 was right for a better reason than I had.
+
+# What will work: the gauges
+
+A rain gauge sits under one radar at short range and measures what reached the
+ground. No overlap needed, no long-range geometry, and it calibrates all three
+feeds by the same method against the same kind of truth.
+
+The observations are already in the database:
+
+| network | raining hours | ≥2 mm/h | ≥6 mm/h | stations | max |
+|---------|--------------:|--------:|--------:|---------:|----:|
+| meteo.lt | 460 | 57 | 7 | 52 | 14.1 mm/h |
+| LVĢMC | 278 | 56 | 18 | 33 | 24.2 mm/h |
+| ilmateenistus | 215 | 47 | 12 | 68 | 12.4 mm/h |
+
+That covers the heavy end the overlap never reached, which is the end the whole
+question is about.
+
+One thing is missing. `wx.points` carries coordinates for METAR, grid and
+virtual points only; the three national networks are stored in
+`wx.observations_h` by `station_id` with nowhere to look up where they are.
+Estonia's ingest already parses lat/lon and throws it away
+(`ee_xml.py`, line 53); LVĢMC and meteo.lt do not parse it at all. So the next
+step is: extract station coordinates in all three ingests, write them into
+`wx.points`, then sample each feed's own colour at its own country's stations
+for every raining hour and read the ramp straight off the pairs.
