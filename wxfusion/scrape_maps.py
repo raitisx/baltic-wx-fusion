@@ -37,7 +37,8 @@ from PIL import Image
 
 from . import config
 from .http import session
-from .maps_meps import RAIN_LEVELS
+from .maps_meps import (RAIN_LEVELS, RAIN_ANCHORS, SNOW_ANCHORS,
+                        rain_pos as _ramp_pos, ramp_rgb)
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,44 @@ LT_MAXSIZE = 1400  # downscale the 4000px source before classification
 # at step 4 of 6, which is why the middle of a rain area came out yellow.
 RAIN_STEPS = [(252, 255, 173, 170), (230, 255, 120, 200), (0, 227, 0, 225),
               (0, 168, 0, 240), (0, 103, 9, 250), (255, 120, 0, 255)]
+
+# Sub-class resolution. Everything downstream of classification — despeckling,
+# beam removal, the archive, the verifier — is written in terms of the six
+# intensity classes and stays that way. What changed is that a pixel now
+# carries where inside its class it sits, so the recolour can draw the ramp
+# continuously instead of six flat bands. Six bands was the reason a radar
+# frame and the MEPS frame beside it did not look like the same quantity even
+# when they agreed: the model map was a smooth field and the radar was a
+# contour chart of it.
+#
+# 16 sub-steps per class. Finer than anything the feeds themselves resolve —
+# their own ramps are 10 to 15 steps for the whole range — so this is about
+# the drawing, not about pretending to precision. 96 levels leaves the rain
+# and snow ramps together at 192 colours, still inside the 256 a palette PNG
+# can hold, which is what the archive re-encodes to.
+SUB = 16
+LEV_MAX = 6 * SUB
+lev_class = lambda lev: (np.asarray(lev).astype(np.int16) + SUB - 1) // SUB
+
+
+def rate_to_lev(mm):
+    """mm/h -> level 1..48 on the shared ramp.
+
+    Levels are half-open like the classes were: a rate sitting exactly on a
+    class edge is the first level of the class ABOVE it, which is why this
+    floors and adds one rather than rounding. Level k*SUB is then the last
+    level of class k, and lev_class() recovers the class exactly."""
+    pos = np.asarray(_ramp_pos(mm), dtype=np.float64)
+    return np.clip(np.floor(pos * LEV_MAX) + 1, 1, LEV_MAX).astype(np.uint8)
+
+
+def class_to_lev(cls):
+    """Class -> the middle of that class, for pixels placed by the hue rules
+    rather than by a measured rate. The middle, not an edge: the hue rules
+    know which band a colour is in and nothing finer, and drawing it at a band
+    edge would fake a precision they do not have."""
+    c = np.asarray(cls).astype(np.int16)
+    return np.where(c > 0, np.clip(c * SUB - SUB // 2, 1, LEV_MAX), 0).astype(np.uint8)
 # Palettes archived frames were recoloured with before this. radar_verify has
 # to recognise all of them, or history stops being scoreable the moment the
 # colours change.
@@ -551,7 +590,7 @@ CAL_MAX_DIST = 40.0
 
 
 def _classify_calibrated(arr: np.ndarray, feed: str):
-    """Classes from the measured table, plus a mask of what it could not place."""
+    """Levels from the measured table, plus a mask of what it could not place."""
     tab = fitted_scales().get(FEED_SCALE.get(feed or "", ""))
     if tab is None:
         return None, None
@@ -566,15 +605,16 @@ def _classify_calibrated(arr: np.ndarray, feed: str):
         best_d[a0:a0 + 200_000] = d.min(1)
     mm = rate[best_i].reshape(arr.shape[:2])
     unknown = (best_d > CAL_MAX_DIST).reshape(arr.shape[:2])
-    cls = np.zeros(arr.shape[:2], np.uint8)
-    for k, lo in enumerate(RAIN_LEVELS[:-1], start=1):
-        cls[mm >= lo] = k
-    cls[mm < RAIN_LEVELS[0]] = 0
-    return cls, unknown
+    lev = rate_to_lev(mm)
+    lev[mm < RAIN_LEVELS[0]] = 0
+    return lev, unknown
 
 
 def _classify_intensity(arr: np.ndarray, feed: str | None = None) -> np.ndarray:
-    """Source palette RGBA -> intensity class 0..6 (0 = no echo).
+    """Source palette RGBA -> intensity level 0..48 (0 = no echo).
+
+    A level is a class times SUB, give or take where inside the class the rate
+    sits; lev_class() recovers the class wherever one is what is wanted.
 
     LVGMC/EE/LT palettes all run blue -> green -> yellow -> orange -> red with
     increasing intensity, so most of this is done by hue and value rather than
@@ -630,15 +670,17 @@ def _classify_intensity(arr: np.ndarray, feed: str | None = None) -> np.ndarray:
     # whole story: over three live frames, 100% of Latvia's class-6 pixels were
     # white, while its real maroon top step appeared twice in total.
     cls[white] = 4 if (feed or "").upper().startswith("LV") else 6
-    # Measured rates win wherever a colour is on the feed's own scale; the hue
-    # rules above stay underneath for whatever is not. `echo` has to be part of
+    # Hue-placed pixels know their class and nothing finer, so they sit at the
+    # middle of it. Measured rates win wherever a colour is on the feed's own
+    # scale, and carry the sub-class detail with them. `echo` has to be part of
     # the condition — a feed's no-data grey is opaque and would otherwise be
     # snapped to whichever palette step it happens to sit nearest.
+    lev = class_to_lev(cls)
     by_cal, unknown = _classify_calibrated(arr, feed)
     if by_cal is not None:
-        cls = np.where(unknown | ~echo, cls, by_cal).astype(np.uint8)
-        cls[~opaque] = 0
-    return _fill_enclosed(cls, opaque)
+        lev = np.where(unknown | ~echo, lev, by_cal).astype(np.uint8)
+        lev[~opaque] = 0
+    return _fill_enclosed(lev, opaque)
 
 
 def _fill_enclosed(cls: np.ndarray, opaque: np.ndarray, rounds: int = 3) -> np.ndarray:
@@ -1033,6 +1075,7 @@ def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
 # vouch for.
 MIN_CORE_PX = 4
 CORE_CLASS = 5
+CORE_LEV = (CORE_CLASS - 1) * SUB + 1     # first level inside class 5
 
 
 def _despeckle_intensity(cls: np.ndarray, min_px: int = MIN_CORE_PX) -> np.ndarray:
@@ -1042,7 +1085,7 @@ def _despeckle_intensity(cls: np.ndarray, min_px: int = MIN_CORE_PX) -> np.ndarr
     except Exception:
         return cls
     out = cls.copy()
-    heavy = cls >= CORE_CLASS
+    heavy = cls >= CORE_LEV
     if not heavy.any():
         return out
     lab, n = ndimage.label(heavy, np.ones((3, 3)))
@@ -1069,27 +1112,56 @@ def _despeckle_intensity(cls: np.ndarray, min_px: int = MIN_CORE_PX) -> np.ndarr
 # colour. Top step stays orange: at that rate the rate is the point.
 SNOW_STEPS = [(223, 238, 255, 170), (181, 213, 251, 200), (127, 178, 238, 225),
               (69, 135, 214, 240), (31, 90, 168, 250), (255, 120, 0, 255)]
+# Opacity along the same ramp: light rain half-transparent so the coastline
+# under it stays legible, heavy rain solid. One value per anchor, interpolated
+# with the colour.
+RAIN_ALPHA = [170, 200, 225, 240, 250, 255, 255]
+
+# Colour and alpha for every level 1..48, built once. Forty-eight lookups is
+# cheaper than interpolating 393 000 pixels, and it means the exact colours
+# that end up in the archive are enumerable — which the verifier needs.
+def _ramp_lut(anchors):
+    # Each level is a band, so it is drawn at the middle of its own band.
+    pos = (np.arange(LEV_MAX + 1, dtype=np.float64) - 0.5) / LEV_MAX
+    lut = np.zeros((LEV_MAX + 1, 4), np.uint8)
+    lut[:, :3] = ramp_rgb(pos, anchors)
+    from .maps_meps import ANCHOR_POS
+    lut[:, 3] = np.rint(np.interp(pos, ANCHOR_POS, RAIN_ALPHA)).astype(np.uint8)
+    lut[0] = 0
+    return lut
+
+
+_LUT_RAIN = None
+_LUT_SNOW = None
+
+
+def ramp_lut(cold: bool = False) -> np.ndarray:
+    global _LUT_RAIN, _LUT_SNOW
+    if cold:
+        if _LUT_SNOW is None:
+            _LUT_SNOW = _ramp_lut(SNOW_ANCHORS)
+        return _LUT_SNOW
+    if _LUT_RAIN is None:
+        _LUT_RAIN = _ramp_lut(RAIN_ANCHORS)
+    return _LUT_RAIN
 
 
 def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
              feed: str | None = None) -> Image.Image:
-    """Intensity classes -> RGBA, in green or, where the air is below freezing,
-    in blue. Recoloured from the class array rather than from finished pixels:
+    """Intensity levels -> RGBA, in green or, where the air is below freezing,
+    in blue. Recoloured from the level array rather than from finished pixels:
     once the sources are composited the edges are blended and no longer sit on
-    a palette colour."""
-    out = np.zeros((*cls.shape, 4), dtype=np.uint8)
-    for i, rgba in enumerate(RAIN_STEPS, start=1):
-        sel = cls == i
-        if cold is not None and i < len(RAIN_STEPS):
-            out[sel & ~cold] = rgba
-            out[sel & cold] = SNOW_STEPS[i - 1]
-        else:
-            out[sel] = rgba
+    a ramp colour."""
+    lev = np.clip(cls, 0, LEV_MAX).astype(np.uint8)
+    out = ramp_lut(False)[lev]
+    if cold is not None:
+        out = np.where(cold[..., None], ramp_lut(True)[lev], out)
     if feed:
         w = _weak_alpha(feed)
-        weak = (cls > 0) & (cls <= WEAK_CLASSES)
+        weak = (lev > 0) & (lev <= WEAK_CLASSES * SUB)
+        out = out.copy()
         out[..., 3] = np.where(weak, out[..., 3] * w, out[..., 3]).astype(np.uint8)
-    return Image.fromarray(out, "RGBA")
+    return Image.fromarray(np.ascontiguousarray(out, dtype=np.uint8), "RGBA")
 
 
 def _freezing_mask(when: dt.datetime):

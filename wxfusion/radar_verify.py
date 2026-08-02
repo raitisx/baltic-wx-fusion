@@ -30,7 +30,8 @@ import numpy as np
 from . import config
 from .http import session
 from .scrape_maps import (LEGACY_RAIN_STEPS, LEGACY_RAIN_STEPS_2, SNOW_STEPS,
-                          RAIN_STEPS, r2_client)
+                          RAIN_STEPS, LEV_MAX, SUB, lev_class, ramp_lut,
+                          r2_client)
 
 log = logging.getLogger(__name__)
 
@@ -43,17 +44,41 @@ BOX_KM = 5  # neighbourhood half-width in pixels (1 px = 1 km)
 RAIN_CLASS = 1  # class at or above which we call it rain
 
 
-def _palette() -> np.ndarray:
-    # Every ramp a stored frame might have been drawn with: the current green
-    # one, its blue below-freezing twin, and the two older all-green ramps that
-    # frames before 01.08 carry. History stops being scoreable the moment a
-    # colour changes and the verifier is not told, so each new ramp is appended
-    # here, never substituted. The modulo in _classes() maps all four back onto
-    # the same six intensity steps.
-    return np.array([[0, 0, 0, 0]] + [list(c) for c in RAIN_STEPS]
-                    + [list(c) for c in SNOW_STEPS]
-                    + [list(c) for c in LEGACY_RAIN_STEPS]
-                    + [list(c) for c in LEGACY_RAIN_STEPS_2], dtype=int)
+_PAL_CACHE: dict = {}
+
+
+def _palette() -> tuple[np.ndarray, np.ndarray]:
+    """(colours, the class each one means).
+
+    Every ramp a stored frame might have been drawn with. History stops being
+    scoreable the moment a colour changes and the verifier is not told, so each
+    new one is appended here, never substituted:
+
+      * the current continuous ramp, and its below-freezing blue twin, at all
+        48 levels — a frame drawn after 02.08 can carry any of them, not just
+        six step colours;
+      * the six-step green and blue ramps used between 01.08 and 02.08;
+      * the two older all-green six-step ramps before that.
+
+    Class comes back out through the parallel array rather than by arithmetic
+    on the index, which stopped being possible once the ramps had different
+    numbers of entries.
+    """
+    if not _PAL_CACHE:
+        cols = [[0, 0, 0, 0]]
+        cls = [0]
+        for cold in (False, True):
+            lut = ramp_lut(cold)
+            for lev in range(1, LEV_MAX + 1):
+                cols.append(list(int(v) for v in lut[lev]))
+                cls.append(int(lev_class(lev)))
+        for steps in (RAIN_STEPS, SNOW_STEPS, LEGACY_RAIN_STEPS,
+                      LEGACY_RAIN_STEPS_2):
+            for k, c in enumerate(steps, start=1):
+                cols.append(list(c)); cls.append(k)
+        _PAL_CACHE["cols"] = np.array(cols, dtype=int)
+        _PAL_CACHE["cls"] = np.array(cls, dtype=np.uint8)
+    return _PAL_CACHE["cols"], _PAL_CACHE["cls"]
 
 
 # Nearest-colour alone is not enough: the frames have country borders baked
@@ -68,16 +93,21 @@ MAX_COLOUR_DIST = 20
 
 def classify(arr: np.ndarray) -> np.ndarray:
     """Recoloured RGBA frame -> intensity class 0..6 per pixel."""
-    pal = _palette()
+    pal, pal_cls = _palette()
     a = arr[..., 3].astype(int)
     rgb = arr[..., :3].astype(int)
-    d = ((rgb[:, :, None, :] - pal[None, None, :, :3]) ** 2).sum(axis=3)
-    idx = d.argmin(axis=2).astype(np.uint8)
-    nearest = np.take_along_axis(d, idx[:, :, None], axis=2)[:, :, 0]
-    # The palette holds the current six colours then the six legacy ones, so
-    # fold the second half back onto the same classes.
-    cls = np.where(idx == 0, 0, ((idx - 1) % 6) + 1).astype(np.uint8)
-    cls[nearest > MAX_COLOUR_DIST ** 2] = 0
+    # Chunked over rows: the palette is ~120 entries now rather than 25, and
+    # the full outer product over a 570x690 frame is a 400 MB intermediate.
+    h = rgb.shape[0]
+    cls = np.zeros(rgb.shape[:2], np.uint8)
+    for y0 in range(0, h, 64):
+        chunk = rgb[y0:y0 + 64]
+        d = ((chunk[:, :, None, :] - pal[None, None, :, :3]) ** 2).sum(axis=3)
+        idx = d.argmin(axis=2)
+        nearest = np.take_along_axis(d, idx[:, :, None], axis=2)[:, :, 0]
+        c = pal_cls[idx]
+        c[nearest > MAX_COLOUR_DIST ** 2] = 0
+        cls[y0:y0 + 64] = c
     cls[a <= 40] = 0
     return cls
 

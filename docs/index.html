@@ -171,6 +171,30 @@
       <option value="12">12</option>
       <option value="15">15</option>
     </select>
+    <!-- Flight altitude for the wind panel. Same list as the ceiling, because
+         it is the same number — the height the job is flown at — with 10 m in
+         front of it, which is what a wind forecast means when it does not say
+         otherwise. -->
+    <select id="selWz" hidden>
+      <option value="10" selected>10</option>
+      <option value="50">50</option>
+      <option value="70">70</option>
+      <option value="100">100</option>
+      <option value="120">120</option>
+      <option value="150">150</option>
+      <option value="200">200</option>
+      <option value="250">250</option>
+      <option value="300">300</option>
+      <option value="350">350</option>
+      <option value="400">400</option>
+      <option value="450">450</option>
+      <option value="500">500</option>
+      <option value="550">550</option>
+      <option value="600">600</option>
+      <option value="700">700</option>
+      <option value="800">800</option>
+      <option value="1000">1000</option>
+    </select>
     <div class="smapwrap" id="smap">
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
@@ -347,6 +371,7 @@ const Q = {
   point: QS.get("point"),
   cb: QS.has("cb") ? +QS.get("cb") : null,
   wg: QS.has("wg") ? +QS.get("wg") : null,
+  wz: QS.has("wz") ? +QS.get("wz") : null,
   week: QS.get("week"),
 };
 const MAPS_BASE = QS.get("maps") || "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
@@ -360,7 +385,14 @@ const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m
   precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
   wind_direction_10m:"wdir", pressure_msl:"pres_msl", cloud_cover:"cc_total",
   cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high",
-  visibility:"vis"};
+  visibility:"vis",
+  // Wind aloft, for the altitude selector. Coverage is uneven and that is
+  // fine: icon and meps publish all three, gfs stops at 120 m, ifs has only
+  // the surface. Whatever arrives becomes a profile; what does not, the power
+  // law fills in.
+  wind_speed_80m:"ws80m", wind_speed_120m:"ws120m", wind_speed_180m:"ws180m",
+  wind_direction_80m:"wdir80", wind_direction_120m:"wdir120",
+  wind_direction_180m:"wdir180"};
 async function fetchOpenMeteoDirect(lat, lon, pastDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
   u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
@@ -423,7 +455,8 @@ const FOG_FULL_M=300;
 const FRAME_DAYS=14;
 const CEILING_COVER=60;
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
-  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis"];
+  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis",
+  "ws80m","ws120m","ws180m","wdir80","wdir120","wdir180"];
 function expandWide(rows){
   const out=[];
   for(const r of rows||[]){
@@ -460,7 +493,7 @@ function fuse(){
   for(let h=0; h<HOURS; h++){
     const ts = t0 + h*3600e3;
     const row = {ts, hourOfDay: rigaHour(new Date(ts))};
-    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","pres_msl","vis"]){
+    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","pres_msl","vis","ws80m","ws120m","ws180m"]){
       const per = (idx[p]||{})[ts] || {};
       const vals = MODELS.map(m=>per[m] ?? null);
       const ws = MODELS.map(m=>{
@@ -483,8 +516,9 @@ function fuse(){
     // of the same sum and is worth keeping — 1 means all four models agree on
     // the direction, near 0 means they cancel and the arrow is meaningless,
     // which is a thing you want to see before planning a line into it.
-    {
-      const dv = (idx["wdir"]||{})[ts] || {};
+    for(const [p,key] of [["wdir","wdir"],["wdir80","wdir80"],
+                          ["wdir120","wdir120"],["wdir180","wdir180"]]){
+      const dv = (idx[p]||{})[ts] || {};
       let sx=0, sy=0, tw=0;
       for(const m of MODELS){
         const deg = dv[m];
@@ -498,8 +532,8 @@ function fuse(){
         sx += w*Math.sin(rad); sy += w*Math.cos(rad); tw += w;
       }
       const len = Math.hypot(sx, sy);
-      row.wdir = (tw>0 && len>1e-9) ? (Math.atan2(sx, sy)*180/Math.PI + 360) % 360 : null;
-      row.wdir_agree = tw>0 ? len/tw : null;
+      row[key] = (tw>0 && len>1e-9) ? (Math.atan2(sx, sy)*180/Math.PI + 360) % 360 : null;
+      if(key==="wdir") row.wdir_agree = tw>0 ? len/tw : null;
     }
 
     // Ceiling needs a vote, not just an average. "No ceiling" is a real
@@ -717,10 +751,13 @@ function dayVerdicts(cbLim, wgLim){
     for(const r of withData){
       // No ceiling means no cloud below ~1 km — that is flyable, not unknown.
       const cbBad = r.cb!=null && r.cb < cbLim;
-      const wgBad = r.wg10m!=null && r.wg10m > wgLim;
+      // Gusts at the selected altitude, not at 10 m: the limit is about what
+      // the machine meets, and raising the altitude raises the wind.
+      const wgz = r.wgz ?? r.wg10m;
+      const wgBad = wgz!=null && wgz > wgLim;
       const prBad = (r.prcp_1h??0) >= 0.2 || (r.prcp_prob??0) >= 0.6;
       if(cbBad||wgBad||prBad) bad++;
-      else if((r.prcp_prob??0)>=0.3 || (r.wg10m??0)>wgLim-2) iffy++;
+      else if((r.prcp_prob??0)>=0.3 || (wgz??0)>wgLim-2) iffy++;
     }
     const f = bad/withData.length, g=(bad+iffy)/withData.length;
     return f>0.35?"nofly": g>0.25?"marginal":"ok";
@@ -833,6 +870,7 @@ function linePath(rows, key, y){
 const LIMITS={
   cb: {sel:"selCb", cap:"cloud limit", fallback:700, box:null, el:null},
   wg: {sel:"selWg", cap:"gust limit",  fallback:10,  box:null, el:null},
+  wz: {sel:"selWz", cap:"altitude m",  fallback:10,  box:null, el:null},
 };
 function limSel(k){
   const L=LIMITS[k];
@@ -844,6 +882,79 @@ function limitOf(k){
 }
 const cbLimit = () => limitOf("cb");
 const wgLimit = () => limitOf("wg");
+const wzLevel = () => limitOf("wz");
+
+// The wind at the height the job is flown at, rather than at the height the
+// forecast happens to be published at. Ten metres is a convention from surface
+// meteorology; nothing is flown there, and the difference is not small — a
+// stable night can double the speed between 10 m and 120 m.
+//
+// Open-Meteo carries 10, 80, 120 and 180 m, unevenly: icon and meps publish
+// all four, gfs stops at 120 m, ifs has only the surface. So the profile is
+// whatever levels the hour actually has, and the gaps are filled by the power
+// law u(z) = u(zr)·(z/zr)^a, the standard description of the surface layer.
+//
+// The exponent is FITTED from the top two levels present rather than assumed,
+// so a well-mixed afternoon and a stable night with a low-level jet do not get
+// the same profile. Clamped to 0.05-0.45 because outside that the fit is
+// noise. Above the top level everything is extrapolation whatever the number,
+// and the tooltip says which hours those are.
+const WIND_LEVELS=[[10,"ws10m","wdir"],[80,"ws80m","wdir80"],
+                   [120,"ws120m","wdir120"],[180,"ws180m","wdir180"]];
+const SHEAR_DEFAULT=0.143;   // the 1/7 power law, open country
+// Above the top forecast level the power law is being asked to do something it
+// was never meant to. It describes the SURFACE layer, of the order of a
+// hundred metres deep; carried to a kilometre off a sheared night it more than
+// doubles the wind and invents a low-level jet nothing forecast. So the total
+// growth above the top level is capped. 1.6 keeps a sheared profile looking
+// sheared without claiming more than the data can carry, and the tooltip marks
+// every hour where the extrapolation is in play at all.
+const EXTRAP_CAP=1.6;
+// Gustiness is generated at the ground and decays upward, so the gust FACTOR,
+// not the gust, is what gets carried up. Only the 10 m gust is forecast, so
+// this is an estimate — a declared one.
+const GUST_DECAY=0.15;
+
+const bearingLerp=(a,b,f)=>{ const d=((b-a+540)%360)-180; return ((a+d*f)%360+360)%360; };
+
+function windAt(r, z){
+  const p=[];
+  for(const [zl,sp,dr] of WIND_LEVELS){
+    const v=r[sp];
+    if(v!=null && isFinite(v)) p.push({z:zl, ws:Math.max(v,0.01), wdir:r[dr]??null});
+  }
+  if(!p.length) return {ws:null, wg:null, wdir:null, src:"none"};
+  const top=p[p.length-1];
+  let ws, wdir, src;
+  if(z<=p[0].z){
+    ws=p[0].ws; wdir=p[0].wdir; src="level";
+  }else if(z>=top.z){
+    let a=SHEAR_DEFAULT;
+    if(p.length>=2){
+      const q=p[p.length-2];
+      const e=Math.log(top.ws/q.ws)/Math.log(top.z/q.z);
+      if(isFinite(e)) a=Math.max(0.05, Math.min(0.45, e));
+    }
+    ws=top.ws*Math.min(Math.pow(z/top.z, a), EXTRAP_CAP);
+    // Veer above the top level is not forecast. Holding the top level's
+    // direction beats inventing an Ekman spiral for it.
+    wdir=top.wdir; src = z===top.z ? "level" : "above "+top.z+" m";
+  }else{
+    let i=0; while(p[i+1].z<z) i++;
+    const a=p[i], b=p[i+1];
+    const f=Math.log(z/a.z)/Math.log(b.z/a.z);
+    ws=a.ws*Math.pow(b.ws/a.ws, f);
+    wdir=(a.wdir!=null&&b.wdir!=null)?bearingLerp(a.wdir,b.wdir,f):(b.wdir??a.wdir);
+    src="level";
+  }
+  let wg=null;
+  if(r.wg10m!=null){
+    wg = (r.ws10m!=null && r.ws10m>0.3)
+      ? Math.max(ws, ws*(1+(r.wg10m/r.ws10m-1)*Math.pow(10/Math.max(z,10), GUST_DECAY)))
+      : Math.max(ws, r.wg10m);
+  }
+  return {ws, wg, wdir, src};
+}
 function placeLimitBox(k, yVB, totalH){
   const L=LIMITS[k];
   if(!L.box){
@@ -871,6 +982,14 @@ function render(){
   if(!FUSED.length) return;
   const cbLim=cbLimit();
   const wgLim=wgLimit();
+  // Everything downstream — the panel, the day verdicts, the tooltip — reads
+  // the wind at the selected altitude, so it is resolved once here and hung on
+  // the row. Recomputed every render, which is exactly when the selector moves.
+  const wz=wzLevel();
+  for(const r of FUSED){
+    const w=windAt(r,wz);
+    r.wsz=w.ws; r.wgz=w.wg; r.wdirz=w.wdir; r.wsrc=w.src;
+  }
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -993,23 +1112,22 @@ function render(){
   // gusts / wind
   {
     const p=PANELS[2];
-    const vals=FUSED.flatMap(r=>[r.ws10m,r.wg10m]).filter(v=>v!=null);
+    const vals=FUSED.flatMap(r=>[r.wsz,r.wgz]).filter(v=>v!=null);
     const hi=Math.max(Math.ceil(Math.max(0,...vals,wgLim+2)/5)*5,10);
     const y=scaffold(p,0,hi,niceTicks(0,hi,4),DIR_H);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
     // Directly under the panel's own labels, so the control sits in the legend
-    // it belongs to rather than in a sidebar three columns away.
+    // it belongs to rather than in a sidebar three columns away. The altitude
+    // goes above them: it says what the whole panel is about, so it reads
+    // before the traces rather than after the limit that applies to them.
     placeLimitBox("wg", panelTop[p.id] + p.h*p.at + 20, totalH);
-    let d="",pen=false;
-    for(const r of FUSED){
-      if(r.ws10m==null){pen=false;continue;}
-      d+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+y(r.ws10m).toFixed(1)+" ";
-      pen=true;
-    }
-    svgEl("path",{d:linePath(FUSED,"ws10m",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
-    for(const r of FUSED) if(r.wg10m!=null)
-      svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wg10m),y2:y(r.wg10m),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
-    for(const o of (obsIdx.ws10m||[]))
+    placeLimitBox("wz", panelTop[p.id] + p.h*p.at - 46, totalH);
+    svgEl("path",{d:linePath(FUSED,"wsz",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
+    for(const r of FUSED) if(r.wgz!=null)
+      svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wgz),y2:y(r.wgz),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
+    // Station wind is measured at 10 m and means nothing against a 120 m
+    // trace, so the observations only appear when the panel is showing 10 m.
+    if(wz<=10) for(const o of (obsIdx.ws10m||[]))
       svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2,fill:css("--cloud")},svg);
 
     // Direction strip along the floor of the panel. Each arrow flies WITH the
@@ -1028,10 +1146,10 @@ function render(){
     const cy=stripTop+DIR_H/2;
     for(let i=Math.floor(step/2); i<FUSED.length; i+=step){
       const r=FUSED[i];
-      if(r.wdir==null) continue;
+      if(r.wdirz==null) continue;
       // Below a light breeze the direction is noise; a dot says "no useful
       // direction" without pretending to know one.
-      if((r.ws10m??0) < 0.7){
+      if((r.wsz??0) < 0.7){
         svgEl("circle",{cx:xPos(r.ts),cy,r:1.3,fill:css("--muted"),"fill-opacity":.55},svg);
         continue;
       }
@@ -1039,7 +1157,7 @@ function render(){
       // vector is short exactly when averaging the angles is least meaningful.
       const op=(0.3+0.7*Math.max(0,Math.min(1,r.wdir_agree??1))).toFixed(2);
       const g=svgEl("g",{transform:`translate(${xPos(r.ts).toFixed(1)} ${cy.toFixed(1)}) `
-        +`rotate(${((r.wdir+180)%360).toFixed(1)})`},svg);
+        +`rotate(${((r.wdirz+180)%360).toFixed(1)})`},svg);
       svgEl("path",{d:`M0 ${DIR_LEN/2} L0 ${-DIR_LEN/2} M-2.5 ${-DIR_LEN/2+3.2} `
         +`L0 ${-DIR_LEN/2} L2.5 ${-DIR_LEN/2+3.2}`,
         fill:"none",stroke:css("--wind"),"stroke-width":1.4,
@@ -1210,11 +1328,14 @@ function render(){
           ? `visibility ${Math.round(r.vis)} m · ${r.fog_n}/${r.fog_of} saturated`
           : `${r.fog_n}/${r.fog_of} models saturated`]]:[]),
       ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
-      ["--wind","wind",f(r.ws10m)+" m/s"],
-      ...(r.wdir!=null?[["--wind","direction",
-        `from ${compass(r.wdir)} ${Math.round(r.wdir)}°`
+      ["--wind",`wind @ ${wzLevel()} m`, f(r.wsz)+" m/s"
+        + (r.wsrc && r.wsrc!=="level" ? ` · profile ${r.wsrc}` : "")],
+      ...(r.wdirz!=null?[["--wind","direction",
+        `from ${compass(r.wdirz)} ${Math.round(r.wdirz)}°`
         + (r.wdir_agree!=null?` · ${Math.round(r.wdir_agree*100)}% agree`:"")]]:[]),
-      ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
+      ["--gust","gusts",f(r.wgz)+" m/s"
+        + (wzLevel()>10 ? " (from the 10 m gust)"
+                        : (r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:""))],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
       ...(r.dew?[[r.dew.frost?"--dewfrost":r.dew.wet?"--dewwet":"--dewdry",
@@ -1514,7 +1635,12 @@ function renderTable(){
   box.textContent="";
   const tb=document.createElement("table"); tb.className="data";
   const hd=document.createElement("tr");
-  for(const h of ["time","t2m °C","dew °C","humid %","precip mm (next h)","agree %","wind m/s","gust m/s","cb m","L %","M %","H %"]){
+  // The wind columns follow the panel: whatever altitude is selected is what
+  // gets exported, with the height in the header so a saved table still says
+  // what it is.
+  const wzc=wzLevel();
+  for(const h of ["time","t2m °C","dew °C","humid %","precip mm (next h)","agree %",
+                  `wind m/s @${wzc} m`,`gust m/s @${wzc} m`,"dir °","cb m","L %","M %","H %"]){
     const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
   }
   tb.appendChild(hd);
@@ -1523,8 +1649,9 @@ function renderTable(){
     const tr=document.createElement("tr");
     const cells=[fmtDT.format(new Date(r.ts)),
       r.t2m?.toFixed(1)??"", r.td2m?.toFixed(1)??"", r.rh!=null?Math.round(r.rh):"", r.prcp_1h?.toFixed(1)??"",
-      r.prcp_prob!=null?Math.round(r.prcp_prob*100):"", r.ws10m?.toFixed(1)??"",
-      r.wg10m?.toFixed(1)??"", r.cb!=null?Math.round(r.cb):"",
+      r.prcp_prob!=null?Math.round(r.prcp_prob*100):"", r.wsz?.toFixed(1)??"",
+      r.wgz?.toFixed(1)??"", r.wdirz!=null?Math.round(r.wdirz):"",
+      r.cb!=null?Math.round(r.cb):"",
       r.cc_low!=null?Math.round(r.cc_low):"", r.cc_mid!=null?Math.round(r.cc_mid):"", r.cc_high!=null?Math.round(r.cc_high):""];
     for(const c of cells){ const td=document.createElement("td"); td.textContent=c; tr.appendChild(td); }
     tb.appendChild(tr);
@@ -1905,7 +2032,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v59",
+    "page v60",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -1994,7 +2121,7 @@ async function load(){
 }
 
 async function init(){
-  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg",""]]){
+  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg",""],[Q.wz,"selWz",""]]){
     if(qv==null || !isFinite(qv)) continue;
     const sel=document.getElementById(selId);
     if(![...sel.options].some(o=>+o.value===qv)){
@@ -2018,7 +2145,7 @@ async function init(){
   if(startPt) setPoint(startPt.point_id,
     isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
                        : `▣ ${startPt.name ?? "map cell"} · 25 km`);
-  for(const k of ["cb","wg"]) limSel(k).addEventListener("change",()=>{render();});
+  for(const k of ["cb","wg","wz"]) limSel(k).addEventListener("change",()=>{render();});
   opsInit();
   document.getElementById("wPrev").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()-7*86400e3);load();});
   document.getElementById("wNext").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()+7*86400e3);load();});

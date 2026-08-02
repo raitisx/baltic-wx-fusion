@@ -198,9 +198,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     log.info("gfs: run %s, leads %d..%d", run_tag, start_lead, end_lead)
 
     s3 = r2_client()
-    greens = ListedColormap(RAIN_ANCHORS)
-    blues = ListedColormap(SNOW_ANCHORS)
-    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
+    greens, blues, rain_norm = rain_cmaps()
     pink = ListedColormap(["#f3b8b4"])
     borders = json.load(open(os.path.join(
         os.path.dirname(__file__), "assets", "borders_baltic.json")))

@@ -69,27 +69,89 @@ def _to_agl(cb, terrain):
     return out.astype(cb.dtype, copy=False)
 
 
-# Rain ramp measured off a meteo.pl frame (see scrape_maps.RAIN_STEPS for the
-# pixel counts): pale cream-yellow for the lightest rain, darkening through
-# green, then orange for the heavy cores. No yellow in the middle.
-RAIN_ANCHORS = ["#fcffad", "#e6ff78", "#00e300", "#00a800", "#006709", "#ff7800"]
-# Discrete, not a smooth ramp, and on the same breakpoints as the radar classes
-# so the two columns can be compared directly. The old continuous scale ran
-# 0.1-4 mm/h linearly, which put everything above 4 mm/h at full orange — most
-# of a rain area, so the map read as a solid orange blob where meteo.pl showed
-# green with small orange cores.
-RAIN_LEVELS = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0, 1e6]
+# ONE precipitation ramp, for every producer in this repo: the MEPS maps, the
+# GFS maps, the UM maps and the radar composite. They sit in a row on the page
+# and the whole point of the row is comparison, so a millimetre an hour has to
+# be the same colour in all four.
+#
+# The colours are measured off a meteo.pl frame: pale cream-yellow for the
+# lightest rain, darkening through green, then orange for the heavy cores —
+# no yellow in the middle, which is the mistake an intuitive ramp makes. Red
+# is added past orange as headroom; nothing in the archive has reached it yet.
+RAIN_ANCHORS = ["#fcffad", "#e6ff78", "#00e300", "#00a800", "#006709",
+                "#ff7800", "#cc2222"]
+# The rate each anchor sits at. Geometric, because rain is: the step from 0.1
+# to 0.4 mm/h matters as much to a flight as the step from 6 to 15.
+RAIN_STOPS = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0, 40.0]
+# Class edges, for everything that still counts in classes — the radar's
+# cleaning rules, the verifier's scoring, the archive. Same numbers as the
+# anchors, so class k is the band between anchor k-1 and anchor k.
+RAIN_LEVELS = RAIN_STOPS[:-1] + [1e6]
 # The same ramp again for air below freezing, in blue. Precipitation at -3 C is
 # a different thing to fly a drone through than precipitation at +3, and on a
 # green map the two look identical. Lightness tracks the green ramp step for
-# step so the two read at the same weight side by side; the top class stays
-# orange, because at fifteen millimetres an hour the rate is the whole story.
-SNOW_ANCHORS = ["#dfeeff", "#b5d5fb", "#7fb2ee", "#4587d6", "#1f5aa8", "#ff7800"]
+# step so the two read at the same weight side by side; the top steps stay
+# orange and red, because at fifteen millimetres an hour the rate is the whole
+# story.
+SNOW_ANCHORS = ["#dfeeff", "#b5d5fb", "#7fb2ee", "#4587d6", "#1f5aa8",
+                "#ff7800", "#cc2222"]
 # Where the changeover sits. Not 0.0: precipitation arriving through air at
 # +0.5 C at two metres has usually fallen through something colder above and
 # reaches the ground as wet snow or sleet — the surface is the last part of
 # the column to warm up.
 FREEZE_C = 1.0
+
+
+def _hex_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+# Each anchor gets an equal share of the ramp, and the rate axis is stretched
+# to fit — piecewise log between the stops rather than one straight log line.
+# The two are nearly the same thing here (every stop is a factor of ~2.5 above
+# the last, except the first, which is 4), and the difference buys something
+# worth having: a class boundary lands on a whole fraction of the ramp, so
+# "class 4" and "the colour two-thirds of the way up" are the same statement.
+ANCHOR_POS = [i / (len(RAIN_STOPS) - 1) for i in range(len(RAIN_STOPS))]
+_LOG_STOPS = [float(np.log(s)) for s in RAIN_STOPS]
+
+
+def rain_pos(mm):
+    """mm/h -> position 0..1 along the ramp. Pure numpy: the radar composite
+    runs on the hourly tick, which deliberately has no matplotlib."""
+    v = np.clip(np.asarray(mm, dtype=np.float64), RAIN_STOPS[0], RAIN_STOPS[-1])
+    return np.interp(np.log(v), _LOG_STOPS, ANCHOR_POS)
+
+
+def pos_rain(pos):
+    """The inverse, which matplotlib wants for the colorbar."""
+    p = np.clip(np.asarray(pos, dtype=np.float64), 0.0, 1.0)
+    return np.exp(np.interp(p, ANCHOR_POS, _LOG_STOPS))
+
+
+def ramp_rgb(pos, anchors=None):
+    """Position 0..1 -> RGB, linearly between the anchors."""
+    cols = np.array([_hex_rgb(c) for c in (anchors or RAIN_ANCHORS)],
+                    dtype=np.float64)
+    p = np.clip(np.asarray(pos, dtype=np.float64), 0.0, 1.0)
+    out = np.empty(p.shape + (3,), dtype=np.float64)
+    for c in range(3):
+        out[..., c] = np.interp(p, ANCHOR_POS, cols[:, c])
+    return np.rint(out).astype(np.uint8)
+
+
+def rain_cmaps():
+    """(green cmap, blue cmap, norm) for the model maps — the same ramp as
+    ramp_rgb, handed to matplotlib as a continuous colormap instead of six
+    flat bands. The bands were the reason a model map and the radar beside it
+    did not look like the same quantity even where they agreed: the model was
+    a smooth field and the radar was a contour chart of one."""
+    from matplotlib.colors import FuncNorm, LinearSegmentedColormap
+    mk = lambda name, a: LinearSegmentedColormap.from_list(name, a, N=256)
+    return (mk("rain", RAIN_ANCHORS), mk("snow", SNOW_ANCHORS),
+            FuncNorm((rain_pos, pos_rain),
+                     vmin=RAIN_STOPS[0], vmax=RAIN_STOPS[-1]))
 
 
 def _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm, alpha=0.9):
@@ -207,9 +269,7 @@ def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
 
     from . import proj3059 as P
 
-    greens = ListedColormap(RAIN_ANCHORS)
-    blues = ListedColormap(SNOW_ANCHORS)
-    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
+    greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     borders = json.load(open(BORDERS_FILE))
@@ -276,9 +336,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
         arch = {"hours": {}, "thresholds": THRESHOLDS}
 
     borders = json.load(open(BORDERS_FILE))
-    greens = ListedColormap(RAIN_ANCHORS)
-    blues = ListedColormap(SNOW_ANCHORS)
-    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
+    greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
     tmp = tempfile.mkdtemp()
@@ -419,9 +477,7 @@ def render_run(max_hours: int = 66) -> None:
     from . import proj3059 as P
 
     borders = json.load(open(BORDERS_FILE))
-    greens = ListedColormap(RAIN_ANCHORS)
-    blues = ListedColormap(SNOW_ANCHORS)
-    rain_norm = BoundaryNorm(RAIN_LEVELS, greens.N)
+    greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
 
