@@ -74,27 +74,55 @@ def _to_agl(cb, terrain):
 # and the whole point of the row is comparison, so a millimetre an hour has to
 # be the same colour in all four.
 #
-# The colours are measured off a meteo.pl frame: pale cream-yellow for the
-# lightest rain, darkening through green, then orange for the heavy cores —
-# no yellow in the middle, which is the mistake an intuitive ramp makes. Red
-# is added past orange as headroom; nothing in the archive has reached it yet.
-RAIN_ANCHORS = ["#fcffad", "#e6ff78", "#00e300", "#00a800", "#006709",
-                "#ff7800", "#cc2222"]
-# The rate each anchor sits at. Geometric, because rain is: the step from 0.1
+# Each colour is a BAND, not a knot on a gradient — anchor k is what the whole
+# of class k looks like, and the ramp only blends across the boundaries. That
+# distinction is the whole design:
+#
+#   * a straight gradient between two saturated colours goes through whatever
+#     lies between them, and between dark green and orange that is olive mud.
+#     It put 7 mm/h — which is heavy rain — on screen as a dirty khaki, so the
+#     heaviest thing on the map did not read as the heaviest thing on the map.
+#   * six flat classes did not have that problem and had the opposite one: the
+#     radar looked like a contour chart next to a model map that was a smooth
+#     field.
+#
+# Flat bands with soft seams give both. See BLEND.
+#
+# The colours are meteo.pl's, with two changes made from looking at ours:
+# YELLOW IS THE BOTTOM BAND ONLY. Their second step is a yellow-green, and
+# because the light band is the outer edge of every rain area it covers more
+# of the map than anything else — the result read as a yellow map with green
+# in it. And ORANGE MOVED DOWN, from 15 mm/h to 6. Nothing in the calibrated
+# radar archive reaches 15 except a handful of pixels a month, so orange was a
+# colour the map essentially never used, while 6-15 mm/h — which will stop a
+# flight on its own — sat in the greens.
+RAIN_ANCHORS = ["#fdffb0",   # 0.1-0.4   pale yellow, and the only yellow
+                "#7ada2e",   # 0.4-1      light green
+                "#00d000",   # 1-2.5      green
+                "#00860d",   # 2.5-6      dark green
+                "#ff8c00",   # 6-15       orange
+                "#e02200",   # 15-40      red
+                "#8f0018"]   # 40+        deep red
+# The rate each band starts at. Geometric, because rain is: the step from 0.1
 # to 0.4 mm/h matters as much to a flight as the step from 6 to 15.
 RAIN_STOPS = [0.1, 0.4, 1.0, 2.5, 6.0, 15.0, 40.0]
 # Class edges, for everything that still counts in classes — the radar's
-# cleaning rules, the verifier's scoring, the archive. Same numbers as the
-# anchors, so class k is the band between anchor k-1 and anchor k.
+# cleaning rules, the verifier's scoring, the archive. Class k is now exactly
+# anchor k, which it was not before.
 RAIN_LEVELS = RAIN_STOPS[:-1] + [1e6]
-# The same ramp again for air below freezing, in blue. Precipitation at -3 C is
-# a different thing to fly a drone through than precipitation at +3, and on a
-# green map the two look identical. Lightness tracks the green ramp step for
-# step so the two read at the same weight side by side; the top steps stay
-# orange and red, because at fifteen millimetres an hour the rate is the whole
-# story.
-SNOW_ANCHORS = ["#dfeeff", "#b5d5fb", "#7fb2ee", "#4587d6", "#1f5aa8",
-                "#ff7800", "#cc2222"]
+# The same bands for air below freezing, in blue. Precipitation at -3 C is a
+# different thing to fly a drone through than precipitation at +3, and on a
+# green map the two look identical. Lightness tracks the green ramp band for
+# band so the two read at the same weight side by side; the top bands stay
+# orange and red, because past six millimetres an hour the rate is the story
+# and not what phase it is in.
+SNOW_ANCHORS = ["#e4f1ff", "#b9d8fc", "#7fb2ee", "#3f80cf",
+                "#ff8c00", "#e02200", "#8f0018"]
+# How much of a band is spent crossing into the next one, in band widths,
+# split either side of the boundary. "A bit of transition so it is not
+# stepped": at 0.34 two thirds of every band is its own flat colour and the
+# seams are soft enough not to read as contours.
+BLEND = 0.34
 # Where the changeover sits. Not 0.0: precipitation arriving through air at
 # +0.5 C at two metres has usually fallen through something colder above and
 # reaches the ground as wet snow or sleet — the surface is the last part of
@@ -131,25 +159,39 @@ def pos_rain(pos):
 
 
 def ramp_rgb(pos, anchors=None):
-    """Position 0..1 -> RGB, linearly between the anchors."""
+    """Position 0..1 -> RGB. Each band holds its own colour and crosses into
+    the next over BLEND, centred on the boundary, with a smoothstep so the
+    seam has no crease in it."""
     cols = np.array([_hex_rgb(c) for c in (anchors or RAIN_ANCHORS)],
                     dtype=np.float64)
+    nb = len(cols) - 1                       # bands, one fewer than colours
     p = np.clip(np.asarray(pos, dtype=np.float64), 0.0, 1.0)
-    out = np.empty(p.shape + (3,), dtype=np.float64)
-    for c in range(3):
-        out[..., c] = np.interp(p, ANCHOR_POS, cols[:, c])
-    return np.rint(out).astype(np.uint8)
+    scalar = p.ndim == 0
+    p = np.atleast_1d(p)
+    x = p * nb
+    k = np.clip(np.floor(x), 0, nb - 1).astype(np.intp)
+    u = x - k                                # where we are inside band k
+    # The crossing lives in the TOP of each band and finishes on the boundary,
+    # so a rate sitting exactly on a class edge gets that class's colour
+    # exactly, and the new colour arrives with the new class rather than
+    # halfway through it.
+    t = np.clip((u - (1.0 - BLEND)) / BLEND, 0.0, 1.0)
+    s = (t * t * (3.0 - 2.0 * t))[..., None]     # smoothstep: no crease
+    out = np.rint(cols[k] * (1.0 - s) + cols[k + 1] * s).astype(np.uint8)
+    return out[0] if scalar else out
 
 
 def rain_cmaps():
-    """(green cmap, blue cmap, norm) for the model maps — the same ramp as
-    ramp_rgb, handed to matplotlib as a continuous colormap instead of six
-    flat bands. The bands were the reason a model map and the radar beside it
-    did not look like the same quantity even where they agreed: the model was
-    a smooth field and the radar was a contour chart of one."""
-    from matplotlib.colors import FuncNorm, LinearSegmentedColormap
-    mk = lambda name, a: LinearSegmentedColormap.from_list(name, a, N=256)
-    return (mk("rain", RAIN_ANCHORS), mk("snow", SNOW_ANCHORS),
+    """(rain cmap, snow cmap, norm) for the model maps.
+
+    Sampled from ramp_rgb rather than handed the anchors, so the model maps and
+    the radar are not merely the same colours but literally the same function —
+    the previous version passed the anchors to matplotlib and let it do its own
+    interpolation, which is how the two producers could drift apart again."""
+    from matplotlib.colors import FuncNorm, ListedColormap
+    xs = np.linspace(0.0, 1.0, 256)
+    mk = lambda a: ListedColormap(ramp_rgb(xs, a).astype(np.float64) / 255.0)
+    return (mk(RAIN_ANCHORS), mk(SNOW_ANCHORS),
             FuncNorm((rain_pos, pos_rain),
                      vmin=RAIN_STOPS[0], vmax=RAIN_STOPS[-1]))
 

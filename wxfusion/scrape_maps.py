@@ -1218,12 +1218,58 @@ def _lt_frames(newest: dt.datetime, count: int = 3, step_min: int = 5) -> list[d
     return out
 
 
-def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | None:
-    r = s.get(url, allow_redirects=True, timeout=90)
+# One tick fetches the same overlay more than once: the composite wants the
+# three newest frames per feed for its temporal vote, the source archive wants
+# the one nearest the hour, and those overlap. They run as separate processes
+# in the same job, so an in-memory memo would not see across them — but they
+# share a runner and its /tmp, which is thrown away with it.
+#
+# Measured on a routine tick: 12 image fetches become 9. Small, but it is
+# somebody else's bandwidth and the fix is fifteen lines.
+CACHE_DIR = pathlib.Path(os.environ.get("WX_OVERLAY_CACHE")
+                         or pathlib.Path(tempfile.gettempdir()) / "wx-overlays")
+CACHE_TTL_S = 3 * 3600
+
+
+def overlay_bytes(url: str, s=None) -> bytes | None:
+    """The overlay PNG, from the runner's cache if this tick already got it."""
+    import hashlib
+    f = CACHE_DIR / (hashlib.sha1(url.encode()).hexdigest() + ".png")
+    try:
+        if f.is_file() and time.time() - f.stat().st_mtime < CACHE_TTL_S:
+            return f.read_bytes()
+    except Exception:
+        pass
+    r = (s or session()).get(url, allow_redirects=True, timeout=90)
     time.sleep(0.2)
     if r.status_code != 200:
         return None
-    img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".part")
+        tmp.write_bytes(r.content)
+        tmp.replace(f)          # atomic, so a second process never sees a half file
+        _sweep_cache()
+    except Exception:
+        pass                    # a cache that cannot be written is still a fetch
+    return r.content
+
+
+def _sweep_cache(limit: int = 400) -> None:
+    """A runner throws the whole directory away, but a backfill on a laptop
+    does not, and this is somebody's disk either way."""
+    files = list(CACHE_DIR.glob("*.png"))
+    if len(files) <= limit:
+        return
+    for p in sorted(files, key=lambda p: p.stat().st_mtime)[:len(files) - limit]:
+        p.unlink(missing_ok=True)
+
+
+def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | None:
+    body = overlay_bytes(url, s)
+    if body is None:
+        return None
+    img = Image.open(io.BytesIO(body)).convert("RGBA")
     if max(img.size) > LT_MAXSIZE:
         sc = LT_MAXSIZE / max(img.size)
         img = img.resize((int(img.width * sc), int(img.height * sc)),

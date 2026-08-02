@@ -42,7 +42,7 @@ from .scrape_maps import (_classify_intensity, _despeckle, _despeckle_intensity,
                           _fade_edges,
                           _freezing_mask, _recolor, _remove_beam_lines,
                           _remove_beams_polar, LT_MAXSIZE, draw_borders,
-                          fetch_overlays_window, r2_client)
+                          fetch_overlays_window, overlay_bytes, r2_client)
 
 log = logging.getLogger(__name__)
 
@@ -140,17 +140,23 @@ def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
     s, s3 = session(), r2_client()
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
     stored = 0
+    # One listing for the whole window, not one per hour. The endpoint takes an
+    # epoch range and hands back everything inside it, so asking seven times
+    # for seven overlapping hours was seven requests where one does; the
+    # per-hour buckets are a groupby over the single answer.
+    try:
+        allov = fetch_overlays_window(
+            now - dt.timedelta(hours=hours_back, minutes=NEAR_MIN),
+            now + dt.timedelta(minutes=NEAR_MIN))
+    except Exception:
+        log.exception("store: overlay listing failed")
+        return 0
     for back in range(hours_back, -1, -1):
         hour = now - dt.timedelta(hours=back)
-        try:
-            ov = fetch_overlays_window(hour - dt.timedelta(minutes=NEAR_MIN),
-                                       hour + dt.timedelta(minutes=NEAR_MIN))
-        except Exception:
-            log.exception("store: overlay listing failed for %s", hour)
-            continue
         by = collections.defaultdict(list)
-        for o in ov:
-            by[o["code"]].append(o)
+        for o in allov:
+            if abs((o["time"] - hour).total_seconds()) <= NEAR_MIN * 60:
+                by[o["code"]].append(o)
         idx = _load_index(s3, hour.date())
         have = {f["key"] for f in idx["frames"]}
         dirty = False
@@ -161,26 +167,28 @@ def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
                 if key in have:
                     continue
                 try:
-                    r = s.get(o["url"], allow_redirects=True, timeout=90)
-                    if r.status_code != 200:
+                    # Through the shared cache: the composite step in the same
+                    # tick has usually just fetched this exact frame.
+                    raw = overlay_bytes(o["url"], s)
+                    if raw is None:
                         continue
                 except Exception:
                     log.exception("store: fetch failed %s", o["url"])
                     continue
-                body, how = r.content, "as-served"
+                body, how = raw, "as-served"
                 if REENCODE:
                     try:
-                        body, how = _to_palette(r.content)
+                        body, how = _to_palette(raw)
                     except Exception:
                         log.exception("store: re-encode failed for %s, "
                                       "keeping the original", key)
-                        body, how = r.content, "as-served"
+                        body, how = raw, "as-served"
                 s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=body,
                               ContentType="image/png",
                               CacheControl="public, max-age=31536000, immutable")
                 idx["frames"].append({
                     "key": key, "code": code, "enc": how,
-                    "bytes": len(body), "src_bytes": len(r.content),
+                    "bytes": len(body), "src_bytes": len(raw),
                     "time": o["time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "sw": list(o["sw"]), "ne": list(o["ne"]),
                 })
