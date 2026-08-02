@@ -2065,6 +2065,7 @@ def radar_backfill(hours_back: int = 168) -> None:
 
     from . import proj3059 as P
 
+    rev = dt.datetime.now(dt.timezone.utc).strftime("%y%m%d%H%M")
     force = os.environ.get("BACKFILL_FORCE", "") == "1"
     if force:
         log.info("FORCE mode: re-rendering hours already in the archive")
@@ -2140,6 +2141,15 @@ def radar_backfill(hours_back: int = 168) -> None:
                           Body=buf.getvalue(), ContentType="image/png",
                           CacheControl="public, max-age=604800")
             arch["hours"][hour_key] = vtag
+            # A re-render leaves the FILENAME alone — it is the sweep time —
+            # so nothing in the URL tells a browser the bytes changed. The page
+            # used to paper over that by stamping every frame with the live
+            # manifest's clock, which changes hourly and therefore threw away
+            # the whole archive's cache once an hour. That is what made the
+            # slider slow enough for the picture to run behind its caption.
+            # A per-hour revision fixes both ends: the URL is stable until the
+            # hour is actually redrawn, and changes the moment it is.
+            arch.setdefault("rev", {})[hour_key] = rev
             done += 1
         # persist index incrementally so an interrupted run keeps progress
         s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",

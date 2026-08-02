@@ -2041,9 +2041,74 @@ function radarSrc(iso){
     if(d<bd){bd=d;best=f;}
   }
   if(best && bd<=55*60e3)
-    return {url:`${MAPS_BASE}/${rad.path}/${best}.png${vq(rad)}`,
+    return {url:`${MAPS_BASE}/${rad.path}/${best}.png?v=${radarRev(best)}`,
             time:frameTime(best), off:Math.round((frameTime(best).getTime()-ts)/60e3)};
   return null;
+}
+// An archived frame's filename is its sweep time and never changes, so
+// stamping it with the live manifest's clock — which moves every hour —
+// threw the whole archive out of the browser cache once an hour and left the
+// slider re-downloading 300-odd PNGs. The archive now carries a revision per
+// hour, set when that hour is actually redrawn, so the URL is stable until
+// the bytes change. Frames only in the live manifest keep the old stamp:
+// those are the recent ones, and they really do change.
+function radarRev(vtag){
+  const arch=MV.loaded.radarArchive;
+  if(arch?.rev){
+    if(!MV.radarRevByTag){
+      MV.radarRevByTag={};
+      for(const h in arch.hours||{})
+        if(arch.rev[h]) MV.radarRevByTag[arch.hours[h]]=arch.rev[h];
+    }
+    const r=MV.radarRevByTag[vtag];
+    if(r) return encodeURIComponent(r);
+  }
+  return encodeURIComponent(MV.loaded.radar?.generated_at || "0");
+}
+// The caption and the pixels have to change together, and setting img.src and
+// the caption in the same breath does not do that: the caption is instant, the
+// image arrives whenever the network says so. Scrub the slider and the picture
+// runs behind the label it is filed under — which on this page is the one thing
+// that must never happen, because the whole question being asked of it is where
+// the rain is at a named hour.
+//
+// Two frames sent in as bugs were both this. One captioned "Sat 01/08, 00:01"
+// was pixel-for-pixel the 31/07 21:01 frame (IoU 0.79 against it, 0.19 against
+// the frame it claimed to be); one captioned "15:01" was the 12:01 frame. Three
+// steps behind, both of them, and the artefacts circled in each were real —
+// they were just in frames drawn before the fixes for them existed.
+//
+// So each column loads into a detached Image first and commits src and caption
+// together, with a sequence number so a slow early request that lands after a
+// newer one cannot overwrite it. Until a frame is decoded, the column keeps
+// showing the previous one WITH its own caption, so what is on screen is always
+// labelled correctly even while it is out of date.
+const frameSeq={};
+function showFrame(img, capEl, url, cap, dimTo){
+  const k=img.id, seq=(frameSeq[k]=(frameSeq[k]||0)+1);
+  if(!url){
+    img.style.opacity=dimTo;
+    if(capEl) capEl.textContent="no frame for this hour";
+    return;
+  }
+  const commit=()=>{
+    if(frameSeq[k]!==seq) return;           // a newer hour got there first
+    img.src=url; img.style.opacity="1";
+    if(capEl) capEl.textContent=cap;
+  };
+  // Already showing it: nothing to wait for. Covers the common case of the
+  // slider landing back on an hour that is still in the element.
+  if(img.getAttribute("src")===url){ commit(); return; }
+  const pre=new Image();
+  pre.onload=commit;
+  // On failure the caption must not name the frame either: a time sitting next
+  // to a picture that is not it is the exact bug this function exists to stop.
+  pre.onerror=()=>{
+    if(frameSeq[k]!==seq) return;
+    img.style.opacity=dimTo;
+    if(capEl) capEl.textContent="could not load this hour";
+  };
+  pre.src=url;
 }
 function mapShow(i){
   if(!MV.hours.length) return;
@@ -2054,27 +2119,21 @@ function mapShow(i){
   document.getElementById("mapTime").textContent=label;
   document.getElementById("mapTimeHead").textContent=label;
   const m=mepsSrc(iso), mImg=document.getElementById("imgMeps");
-  if(m){
-    mImg.style.opacity="1"; document.getElementById("mepsTime").textContent=m.cap;
-    if(m.request) requestMapHour(m.request, mImg);
-    mImg.src=m.url;
-  }
-  else { mImg.style.opacity="0.15"; document.getElementById("mepsTime").textContent="no frame for this hour"; }
-  const u=umSrc(iso), uImg=document.getElementById("imgUm");
-  const uCap=document.getElementById("umTime");
-  if(u){ uImg.style.opacity="1"; uImg.src=u.url; if(uCap) uCap.textContent=u.cap||""; }
-  else { uImg.style.opacity="0.12"; if(uCap) uCap.textContent="no frame for this hour"; }
-  const rd=radarSrc(iso), rImg=document.getElementById("imgRadar");
-  if(rd){
-    rImg.style.opacity="1"; rImg.src=rd.url;
-    // The sweep time, not the hour it is filed under. Sources run on a ~10 min
-    // cadence of their own, so the nearest frame to a given hour can be most
-    // of an hour away — and if you are deciding when rain arrives, a caption
-    // that rounds that away is worse than useless.
-    document.getElementById("radarTime").textContent =
-      fmtTime.format(rd.time) + (rd.off ? ` (${rd.off>0?"+":""}${rd.off} min)` : " exactly");
-  }
-  else { rImg.style.opacity="0.12"; document.getElementById("radarTime").textContent="no frame for this hour"; }
+  if(m && m.request) requestMapHour(m.request, mImg);
+  showFrame(mImg, document.getElementById("mepsTime"), m&&m.url, m&&m.cap, "0.15");
+  const u=umSrc(iso);
+  showFrame(document.getElementById("imgUm"), document.getElementById("umTime"),
+            u&&u.url, (u&&u.cap)||"", "0.12");
+  const rd=radarSrc(iso);
+  // The sweep time, not the hour it is filed under. Sources run on a ~10 min
+  // cadence of their own, so the nearest frame to a given hour can be most
+  // of an hour away — and if you are deciding when rain arrives, a caption
+  // that rounds that away is worse than useless.
+  showFrame(document.getElementById("imgRadar"), document.getElementById("radarTime"),
+            rd&&rd.url,
+            rd&&(fmtTime.format(rd.time)
+                 + (rd.off ? ` (${rd.off>0?"+":""}${rd.off} min)` : " exactly")),
+            "0.12");
 }
 // ---- full-week frame prefetch: warm the browser cache so scrubbing is instant
 const PRELOADED=new Set();
@@ -2137,7 +2196,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v62",
+    "page v63",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

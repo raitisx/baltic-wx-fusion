@@ -233,6 +233,7 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
     except Exception:
         arch = {"path": FRAME_PREFIX, "hours": {}}
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    rev = dt.datetime.now(dt.timezone.utc).strftime("%y%m%d%H%M")
     days = {}
     done = 0
     for back in range(hours_back, -1, -1):
@@ -291,6 +292,7 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
                       Body=buf.getvalue(), ContentType="image/png",
                       CacheControl="public, max-age=604800")
         arch["hours"][hour_key] = vtag
+        arch.setdefault("rev", {})[hour_key] = rev   # see the note in radar_backfill
         done += 1
     s3.put_object(Bucket=config.R2_BUCKET, Key=ARCHIVE_KEY,
                   Body=json.dumps(arch).encode(),
