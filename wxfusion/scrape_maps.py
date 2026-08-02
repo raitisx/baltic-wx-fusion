@@ -1157,10 +1157,16 @@ def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
     if cold is not None:
         out = np.where(cold[..., None], ramp_lut(True)[lev], out)
     if feed:
+        out = out.copy()
         w = _weak_alpha(feed)
         weak = (lev > 0) & (lev <= WEAK_CLASSES * SUB)
-        out = out.copy()
         out[..., 3] = np.where(weak, out[..., 3] * w, out[..., 3]).astype(np.uint8)
+        # Fade out any coverage circle this frame is showing, here rather than
+        # once over the finished composite — by then the layers are merged and
+        # there is no way to tell whose edge is whose.
+        rim = _rim_alpha(lev, feed)
+        if rim is not None:
+            out[..., 3] = (out[..., 3].astype(np.float32) * rim).astype(np.uint8)
     return Image.fromarray(np.ascontiguousarray(out, dtype=np.uint8), "RGBA")
 
 
@@ -1285,6 +1291,11 @@ def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | Non
 # Latvia, so 250 km is the working range for all of them.
 RADAR_RANGE_KM_COVER = 250
 EDGE_FADE_KM = 25
+# What _fade_edges is left doing once the real fade is per feed: a radius no
+# product reaches, so it cannot second-guess a rim that has already been
+# handled and can still catch a layer drawn with no feed name.
+BACKSTOP_RANGE_KM = 320
+BACKSTOP_FADE_KM = 30
 # Weak echo fades much earlier than the coverage edge, and this is why.
 #
 # Estonia paints faint rings at long range — you can see them as arcs over the
@@ -1320,6 +1331,11 @@ EDGE_FADE_KM = 25
 # Hence a per-feed limit on WEAK echo only, faded in over the last 40 km so
 # there is no rim. Strong returns are left alone everywhere: a heavy core at
 # 230 km is real weather even if the beam is five kilometres up.
+#
+# Not the cause of the arc reported on 02.08, which was tested rather than
+# assumed: the hard-edge pixels in that frame cluster at 244-248 km from Harku,
+# 236-240 from Riga and 224-232 from the Lithuanian pair — the rims of the
+# products themselves — and not at 180. See FEED_RIM_KM.
 WEAK_RANGE_KM = {"EE": 180.0, "LT": 180.0, "LT2": 180.0, "LV": 250.0}
 WEAK_FADE_KM = 40.0
 WEAK_CLASSES = 2
@@ -1356,18 +1372,151 @@ def _range_km() -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=8)
-def _weak_alpha(feed: str) -> np.ndarray:
-    """Multiplier for this feed's weak echo: 1 in close, 0 past its limit."""
+def _feed_range_km(feed: str) -> np.ndarray | None:
+    """Distance to the nearest antenna OF THIS FEED, in km. None if unknown."""
     from . import proj3059 as P
-    lim = WEAK_RANGE_KM.get(feed or "", 250.0)
-    sites = [(sx, sy) for n, sx, sy in _site_pixels() if n.startswith(feed[:2])]
+    sites = [(sx, sy) for n, sx, sy in _site_pixels()
+             if n.startswith((feed or "")[:2])]
     if not sites:
-        return np.ones((P.H, P.W), np.float32)
+        return None
     yy, xx = np.mgrid[0:P.H, 0:P.W]
     d = np.full((P.H, P.W), np.inf, np.float32)
     for sx, sy in sites:
         d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
+    return d
+
+
+@functools.lru_cache(maxsize=8)
+def _weak_alpha(feed: str) -> np.ndarray:
+    """Multiplier for this feed's weak echo: 1 in close, 0 past its limit."""
+    from . import proj3059 as P
+    d = _feed_range_km(feed)
+    if d is None:
+        return np.ones((P.H, P.W), np.float32)
+    lim = WEAK_RANGE_KM.get(feed or "", 250.0)
     return np.clip((lim - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
+
+
+# A coverage edge is a circle centred on an antenna. Nothing else is.
+#
+# The reported arc on 02.08 01:00 turned out to be neither the product rim nor
+# the weak-echo limit. Estonia's source paints its whole coverage grey and
+# colours only where it rains — verified on a dry frame, where grey is 98% of
+# the painted area and 100% of the inner half of the disc — so the boundary
+# between colour and grey is USUALLY a rain edge. On that frame it was not:
+# fitting a circle to it gave a radius of 248 km centred 10 km from Harku, rms
+# 1.2 km over 420 boundary pixels. Surgavere was contributing nothing, so the
+# picture was Harku's disc alone and the rain filled it to the edge.
+#
+# Rain does not do that. So rather than assume a radius — which cannot work,
+# because which radars are up changes hour to hour — each frame is asked
+# whether its echo boundary lies on a circle around one of this feed's own
+# antennas, over a wide enough arc that weather could not have arranged it.
+# Where it does, the last RING_FEATHER_KM inside that circle are faded out.
+#
+# The same geometric prior the beam removal uses, and for the same reason: an
+# antenna is the only thing in the picture that can draw a circle.
+# The test is not "are there boundary pixels at this radius" — a big blob of
+# rain has boundary pixels at every radius, and asking that way finds a ring in
+# almost every frame. It is "does the echo STOP at the same radius across many
+# consecutive bearings", which is a statement rain cannot satisfy: an edge that
+# holds to within a couple of kilometres over seventy degrees of arc was drawn
+# by an antenna.
+RING_SECTOR_DEG = 5
+RING_MIN_SECTORS = 10        # 50 degrees of arc; at 250 km that is 220 km of it
+RING_TOL_KM = 5.0            # how far a bearing may sit off the common radius
+RING_MAX_SD_KM = 3.5         # and how much they may scatter as a group
+RING_GAP_SECTORS = 1         # one bearing may disagree without ending the run
+RING_MIN_PX_SECTOR = 12      # echo pixels before a sector has an opinion
+# Only look where a coverage edge can plausibly be. These radars rim out at
+# 240-260 km; the two candidates the search found at 134 km from Surgavere were
+# almost certainly the edge of a rain area that happened to curve, and there is
+# no evidence of a blockage ring there to justify keeping them.
+RING_SEARCH_KM = (180, 300)
+RING_FEATHER_KM = 25.0
+RING_EDGE_DEG = 12.0         # soften the ends of the arc, or we swap one edge
+
+
+def _coverage_rings(echo: np.ndarray, feed: str) -> list[tuple]:
+    """[(cx, cy, radius, from_deg, to_deg)] where the echo stops on a circle."""
+    if not echo.any():
+        return []
+    ys, xs = np.nonzero(echo)
+    out = []
+    nsec = 360 // RING_SECTOR_DEG
+    for name, sx, sy in _site_pixels():
+        if not name.startswith((feed or "")[:2]):
+            continue
+        d = np.hypot(xs - sx, ys - sy)
+        sec = ((np.degrees(np.arctan2(ys - sy, xs - sx)) + 360) % 360
+               // RING_SECTOR_DEG).astype(int)
+        # how far the echo reaches on each bearing
+        far = np.full(nsec, np.nan)
+        cnt = np.bincount(sec, minlength=nsec)
+        lo, hi = RING_SEARCH_KM
+        for s in range(nsec):
+            if cnt[s] < RING_MIN_PX_SECTOR:
+                continue
+            r = float(np.percentile(d[sec == s], 99.0))
+            if lo <= r <= hi:
+                far[s] = r
+        # For each radius the frame actually offers, how long a run of bearings
+        # agrees with it. Not "how tight is this run" — the echo only reaches
+        # the coverage edge where there is rain to reach it, so the run has to
+        # survive a bearing or two falling short.
+        best = None
+        for cand in np.unique(far[~np.isnan(far)]):
+            ok = np.abs(far - cand) <= RING_TOL_KM
+            ok[np.isnan(far)] = False
+            # walk every start, allowing RING_GAP_SECTORS misses in a row
+            for start in range(nsec):
+                if not ok[start]:
+                    continue
+                hits, gap, k = [], 0, 0
+                while k < nsec:
+                    s = (start + k) % nsec
+                    if ok[s]:
+                        hits.append(far[s]); gap = 0
+                    else:
+                        gap += 1
+                        if gap > RING_GAP_SECTORS:
+                            break
+                    k += 1
+                span = k - gap
+                if (len(hits) >= RING_MIN_SECTORS
+                        and float(np.std(hits)) <= RING_MAX_SD_KM
+                        and (best is None or len(hits) > best[0])):
+                    best = (len(hits), start, float(np.median(hits)), span)
+        if best is None:
+            continue
+        n, start, r, span = best
+        a0 = start * RING_SECTOR_DEG
+        a1 = a0 + span * RING_SECTOR_DEG
+        log.info("coverage ring: %s at %.0f km over %d deg of arc (%d bearings)",
+                 name, r, span * RING_SECTOR_DEG, n)
+        out.append((sx, sy, r, float(a0), float(a1)))
+    return out
+
+
+def _rim_alpha(lev: np.ndarray, feed: str) -> np.ndarray | None:
+    """Fade the last kilometres inside any coverage arc this frame shows."""
+    rings = _coverage_rings(lev > 0, feed)
+    if not rings:
+        return None
+    from . import proj3059 as P
+    yy, xx = np.mgrid[0:P.H, 0:P.W]
+    a = np.ones((P.H, P.W), np.float32)
+    for cx, cy, r, a0, a1 in rings:
+        d = np.hypot(xx - cx, yy - cy)
+        ang = (np.degrees(np.arctan2(yy - cy, xx - cx)) + 360) % 360
+        # distance in degrees into the arc, so the ends taper instead of
+        # replacing a curved edge with two radial ones
+        off = np.minimum((ang - a0) % 360, (a1 - ang) % 360)
+        inside = ((ang - a0) % 360) <= ((a1 - a0) % 360 or 360)
+        w = np.where(inside, np.clip(off / RING_EDGE_DEG, 0.0, 1.0), 0.0)
+        fade = np.clip((r - d) / RING_FEATHER_KM, 0.0, 1.0)
+        a = np.minimum(a, 1.0 - w * (1.0 - fade))
+    return a.astype(np.float32)
 
 
 def draw_borders(canvas: Image.Image) -> None:
@@ -1394,8 +1543,16 @@ def draw_borders(canvas: Image.Image) -> None:
 
 
 def _fade_edges(canvas: Image.Image) -> Image.Image:
+    """A backstop, and only that.
+
+    The real fading is per feed and happens in _recolor, against each product's
+    own antennas — see _rim_alpha. This still runs, but at a radius no feed
+    reaches, so it can only catch a layer drawn without a feed name and never
+    bites inside a rim that has already been faded properly.
+    """
     a = np.array(canvas)
-    a[..., 3] = (a[..., 3].astype(np.float32) * _coverage_alpha()).astype(np.uint8)
+    a[..., 3] = (a[..., 3].astype(np.float32)
+                 * _coverage_alpha(BACKSTOP_RANGE_KM, BACKSTOP_FADE_KM)).astype(np.uint8)
     return Image.fromarray(a, "RGBA")
 
 
