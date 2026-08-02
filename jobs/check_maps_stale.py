@@ -79,22 +79,41 @@ def ages(path: str) -> tuple[float | None, float | None]:
 
 
 def main() -> int:
-    stale = False
-    for path in ("maps/um4/latest.json", "maps/meps/latest.json"):
+    stale = gfs_stale = False
+    # GFS is watched separately because it is repaired separately: it needs
+    # eccodes, which the tick does not carry, so it gets its own output and its
+    # own install rather than riding along with the MEPS/UM catch-up.
+    #
+    # It is watched at all because it can fail silently. Its step in models.yml
+    # is continue-on-error — a NOAA outage must not take the twice-daily pass
+    # down — and on 01.08 that swallowed a NameError in the colour setup, which
+    # fired before the per-lead try block and before the "nothing rendered"
+    # guard could see it. The step went green having produced nothing, and days
+    # 3-7 of the map column quietly sat on the 01.08 12Z run until someone ran
+    # the backfill by hand and watched it fail. Nothing was wrong with the data
+    # and nothing said so.
+    for path in ("maps/um4/latest.json", "maps/meps/latest.json",
+                 "maps/gfs/latest.json"):
         drawn, run = ages(path)
         print(f"{path}: drawn {'?' if drawn is None else f'{drawn:.1f} h'} ago, "
               f"run {'?' if run is None else f'{run:.1f} h'} old")
-        if drawn is not None and drawn > MAX_AGE_H:
+        old = ((drawn is not None and drawn > MAX_AGE_H)
+               or (run is not None and run > MAX_RUN_AGE_H))
+        if not old:
+            continue
+        if path.startswith("maps/gfs/"):
+            gfs_stale = True
+        else:
             stale = True
-        if run is not None and run > MAX_RUN_AGE_H:
-            stale = True
-    print(f"-> {'stale, re-rendering' if stale else 'fresh, nothing to do'} "
+    print(f"-> meps/um {'stale, re-rendering' if stale else 'fresh'}, "
+          f"gfs {'stale, re-rendering' if gfs_stale else 'fresh'} "
           f"(drawn > {MAX_AGE_H:.0f} h or run > {MAX_RUN_AGE_H:.0f} h)")
 
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a") as fh:
             fh.write(f"maps={'1' if stale else '0'}\n")
+            fh.write(f"gfs={'1' if gfs_stale else '0'}\n")
     return 0
 
 

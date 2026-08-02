@@ -30,8 +30,15 @@ import numpy as np
 
 from . import config
 from .http import session
-from .maps_meps import (RAIN_ANCHORS, RAIN_LEVELS, SNOW_ANCHORS, THRESHOLDS,
-                        _draw_rain)
+# One import, and it is the whole point: the GFS frames have to come out of
+# the same ramp as MEPS and the radar or the three columns cannot be compared.
+# rain_cmaps() was missing from this list — the four names that used to be here
+# (RAIN_ANCHORS, RAIN_LEVELS, SNOW_ANCHORS, THRESHOLDS) were what the old
+# hand-rolled BoundaryNorm needed, and when render_run switched to rain_cmaps()
+# they stayed and it did not. Nothing catches a NameError raised before the
+# per-lead try block, so every GFS render since has died on line one of the
+# colour setup.
+from .maps_meps import _draw_rain, rain_cmaps
 
 log = logging.getLogger(__name__)
 
@@ -253,7 +260,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import BoundaryNorm, ListedColormap
+    from matplotlib.colors import ListedColormap
     from PIL import Image as PILImage
 
     from . import proj3059 as P

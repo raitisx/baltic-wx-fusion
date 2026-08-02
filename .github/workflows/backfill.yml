@@ -101,7 +101,9 @@ jobs:
             obs-archive)      pip install pyarrow boto3 ;;
             um-archive)       pip install boto3 ;;
             um-maps)          pip install pillow numpy pyproj boto3 ;;
-            gfs-maps)         pip install eccodes matplotlib numpy pillow pyproj boto3 ;;
+            # scipy for the feather in maps_gfs._to_3059 — without it the
+            # frames still draw, just bilinear and slightly creased.
+            gfs-maps)         pip install eccodes matplotlib numpy pillow pyproj boto3 scipy ;;
             radar-verify)     pip install pillow numpy pyproj boto3 ;;
             stations)         pip install psycopg[binary] ;;
             radar-calibrate)  pip install pillow numpy pyproj boto3 psycopg[binary] ;;
