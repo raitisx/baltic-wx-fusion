@@ -15,6 +15,10 @@
     --ok:#2e9e2e; --marginal:#e0a300; --nofly:#d92f2f;
     --now:#0f9d3a;
     --dewwet:#c62828; --dewdry:#63b063; --dewfrost:#5b6bc0;
+    /* The summary strip. Same red/green family as dew so the two read as a
+       pair, a shade deeper because this one is the answer and dew is one of
+       its inputs. */
+    --lidarno:#b3261e; --lidarok:#4f9d4f;
     --rainshaft:#16357a;
   }
   html,body{margin:0;padding:0}
@@ -769,6 +773,55 @@ function dayVerdicts(cbLim, wgLim){
   });
 }
 
+// ---------- lidar: every limit at once ----------
+// The strips above each answer one question. This one answers the question
+// that actually gets asked — can this hour be flown — by failing the hour if
+// ANY of the selected limits fails it. It reads the selectors rather than
+// constants, so moving the cloud or gust limit repaints it immediately.
+//
+// Each limit is here for a different reason. Rain and fog are about what the
+// beam meets on the way down and back. The ceiling is about whether there is
+// room to fly the block under it. Gusts are about holding a line straight
+// enough that the swaths still overlap. Dew is about the ground being wet when
+// the pulse arrives — a soaked canopy is a returns problem, not a comfort one,
+// which is why it counts as a blocker and not a footnote.
+//
+// Returns the list of reasons this hour is out, [] if it is flyable, or null
+// if the hour has no data to judge.
+const LIDAR_RAIN_MMH  = 0.1;   // the same "wet" threshold the maps are drawn at
+const LIDAR_RAIN_PROB = 0.5;   // ...or half the models calling for rain anyway
+function lidarWhy(r, cbLim, wgLim){
+  if(r.t2m==null) return null;
+  const why=[];
+  const pr=r.prcp_1h??0, pp=r.prcp_prob??0;
+  if(pr>=LIDAR_RAIN_MMH || pp>=LIDAR_RAIN_PROB)
+    why.push(`rain ${pr.toFixed(2)} mm/h · ${Math.round(pp*100)}% agree`);
+  // Fog proper, not the mist the fog strip starts drawing at. That strip fades
+  // in from 5 km because it is showing a trend; five kilometres of visibility
+  // is no obstacle to a sensor looking down from 500 m, and calling it one
+  // would black out most autumn mornings for nothing. Below a kilometre it is
+  // a different matter.
+  //
+  // Where visibility is missing — the stored archive carries none — the fog
+  // strip falls back to counting saturated models, and that fallback cannot be
+  // reused here: air at RH 100 with no dewpoint depression is exactly what
+  // rain looks like to a screen thermometer, so every wet archived hour came
+  // back "fog". A cloud base under 100 m says the same thing without the
+  // ambiguity, so that is the fallback instead.
+  if(r.vis!=null ? r.vis<=FOG_VIS_M : (r.cb!=null && r.cb<100))
+    why.push(r.vis!=null ? `fog · visibility ${Math.round(r.vis)} m`
+                         : `fog · cloud on the deck at ${Math.round(r.cb)} m`);
+  if(r.cb!=null && r.cb<cbLim)
+    why.push(`ceiling ${Math.round(r.cb)} m · limit ${cbLim}`);
+  const wgz = r.wgz ?? r.wg10m;
+  if(wgz!=null && wgz>wgLim)
+    why.push(`gusts ${wgz.toFixed(1)} m/s · limit ${wgLim}`);
+  if(r.dew?.wet)
+    why.push(r.dew.frost ? "frost on the ground"
+                         : (r.dew.fromRain ? "ground still wet" : "dew on the ground"));
+  return why;
+}
+
 // ---------- meteogram render ----------
 // The plot runs edge to edge with the map row below it — same SVG, same
 // container width — so a rain band on the maps sits directly under the hour
@@ -793,7 +846,11 @@ const PANELS = [
   {id:"wind",  h:138, at:0.620, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
   {id:"cloud", h:200, at:0.985, rows:[["ceiling m","--cloud"],["fog","--fog"]]},
   {id:"dew",   h:26,  at:0.800, rows:[["dew","--dewwet"]]},
+  {id:"lidar", h:26,  at:0.800, rows:[["lidar","--lidarno"]]},
 ];
+// By id, because the strips below index into this list and adding a panel in
+// the middle should not silently repaint the wrong one.
+const panel = id => PANELS.find(p=>p.id===id);
 // The direction strip: height of the band, arrow length inside it, and the
 // smallest gap between two arrows before they stop being readable.
 const DIR_H=18, DIR_LEN=11, DIR_GAP=17;
@@ -996,6 +1053,8 @@ function render(){
     const w=windAt(r,wz);
     r.wsz=w.ws; r.wgz=w.wg; r.wdirz=w.wdir; r.wsrc=w.src;
   }
+  // After the wind, because the gust limit is tested at the selected altitude.
+  for(const r of FUSED) r.lidar = lidarWhy(r, cbLim, wgLim);
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -1264,7 +1323,7 @@ function render(){
 
   // dew on the ground: red while there is water on it, green once it is gone
   {
-    const p=PANELS[4];
+    const p=panel("dew");
     const top=panelTop[p.id], bot=top+p.h, h=p.h-10, y=top+5;
     // Drawn as runs rather than one rectangle per hour: 168 abutting rects at
     // fractional x leave hairline seams that read as stripes, and this bar is
@@ -1287,6 +1346,36 @@ function render(){
     // thing on a 26 px strip, and the number is in the tooltip anyway.
     for(const c of FUSED.filter(r=>r.dew?.cleared!=null).map(r=>r.dew.cleared))
       svgEl("line",{x1:xPos(c),x2:xPos(c),y1:y,y2:y+h,stroke:"#fffdf4","stroke-width":1.4},svg);
+    for(let d=0;d<7;d++){
+      const x=xPos(FUSED[0].ts+d*86400e3);
+      svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
+    }
+    svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",
+                  stroke:css("--gridday"),"stroke-width":1},svg);
+  }
+
+  // lidar: dew, fog, rain, ceiling and gusts collapsed into one answer
+  {
+    const p=panel("lidar");
+    const top=panelTop[p.id], bot=top+p.h, h=p.h-10, y=top+5;
+    // Same run-merging as the dew strip, for the same reason: 168 abutting
+    // rects at fractional x leave hairline seams on a 26 px band.
+    const state = r => !r.lidar ? "none" : r.lidar.length ? "no" : "ok";
+    const paint = {none:[css("--grid"),1], no:[css("--lidarno"),1],
+                   ok:[css("--lidarok"),1]};
+    let i=0;
+    while(i<FUSED.length){
+      const s=state(FUSED[i]);
+      let j=i; while(j+1<FUSED.length && state(FUSED[j+1])===s) j++;
+      const x=xPos(FUSED[i].ts), [c,o]=paint[s];
+      svgEl("rect",{x,y,width:xPos(FUSED[j].ts+3600e3)-x,height:h,fill:c,opacity:o},svg);
+      // A tick where a window opens. On a marginal week the green runs are an
+      // hour or two wide and the eye needs an edge to land on; the hour itself
+      // is in the tooltip.
+      if(s==="ok" && i>0)
+        svgEl("line",{x1:x,x2:x,y1:y,y2:y+h,stroke:"#fffdf4","stroke-width":1.4},svg);
+      i=j+1;
+    }
     for(let d=0;d<7;d++){
       const x=xPos(FUSED[0].ts+d*86400e3);
       svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
@@ -1354,6 +1443,12 @@ function render(){
       ...(r.dew?.cleared!=null
           ? [["--dewdry","dries at",fmtHM.format(new Date(r.dew.cleared))
              + ` · sun ${Math.round(r.dew.elev)}°`]] : []),
+      // Every reason, not the first one: knowing the hour is out on gusts AND
+      // a 200 m ceiling is what tells you whether waiting an hour helps.
+      ...(r.lidar
+          ? [[r.lidar.length?"--lidarno":"--lidarok", "lidar",
+              r.lidar.length ? r.lidar.join(" · ") : "go — every limit clear"]]
+          : []),
     ];
     for(const [c,l,v] of rows){
       const tr=document.createElement("tr");
@@ -1646,7 +1741,8 @@ function renderTable(){
   // what it is.
   const wzc=wzLevel();
   for(const h of ["time","t2m °C","dew °C","humid %","precip mm (next h)","agree %",
-                  `wind m/s @${wzc} m`,`gust m/s @${wzc} m`,"dir °","cb m","L %","M %","H %"]){
+                  `wind m/s @${wzc} m`,`gust m/s @${wzc} m`,"dir °","cb m","L %","M %","H %",
+                  "lidar"]){
     const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
   }
   tb.appendChild(hd);
@@ -1658,7 +1754,10 @@ function renderTable(){
       r.prcp_prob!=null?Math.round(r.prcp_prob*100):"", r.wsz?.toFixed(1)??"",
       r.wgz?.toFixed(1)??"", r.wdirz!=null?Math.round(r.wdirz):"",
       r.cb!=null?Math.round(r.cb):"",
-      r.cc_low!=null?Math.round(r.cc_low):"", r.cc_mid!=null?Math.round(r.cc_mid):"", r.cc_high!=null?Math.round(r.cc_high):""];
+      r.cc_low!=null?Math.round(r.cc_low):"", r.cc_mid!=null?Math.round(r.cc_mid):"", r.cc_high!=null?Math.round(r.cc_high):"",
+      // The saved table has to say why, or "no" is unarguable and useless a
+      // month later when the report is written.
+      r.lidar ? (r.lidar.length ? "no: "+r.lidar.join("; ") : "go") : ""];
     for(const c of cells){ const td=document.createElement("td"); td.textContent=c; tr.appendChild(td); }
     tb.appendChild(tr);
   }
@@ -2038,7 +2137,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v61",
+    "page v62",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
