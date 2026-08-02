@@ -477,6 +477,31 @@ function fuse(){
     const n = MODELS.filter(m=>pv[m]!=null).length;
     row.prcp_prob = n ? MODELS.filter(m=>(pv[m]??0)>=0.1).length/n : null;
 
+    // Wind direction cannot go through the loop above: it is an angle, and
+    // 350° and 10° average to 180°, which points the arrow exactly the wrong
+    // way. Sum unit vectors instead. The length of the mean vector falls out
+    // of the same sum and is worth keeping — 1 means all four models agree on
+    // the direction, near 0 means they cancel and the arrow is meaningless,
+    // which is a thing you want to see before planning a line into it.
+    {
+      const dv = (idx["wdir"]||{})[ts] || {};
+      let sx=0, sy=0, tw=0;
+      for(const m of MODELS){
+        const deg = dv[m];
+        if(deg==null) continue;
+        const rt = runAt[`${m}|${ts}`] || ts;
+        const lb = leadBin(Math.max(0, Math.round((ts - rt)/3600e3)));
+        // wdir has no skill weights of its own — it is not scored — so borrow
+        // the wind speed ones, which at least rank the models on the same day.
+        const w = wIdx[`${m}|wdir|${lb}`] ?? wIdx[`${m}|ws10m|${lb}`] ?? 1;
+        const rad = deg*Math.PI/180;
+        sx += w*Math.sin(rad); sy += w*Math.cos(rad); tw += w;
+      }
+      const len = Math.hypot(sx, sy);
+      row.wdir = (tw>0 && len>1e-9) ? (Math.atan2(sx, sy)*180/Math.PI + 360) % 360 : null;
+      row.wdir_agree = tw>0 ? len/tw : null;
+    }
+
     // Ceiling needs a vote, not just an average. "No ceiling" is a real
     // forecast, but it arrives as an absent value, so plain averaging let a
     // single model with low cloud set the fused ceiling while the other three
@@ -719,10 +744,19 @@ P.left = P.gutter + P.axis;
 const PANELS = [
   {id:"temp",  h:130, at:0.733, rows:[["temp. °C","--temp"],["dew pt °C","--dew"]]},
   {id:"prcp",  h:120, at:0.868, rows:[["precip mm/h","--precip"],["rel.humid. %","--humid"]]},
-  {id:"wind",  h:120, at:0.713, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
+  // 138 rather than 120: the direction strip is added to the panel instead of
+  // taken out of it, so the speed curves keep the height they were drawn at.
+  // `at` moved with it so the legend text stays 86 px below the panel top,
+  // where the marked-up screenshot put it.
+  {id:"wind",  h:138, at:0.620, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
   {id:"cloud", h:200, at:0.985, rows:[["ceiling m","--cloud"],["fog","--fog"]]},
   {id:"dew",   h:26,  at:0.800, rows:[["dew","--dewwet"]]},
 ];
+// The direction strip: height of the band, arrow length inside it, and the
+// smallest gap between two arrows before they stop being readable.
+const DIR_H=18, DIR_LEN=11, DIR_GAP=17;
+const COMPASS=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+const compass = deg => COMPASS[Math.round(((deg%360)+360)%360/22.5)%16];
 function xPos(ts){
   const t0=FUSED[0].ts, t1=t0+HOURS*3600e3;
   return P.left + (ts-t0)/(t1-t0)*(P.width-P.left-P.right);
@@ -893,9 +927,13 @@ function render(){
     }
   }
 
-  function scaffold(p,yMin,yMax,ticks){
+  // padBottom reserves a strip along the floor of a panel that the data scale
+  // does not use — the grid, the box and the day rules still span the whole
+  // panel, so it reads as one frame with a band at the bottom.
+  function scaffold(p,yMin,yMax,ticks,padBottom){
     const top=panelTop[p.id], bot=top+p.h;
-    const y=v=>bot - (v-yMin)/(yMax-yMin)*p.h;
+    const plotH=p.h-(padBottom||0), base=bot-(padBottom||0);
+    const y=v=>base - (v-yMin)/(yMax-yMin)*plotH;
     for(const r of FUSED){
       if(r.hourOfDay%6!==0) continue;
       svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
@@ -957,7 +995,7 @@ function render(){
     const p=PANELS[2];
     const vals=FUSED.flatMap(r=>[r.ws10m,r.wg10m]).filter(v=>v!=null);
     const hi=Math.max(Math.ceil(Math.max(0,...vals,wgLim+2)/5)*5,10);
-    const y=scaffold(p,0,hi,niceTicks(0,hi,4));
+    const y=scaffold(p,0,hi,niceTicks(0,hi,4),DIR_H);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
     // Directly under the panel's own labels, so the control sits in the legend
     // it belongs to rather than in a sidebar three columns away.
@@ -973,6 +1011,40 @@ function render(){
       svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wg10m),y2:y(r.wg10m),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
     for(const o of (obsIdx.ws10m||[]))
       svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2,fill:css("--cloud")},svg);
+
+    // Direction strip along the floor of the panel. Each arrow flies WITH the
+    // wind — it points where the air is going, so a westerly (wind from 270°)
+    // points right, the way it would drift a machine.
+    const stripTop=panelTop[p.id]+p.h-DIR_H;
+    svgEl("line",{x1:P.left,x2:P.width-P.right,y1:stripTop,y2:stripTop,
+      stroke:css("--gridday"),"stroke-width":1},svg);
+    const lbl=svgEl("text",{x:P.left-6,y:stripTop+DIR_H/2+4,"text-anchor":"end",
+      "font-size":"10","font-weight":"700",fill:css("--muted")},svg);
+    lbl.textContent="dir";
+    // One arrow every DIR_GAP px of chart, not every hour: at a week across
+    // 1080 px the hours are 6 px apart and the arrowheads would overlap.
+    const pxH=xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts);
+    const step=Math.max(1,Math.ceil(DIR_GAP/Math.max(pxH,0.1)));
+    const cy=stripTop+DIR_H/2;
+    for(let i=Math.floor(step/2); i<FUSED.length; i+=step){
+      const r=FUSED[i];
+      if(r.wdir==null) continue;
+      // Below a light breeze the direction is noise; a dot says "no useful
+      // direction" without pretending to know one.
+      if((r.ws10m??0) < 0.7){
+        svgEl("circle",{cx:xPos(r.ts),cy,r:1.3,fill:css("--muted"),"fill-opacity":.55},svg);
+        continue;
+      }
+      // Faded when the models disagree about where it comes from — the mean
+      // vector is short exactly when averaging the angles is least meaningful.
+      const op=(0.3+0.7*Math.max(0,Math.min(1,r.wdir_agree??1))).toFixed(2);
+      const g=svgEl("g",{transform:`translate(${xPos(r.ts).toFixed(1)} ${cy.toFixed(1)}) `
+        +`rotate(${((r.wdir+180)%360).toFixed(1)})`},svg);
+      svgEl("path",{d:`M0 ${DIR_LEN/2} L0 ${-DIR_LEN/2} M-2.5 ${-DIR_LEN/2+3.2} `
+        +`L0 ${-DIR_LEN/2} L2.5 ${-DIR_LEN/2+3.2}`,
+        fill:"none",stroke:css("--wind"),"stroke-width":1.4,
+        "stroke-linecap":"round","stroke-linejoin":"round","stroke-opacity":op},g);
+    }
   }
 
   // cloud base + fog
@@ -1139,6 +1211,9 @@ function render(){
           : `${r.fog_n}/${r.fog_of} models saturated`]]:[]),
       ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind","wind",f(r.ws10m)+" m/s"],
+      ...(r.wdir!=null?[["--wind","direction",
+        `from ${compass(r.wdir)} ${Math.round(r.wdir)}°`
+        + (r.wdir_agree!=null?` · ${Math.round(r.wdir_agree*100)}% agree`:"")]]:[]),
       ["--gust","gusts",f(r.wg10m)+" m/s"+(r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:"")],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
@@ -1830,7 +1905,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v58",
+    "page v59",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
