@@ -1362,157 +1362,118 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
     return out
 
 
-# The second kind of beam, and the one that survived everything else: a narrow
-# ray of anomalously STRONG echo lying INSIDE ordinary rain. Every test up to
-# here asks where echo stops — thin residue after an opening, connected blobs
-# in polar space, corridors with empty flanks — and none of them can see this,
-# because it is not surrounded by clear air. Measured on the 02.08 01:00
-# Latvian frame: in polar coordinates round Riga the rain and the ray are one
-# connected blob 125 degrees wide and 202 km long, elongation 0.6. There is no
-# shape there to find.
+# The beam a shape test cannot see, and what to do about it.
 #
-# So it is found the way the eye finds it, as a ridge: a few tenths of a degree
-# of azimuth running two whole intensity classes above the azimuths either side
-# of it, and holding that for tens of kilometres of range. Rain has no reason
-# to organise itself along a bearing from an antenna.
+# Every earlier pass asks where echo STOPS — thin residue after an opening,
+# connected blobs in polar space, corridors with empty flanks. A ray lying
+# inside rain stops nowhere. Measured on the 02.08 01:00 Latvian frame: in
+# polar coordinates round Riga the rain and the ray are one connected blob
+# 125 degrees wide and 202 km long, elongation 0.6. There is no shape there.
 #
-# The flank baseline skips the bins immediately beside the ray, or the ray's
-# own shoulders set the level it is being compared against.
-RIDGE_AZ_HALF = 24          # bins either side used for the flank median
+# What the ray always is, though, is a BEARING that does not belong with its
+# neighbours — either reaching much further than they do, or running two whole
+# intensity classes above them. So the bearings are judged, not the blobs.
+#
+# And once a bearing is condemned it is not deleted, it is REBUILT: every range
+# along it takes the value interpolated across the wedge from the clean
+# bearings either side. Where those are empty the ray disappears, which is what
+# should happen to a ray in clear air. Where they carry rain, the rain crosses
+# the ray unbroken, which is what should happen to a shower the beam was drawn
+# on top of. Deleting the whole bearing would leave a wedge-shaped hole through
+# real weather, and that is just a different artefact.
+RIDGE_AZ_HALF = 24          # bins either side used for the flank baseline
 RIDGE_AZ_GAP = 6            # ... skipping these, next to the ray itself
-RIDGE_MIN_LEN_KM = 60
 RIDGE_LIFT_CLASSES = 2.0    # how far above its flanks a ray has to sit
-RIDGE_MAX_DEG = 5.0         # and how narrow it has to stay
+RIDGE_MIN_LEN_KM = 60       # ... and for how much range
 RIDGE_MIN_KM = 30           # ignore the clutter-dominated close range
-
-
-def _remove_beam_ridges(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
-    """Flatten narrow radial ridges of over-strong echo, in the radar's own
-    frame. The pixel keeps whatever its neighbours in azimuth have — the rain
-    under a beam is still rain, it is just not that heavy."""
-    try:
-        from scipy import ndimage
-    except ImportError:
-        return lev
-    if (lev > 0).sum() < BEAM_MIN_PX:
-        return lev
-    out, removed = lev, []
-    for name, la, lo in RADAR_SITES:
-        if not name.startswith((feed or "")[:2]):
-            continue
-        rng, azdeg = _source_polar(lev.shape, sw, ne, la, lo)
-        az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
-        rb = rng.astype(int)
-        ok = (rb >= RIDGE_MIN_KM) & (rb <= R_MAX_KM)
-        if ok.sum() < BEAM_MIN_PX:
-            continue
-        # polar picture of the intensity, strongest pixel per cell
-        pol = np.zeros((N_AZ, R_MAX_KM + 1), np.float32)
-        np.maximum.at(pol, (az[ok], rb[ok]), out[ok].astype(np.float32))
-        stack = [np.roll(pol, k, axis=0)
-                 for k in range(-RIDGE_AZ_HALF, RIDGE_AZ_HALF + 1)
-                 if abs(k) > RIDGE_AZ_GAP]
-        flank = np.median(np.stack(stack), axis=0)
-        # Only where the flanks actually carry echo. Against empty sky the
-        # lift is just the ray's own brightness and every rain area qualifies.
-        hot = ((pol - flank) >= RIDGE_LIFT_CLASSES * SUB) & (pol > 0) & (flank > 0)
-        if not hot.any():
-            continue
-        hot = ndimage.binary_closing(hot, structure=np.ones((1, BEAM_GAP_KM), bool))
-        lab, n = ndimage.label(hot, structure=np.ones((3, 3)))
-        kill = np.zeros_like(hot)
-        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
-            a0, a1 = sl[0].start, sl[0].stop
-            r0, r1 = sl[1].start, sl[1].stop
-            deg = (a1 - a0) * 360.0 / N_AZ
-            if (r1 - r0) < RIDGE_MIN_LEN_KM or deg > RIDGE_MAX_DEG:
-                continue
-            kill[sl] |= (lab[sl] == i)
-            removed.append(f"{name} {r0}-{r1} km {deg:.1f} deg")
-        if not kill.any():
-            continue
-        sel = ok & kill[az, rb]
-        if not sel.any():
-            continue
-        if out is lev:
-            out = lev.copy()
-        out[sel] = np.clip(flank[az[sel], rb[sel]], 0, LEV_MAX).astype(np.uint8)
-    if removed:
-        log.info("source beam ridges (%s): %s", feed, "; ".join(removed))
-    return out
-
-
-# The other half of the same idea, for the ray that sticks OUT of the rain
-# rather than lying inside it. On the 02.08 01:00 Latvian frame the streak runs
-# from 200 to 310 km from Riga at bearings 105-115 deg, and the bearings either
-# side of it have no echo at all beyond 200 km. In polar space it is joined to
-# the rain area further in, so the connected-blob test sees one shape 125 deg
-# wide and finds nothing; but as REACH per bearing it is unmistakable — one
-# narrow group of azimuths reaching a hundred kilometres past its neighbours.
-REACH_LIFT_KM = 60          # how far past the flanks a bearing has to reach
-REACH_MAX_DEG = 5.0         # over how narrow a group of bearings
-REACH_MARGIN_KM = 10        # keep this much past the flanks before cutting
+REACH_LIFT_KM = 60          # or: how far past the flanks a bearing reaches
 # The flanks have to HAVE a reach to be overshot. Without this an isolated
 # shower on a bearing whose neighbours are empty reads as a hundred-kilometre
 # spike, and on one frame that alone accounted for most of the detections.
 REACH_MIN_FLANK_KM = 40
 REACH_MAX_KM = 300          # past this we are outside every product anyway
+BEAM_MAX_WEDGE_DEG = 5.0    # a group of bad bearings wider than this is weather
+BEAM_FLANK_BINS = 3         # clean bearings averaged either side to rebuild from
 
 
-def _remove_beam_reach(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
-    """Cut back bearings whose echo reaches far past every bearing near them."""
+def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
+    """Find bearings that do not belong, and rebuild them from their neighbours."""
     if (lev > 0).sum() < BEAM_MIN_PX:
         return lev
-    out, removed = lev, []
-    for name, la, lo in RADAR_SITES:
-        if not name.startswith((feed or "")[:2]):
-            continue
-        rng, azdeg = _source_polar(lev.shape, sw, ne, la, lo)
+    out, notes = lev, []
+    mine = [(n, la, lo) for n, la, lo in RADAR_SITES
+            if n.startswith((feed or "")[:2])]
+    if not mine:
+        return lev
+    # Each antenna judges only the pixels it is the nearest to. Without this,
+    # Lithuania's Vilnius sees echo over Laukuva's half of the country as a
+    # 300 km spike on its own bearings, and the same for Estonia's pair — on
+    # one frame that was most of the detections.
+    polar = [_source_polar(lev.shape, sw, ne, la, lo) for _, la, lo in mine]
+    nearest = np.argmin(np.stack([p[0] for p in polar]), axis=0)
+    for si, (name, la, lo) in enumerate(mine):
+        rng, azdeg = polar[si]
         az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
         rb = rng.astype(int)
-        lit = (lev > 0) & (rb <= R_MAX_KM)
-        if lit.sum() < BEAM_MIN_PX:
+        ok = (rb >= RIDGE_MIN_KM) & (rb <= R_MAX_KM) & (nearest == si)
+        if (ok & (out > 0)).sum() < BEAM_MIN_PX:
             continue
+        pol = np.zeros((N_AZ, R_MAX_KM + 1), np.float32)
+        np.maximum.at(pol, (az[ok], rb[ok]), out[ok].astype(np.float32))
+
+        ring = [k for k in range(-RIDGE_AZ_HALF, RIDGE_AZ_HALF + 1)
+                if abs(k) > RIDGE_AZ_GAP]
+        flank2d = np.median(np.stack([np.roll(pol, k, axis=0) for k in ring]), axis=0)
+
+        # (a) reaches much further than the bearings around it
         reach = np.zeros(N_AZ, np.float32)
+        lit = ok & (out > 0)
         np.maximum.at(reach, az[lit], rng[lit].astype(np.float32))
-        stack = [np.roll(reach, k) for k in range(-RIDGE_AZ_HALF, RIDGE_AZ_HALF + 1)
-                 if abs(k) > RIDGE_AZ_GAP]
-        flank = np.median(np.stack(stack), axis=0)
-        spike = ((reach - flank) >= REACH_LIFT_KM) & (flank >= REACH_MIN_FLANK_KM) \
-                & (reach <= REACH_MAX_KM)
-        if not spike.any():
+        fr = np.median(np.stack([np.roll(reach, k) for k in ring]), axis=0)
+        bad = ((reach - fr) >= REACH_LIFT_KM) & (fr >= REACH_MIN_FLANK_KM) \
+            & (reach <= REACH_MAX_KM)
+        # (b) or runs far above them for a long stretch of range
+        hot = ((pol - flank2d) >= RIDGE_LIFT_CLASSES * SUB) & (pol > 0) & (flank2d > 0)
+        bad |= hot.sum(axis=1) >= RIDGE_MIN_LEN_KM
+        if not bad.any():
             continue
-        # groups of consecutive spiking bearings, wrapping round
-        idx = np.flatnonzero(spike)
-        groups, cur = [], [idx[0]]
+
+        # contiguous groups of condemned bearings, wrapping round the circle
+        idx = np.flatnonzero(bad)
+        groups, cur = [], [int(idx[0])]
         for k in idx[1:]:
             if k == cur[-1] + 1:
-                cur.append(k)
+                cur.append(int(k))
             else:
-                groups.append(cur); cur = [k]
+                groups.append(cur); cur = [int(k)]
         groups.append(cur)
         if len(groups) > 1 and groups[0][0] == 0 and groups[-1][-1] == N_AZ - 1:
             groups[0] = groups[-1] + groups[0]; groups.pop()
-        cut = np.zeros(N_AZ, np.float32)
-        hit = np.zeros(N_AZ, bool)
+
+        newpol = pol.copy()
+        touched = np.zeros(N_AZ, bool)
         for g in groups:
             deg = len(g) * 360.0 / N_AZ
-            if deg > REACH_MAX_DEG:
+            if deg > BEAM_MAX_WEDGE_DEG:
                 continue
-            hit[g] = True
-            cut[g] = flank[g] + REACH_MARGIN_KM
-            removed.append(f"{name} {np.median(flank[g]):.0f}->{reach[g].max():.0f} km "
-                           f"{deg:.1f} deg")
-        if not hit.any():
-            continue
-        sel = lit & hit[az] & (rng > cut[az])
-        if not sel.any():
+            left = [(g[0] - 1 - j) % N_AZ for j in range(BEAM_FLANK_BINS)]
+            right = [(g[-1] + 1 + j) % N_AZ for j in range(BEAM_FLANK_BINS)]
+            a = pol[left].mean(axis=0)
+            b = pol[right].mean(axis=0)
+            for j, s_ in enumerate(g):
+                t = (j + 1) / (len(g) + 1)
+                newpol[s_] = a * (1 - t) + b * t
+            touched[g] = True
+            notes.append(f"{name} bearing {g[0] * 360.0 / N_AZ:.1f}+{deg:.1f}deg, "
+                         f"reach {reach[g].max():.0f} vs {fr[g].max():.0f} km")
+        if not touched.any():
             continue
         if out is lev:
             out = lev.copy()
-        out[sel] = 0
-    if removed:
-        log.info("source beam reach (%s): %s", feed, "; ".join(removed))
+        sel = ok & touched[az]
+        out[sel] = np.clip(np.rint(newpol[az[sel], rb[sel]]), 0, LEV_MAX).astype(np.uint8)
+    if notes:
+        log.info("source beams rebuilt (%s): %s", feed, "; ".join(notes))
     return out
 
 
@@ -1522,8 +1483,7 @@ def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
         return _classify_intensity(arr, feed)
     arr = _remove_beams_source(arr, feed, o["sw"], o["ne"])
     lev = _classify_intensity(arr, feed)
-    lev = _remove_beam_reach(lev, feed, o["sw"], o["ne"])
-    return _remove_beam_ridges(lev, feed, o["sw"], o["ne"])
+    return _repair_beams_source(lev, feed, o["sw"], o["ne"])
 
 
 def _load_and_classify(url: str, s, feed: str | None = None,
