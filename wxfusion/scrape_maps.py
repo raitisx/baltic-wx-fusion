@@ -1386,7 +1386,14 @@ RIDGE_AZ_GAP = 6            # ... skipping these, next to the ray itself
 RIDGE_LIFT_CLASSES = 2.0    # how far above its flanks a ray has to sit
 RIDGE_MIN_LEN_KM = 60       # ... and for how much range
 RIDGE_MIN_KM = 30           # ignore the clutter-dominated close range
-REACH_LIFT_KM = 60          # or: how far past the flanks a bearing reaches
+# How far past its flanks a bearing has to reach. 60 was set from one clear
+# example and it turned out to be a bar the ordinary case does not clear: the
+# beam reported on 31.07 22:01 runs 97.0-98.5deg out to 244 km against flanks
+# at 194, a lift of 48-50 km on four contiguous bins with every neighbour at
+# -3 or below. As clean a spike as the 109deg one on the same frame, which
+# lifts 63. Dropping the bar to 45 catches it; the wedge cap still throws out
+# anything wider than 5deg, so what this admits is narrow by construction.
+REACH_LIFT_KM = 45
 # The flanks have to HAVE a reach to be overshot. Without this an isolated
 # shower on a bearing whose neighbours are empty reads as a hundred-kilometre
 # spike, and on one frame that alone accounted for most of the detections.
@@ -1395,6 +1402,13 @@ REACH_MAX_KM = 300          # past this we are outside every product anyway
 BEAM_MAX_WEDGE_DEG = 5.0    # a group of bad bearings wider than this is weather
 BEAM_FLANK_BINS = 3         # clean bearings offset to rebuild from
 BEAM_GROW_BINS = 0
+# What ONE wedge may take, as a fraction of the feed's echo in that frame.
+# The frame ceiling below is all-or-nothing, so a single greedy detection used
+# to veto every good one beside it. This is checked per wedge, after its
+# rebuild is computed and before it is written, so a bad wedge is dropped on
+# its own. 4% is roughly twice what the largest legitimate wedge took across
+# the 27-frame sample.
+WEDGE_MAX_REMOVE = 0.04
 # A ceiling on what this pass may take from one feed in one frame. Not a
 # tuning knob — a floor under a bad day. Measured across 27 feed-frames the
 # median removal is 2.2%, but one Estonian frame lost 97.4% of its echo: a
@@ -1435,11 +1449,11 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
     neighbours. Returns (levels, how many wedges were rebuilt)."""
     if (lev > 0).sum() < BEAM_MIN_PX:
         return lev, 0
-    out, notes = lev, []
+    out, notes, kept = lev, [], 0
     mine = [(n, la, lo) for n, la, lo in RADAR_SITES
             if n.startswith((feed or "")[:2])]
     if not mine:
-        return lev
+        return lev, 0        # every caller unpacks two; this path returned one
     # Each antenna judges only the pixels it is the nearest to. Without this,
     # Lithuania's Vilnius sees echo over Laukuva's half of the country as a
     # 300 km spike on its own bearings, and the same for Estonia's pair — on
@@ -1487,7 +1501,7 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
             groups[0] = groups[-1] + groups[0]; groups.pop()
 
         touched = np.zeros(N_AZ, bool)
-        offs, gsel = [], []
+        offs, gsel, gnotes = [], [], []
         # Rebuild by rotating the picture, not by reading the polar grid.
         #
         # The grid is far too sparse to rebuild from: 720 azimuths by 600
@@ -1535,15 +1549,14 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
             g = [(g[0] - 1) % N_AZ] + g + [(g[-1] + 1) % N_AZ]   # shoulders too
             deg = len(g) * 360.0 / N_AZ
             touched[g] = True
-            notes.append(f"{name} bearing {g[0] * 360.0 / N_AZ:.1f}+{deg:.1f}deg, "
-                         f"reach {reach[g].max():.0f} vs {fr[g].max():.0f} km")
+            gnotes.append(f"{name} bearing {g[0] * 360.0 / N_AZ:.1f}+{deg:.1f}deg, "
+                          f"reach {reach[g].max():.0f} vs {fr[g].max():.0f} km")
             offs.append(np.radians(deg + BEAM_FLANK_BINS * 360.0 / N_AZ))
             gsel.append(np.zeros(N_AZ, bool)); gsel[-1][g] = True
         if not touched.any():
             continue
-        if out is lev:
-            out = lev.copy()
-        for off, gs in zip(offs, gsel):
+        echo_tot = max(int((lev > 0).sum()), 1)
+        for off, gs, note in zip(offs, gsel, gnotes):
             sel = ok & gs[az]
             if not sel.any():
                 continue
@@ -1559,11 +1572,40 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
                 v = np.zeros(len(sx), np.float32)
                 v[inb] = lev[ry[inb], rx[inb]]
                 vals.append(v)
-            out[sy, sx] = np.clip(np.rint((vals[0] + vals[1]) / 2.0),
-                                  0, LEV_MAX).astype(np.uint8)
+            # Both flanks have to agree that there is rain here, or the pixel
+            # goes dry. The mean alone was the whole reason a pale streak
+            # survived where the beam had been: outside the storm one flank
+            # holds echo and the other holds nothing, and half of something is
+            # still something — class 2, pale green, running the length of the
+            # condemned bearing. Measured on the 31.07 22:01 LV frame it turned
+            # 221 beam pixels into 400, which is a longer and more visible line
+            # than the beam it replaced.
+            #
+            # Requiring both keeps exactly the case that was asked for — a beam
+            # crossing real rain is bridged from its neighbours at full
+            # strength — and drops the case that was not, a beam in clear air
+            # being replaced by a ghost of itself.
+            both = (vals[0] > 0) & (vals[1] > 0)
+            newv = np.where(both, np.clip(np.rint((vals[0] + vals[1]) / 2.0),
+                                          0, LEV_MAX), 0).astype(np.uint8)
+            # Judge each wedge on its own before accepting it. The ceiling in
+            # _prepare_source is the whole stage's, and being all-or-nothing it
+            # threw away four good wedges to veto a fifth — which is why 5 of
+            # 27 frames came out with no beam work at all. Here a greedy wedge
+            # simply does not get written and its neighbours still do.
+            lost = int(((lev[sy, sx] > 0) & (newv == 0)).sum())
+            if lost / echo_tot > WEDGE_MAX_REMOVE:
+                notes.append(f"{note} SKIPPED, would take "
+                             f"{lost / echo_tot * 100:.1f}% of the echo")
+                continue
+            if out is lev:
+                out = lev.copy()
+            out[sy, sx] = newv
+            notes.append(note)
+            kept += 1
     if notes:
         log.info("source beams rebuilt (%s): %s", feed, "; ".join(notes))
-    return out, len(notes)
+    return out, kept
 
 
 def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
