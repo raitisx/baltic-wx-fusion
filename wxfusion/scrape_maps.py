@@ -1393,13 +1393,48 @@ REACH_LIFT_KM = 60          # or: how far past the flanks a bearing reaches
 REACH_MIN_FLANK_KM = 40
 REACH_MAX_KM = 300          # past this we are outside every product anyway
 BEAM_MAX_WEDGE_DEG = 5.0    # a group of bad bearings wider than this is weather
-BEAM_FLANK_BINS = 3         # clean bearings averaged either side to rebuild from
+BEAM_FLANK_BINS = 3         # clean bearings offset to rebuild from
+BEAM_GROW_BINS = 0
+# A ceiling on what this pass may take from one feed in one frame. Not a
+# tuning knob — a floor under a bad day. Measured across 27 feed-frames the
+# median removal is 2.2%, but one Estonian frame lost 97.4% of its echo: a
+# narrow band of rain, condemned bearings whose rotated neighbours were empty,
+# and the whole field rebuilt as nothing. Any repair that large is a
+# misdiagnosis by definition, and the frame is better off untouched than
+# blank.
+# Two ceilings, because one number cannot tell the two cases apart. A frame
+# with one or two rays in it can legitimately lose a lot — on 02.08 the Riga
+# streak alone was 9% of Latvia's echo, because Latvia had little echo and one
+# long bright ray. A frame that condemns a fan of bearings and then removes a
+# third of everything has misdiagnosed a band of rain, and no single wedge
+# explains it.
+BEAM_FEW_WEDGES = 3
+BEAM_MAX_REMOVE_FEW = 0.20
+BEAM_MAX_REMOVE_MANY = 0.08
+# How far a condemned wedge may grow into its shoulders. ZERO, and that is a
+# measurement rather than a default. Growing while a neighbouring bearing still
+# half-failed the test looked right on one frame, and across 27 it took 8.24%
+# of all echo instead of 1.09% — the soft criterion is satisfied by most
+# bearings beside a real one, so nearly every wedge grew to its cap. The one
+# shoulder bin either side stays; it is cheap and bounded.
 
 
-def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
-    """Find bearings that do not belong, and rebuild them from their neighbours."""
+def _source_site_xy(shape, sw, ne, lat0, lon0):
+    """Where an antenna sits in a source overlay, in that image's pixels."""
+    def merc_y(la):
+        r = np.radians(la)
+        return np.log(np.tan(r) + 1.0 / np.cos(r))
+    h, w = shape[:2]
+    u = (lon0 - sw[1]) / (ne[1] - sw[1])
+    v = (merc_y(ne[0]) - merc_y(lat0)) / (merc_y(ne[0]) - merc_y(sw[0]))
+    return u * w, v * h
+
+
+def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
+    """Find bearings that do not belong, and rebuild them from their
+    neighbours. Returns (levels, how many wedges were rebuilt)."""
     if (lev > 0).sum() < BEAM_MIN_PX:
-        return lev
+        return lev, 0
     out, notes = lev, []
     mine = [(n, la, lo) for n, la, lo in RADAR_SITES
             if n.startswith((feed or "")[:2])]
@@ -1434,7 +1469,8 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
             & (reach <= REACH_MAX_KM)
         # (b) or runs far above them for a long stretch of range
         hot = ((pol - flank2d) >= RIDGE_LIFT_CLASSES * SUB) & (pol > 0) & (flank2d > 0)
-        bad |= hot.sum(axis=1) >= RIDGE_MIN_LEN_KM
+        hotlen = hot.sum(axis=1)
+        bad |= hotlen >= RIDGE_MIN_LEN_KM
         if not bad.any():
             continue
 
@@ -1450,40 +1486,112 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
         if len(groups) > 1 and groups[0][0] == 0 and groups[-1][-1] == N_AZ - 1:
             groups[0] = groups[-1] + groups[0]; groups.pop()
 
-        newpol = pol.copy()
         touched = np.zeros(N_AZ, bool)
+        offs, gsel = [], []
+        # Rebuild by rotating the picture, not by reading the polar grid.
+        #
+        # The grid is far too sparse to rebuild from: 720 azimuths by 600
+        # ranges is 432,000 cells and a 500 px source frame has about eleven
+        # thousand echo pixels in it, so most cells are empty for want of a
+        # pixel rather than for want of rain. Averaging three such bins gave
+        # nearly zero, and the "repaired" bearing came out as a pale gash
+        # through the rain instead of a beam removed from it.
+        #
+        # So each condemned pixel is sampled from where it would be if the
+        # picture were turned about the antenna by the width of the wedge,
+        # once each way, and takes the mean of the two. Mercator is conformal,
+        # so turning in pixels is turning on the ground: same range, azimuth
+        # moved off the ray. Those are real pixels with real values in them.
+        ax, ay = _source_site_xy(lev.shape, sw, ne, la, lo)
         for g in groups:
             deg = len(g) * 360.0 / N_AZ
             if deg > BEAM_MAX_WEDGE_DEG:
                 continue
-            left = [(g[0] - 1 - j) % N_AZ for j in range(BEAM_FLANK_BINS)]
-            right = [(g[-1] + 1 + j) % N_AZ for j in range(BEAM_FLANK_BINS)]
-            a = pol[left].mean(axis=0)
-            b = pol[right].mean(axis=0)
-            for j, s_ in enumerate(g):
-                t = (j + 1) / (len(g) + 1)
-                newpol[s_] = a * (1 - t) + b * t
+            # Grow the wedge outward while the bearing still looks unlike its
+            # surroundings. The tests condemn the core of a ray; its shoulders
+            # fail them by a little and, left in place, are exactly what is
+            # still visible as a line after the core has been rebuilt.
+            # Two bins at most either side, and only for a bearing that still
+            # half-fails the test. Letting this run to the wedge cap on a soft
+            # criterion grew almost every wedge to its limit and took 9.9% of
+            # all echo across 27 frames instead of 1.1%.
+            soft_r = REACH_LIFT_KM / 2.0
+            soft_h = RIDGE_MIN_LEN_KM / 2.0
+            lo_i, hi_i, cap = g[0], g[-1], BEAM_GROW_BINS
+            for _ in range(cap):
+                nxt = (lo_i - 1) % N_AZ
+                if (reach[nxt] - fr[nxt]) >= soft_r or hotlen[nxt] >= soft_h:
+                    lo_i = nxt
+                else:
+                    break
+            for _ in range(cap):
+                nxt = (hi_i + 1) % N_AZ
+                if (reach[nxt] - fr[nxt]) >= soft_r or hotlen[nxt] >= soft_h:
+                    hi_i = nxt
+                else:
+                    break
+            n_g = (hi_i - lo_i) % N_AZ + 1
+            g = [(lo_i + k) % N_AZ for k in range(n_g)]
+            g = [(g[0] - 1) % N_AZ] + g + [(g[-1] + 1) % N_AZ]   # shoulders too
+            deg = len(g) * 360.0 / N_AZ
             touched[g] = True
             notes.append(f"{name} bearing {g[0] * 360.0 / N_AZ:.1f}+{deg:.1f}deg, "
                          f"reach {reach[g].max():.0f} vs {fr[g].max():.0f} km")
+            offs.append(np.radians(deg + BEAM_FLANK_BINS * 360.0 / N_AZ))
+            gsel.append(np.zeros(N_AZ, bool)); gsel[-1][g] = True
         if not touched.any():
             continue
         if out is lev:
             out = lev.copy()
-        sel = ok & touched[az]
-        out[sel] = np.clip(np.rint(newpol[az[sel], rb[sel]]), 0, LEV_MAX).astype(np.uint8)
+        for off, gs in zip(offs, gsel):
+            sel = ok & gs[az]
+            if not sel.any():
+                continue
+            sy, sx = np.nonzero(sel)
+            dx, dy = sx - ax, sy - ay
+            vals = []
+            for sign in (+1.0, -1.0):
+                c, s_ = math.cos(sign * off), math.sin(sign * off)
+                rx = np.rint(ax + c * dx - s_ * dy).astype(int)
+                ry = np.rint(ay + s_ * dx + c * dy).astype(int)
+                inb = ((rx >= 0) & (rx < lev.shape[1])
+                       & (ry >= 0) & (ry < lev.shape[0]))
+                v = np.zeros(len(sx), np.float32)
+                v[inb] = lev[ry[inb], rx[inb]]
+                vals.append(v)
+            out[sy, sx] = np.clip(np.rint((vals[0] + vals[1]) / 2.0),
+                                  0, LEV_MAX).astype(np.uint8)
     if notes:
         log.info("source beams rebuilt (%s): %s", feed, "; ".join(notes))
-    return out
+    return out, len(notes)
 
 
 def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
-    """Everything that belongs in the radar's own frame, then classify."""
+    """Everything that belongs in the radar's own frame, then classify.
+
+    With one guard over the whole stage: if the beam work would take more than
+    BEAM_MAX_REMOVE_FRAC of the frame's echo, none of it is applied. Any
+    removal that large is a misdiagnosis by definition — a narrow band of rain
+    read as a fan of rays — and the frame is better left alone than blanked.
+    """
+    plain = _classify_intensity(arr, feed)
     if o is None:
-        return _classify_intensity(arr, feed)
-    arr = _remove_beams_source(arr, feed, o["sw"], o["ne"])
-    lev = _classify_intensity(arr, feed)
-    return _repair_beams_source(lev, feed, o["sw"], o["ne"])
+        return plain
+    cleaned = _remove_beams_source(arr, feed, o["sw"], o["ne"])
+    lev = plain if cleaned is arr else _classify_intensity(cleaned, feed)
+    lev, wedges = _repair_beams_source(lev, feed, o["sw"], o["ne"])
+    if lev is plain:
+        return plain
+    cap = (BEAM_MAX_REMOVE_FEW if wedges <= BEAM_FEW_WEDGES
+           else BEAM_MAX_REMOVE_MANY)
+    was = int((plain > 0).sum())
+    gone = int(((plain > 0) & (lev == 0)).sum())
+    if was and gone / was > cap:
+        log.warning("source beams (%s): %d wedges would take %.0f%% of the "
+                    "echo (%d of %d px) — leaving the frame alone",
+                    feed, wedges, 100 * gone / was, gone, was)
+        return plain
+    return lev
 
 
 def _load_and_classify(url: str, s, feed: str | None = None,
