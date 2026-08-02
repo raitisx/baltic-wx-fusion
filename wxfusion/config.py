@@ -34,6 +34,11 @@ OPENMETEO_MODELS = {
     "meps": "metno_seamless",
     "ifs": "ecmwf_ifs025",
     "gfs": "gfs_seamless",
+    # UKMO global 10 km. `ukmo_seamless` would splice the 2 km UK domain in
+    # front, but that domain does not reach the Baltic — measured at Riga the
+    # seamless series is identical to ukmo_global_deterministic_10km for all
+    # 168 h — so here it is simply a second global model, finer than GFS.
+    "ukmo": "ukmo_seamless",
 }
 
 # Canonical parameter names (used in wx.forecasts and wx.observations):

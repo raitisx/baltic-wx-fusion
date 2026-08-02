@@ -70,8 +70,10 @@ FOG_DEWPOINT_DEP = float(os.environ.get("FOG_DEWPOINT_DEP", "0.3"))
 # delay, so the newest run we *could* have received is deducible from the
 # fetch time. Still an estimate, but hours closer than pretending fetch time
 # is run time.
-CYCLE_HOURS = {"icon": 6, "meps": 3, "ifs": 6, "gfs": 6}
-PUBLISH_DELAY_H = {"icon": 4, "meps": 2, "ifs": 8, "gfs": 5}
+CYCLE_HOURS = {"icon": 6, "meps": 3, "ifs": 6, "gfs": 6, "ukmo": 6}
+# UKMO out of its own meta.json on 02.08: 06Z run initialised, available 13Z —
+# 7.2 h, the same shape as IFS, so it takes the same rounded-up 8.
+PUBLISH_DELAY_H = {"icon": 4, "meps": 2, "ifs": 8, "gfs": 5, "ukmo": 8}
 
 
 def model_cycle(model: str, fetched_at: dt.datetime) -> dt.datetime:

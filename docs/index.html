@@ -258,7 +258,7 @@
     </details>
 
     <div class="foot">
-      Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
+      Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS + UK Met Office UM via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
       &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise &middot; times Europe/Riga
       &middot; past days show the freshest run that covered each hour.
       Observations (dots): LVĢMC (data.gov.lv, CC0), Keskkonnaagentuur / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
@@ -274,7 +274,7 @@
 const SUPABASE_URL = "https://xxxywjxmdpildafzbnpj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_rzlQRVBrD-u8RhNRbX3yEw_5UtRy6j-";
 const TZ = "Europe/Riga";
-const MODELS = ["icon","meps","ifs","gfs"];
+const MODELS = ["icon","meps","ifs","gfs","ukmo"];
 const HOURS = 168;               // one week
 // EPSG:3059 target grid (matches all map imagery; 1 px = 1 km)
 const GX0=235000, GX1=805000, GY0=-40000, GY1=650000, GW=570, GH=690;
@@ -380,16 +380,21 @@ const MAPS_BASE = QS.get("maps") || "https://pub-29a41af0b6de4fe9a0d144b6a88fa14
 // to build the archive (stored forecast per lead) that skill weights and
 // "why we didn't fly" reports are made of. Live freshness is the browser's
 // job: for the current hour onwards we always prefer this direct fetch.
-const OM_MODELS = {icon:"icon_seamless", meps:"metno_seamless", ifs:"ecmwf_ifs025", gfs:"gfs_seamless"};
+// ukmo is the 10 km UKMO global: `ukmo_seamless` splices the 2 km UK domain in
+// front of it, but that domain stops well short of the Baltic, so at Riga the
+// two series are identical for all 168 h. It runs the full week, which matters
+// past 66 h where meps drops out.
+const OM_MODELS = {icon:"icon_seamless", meps:"metno_seamless", ifs:"ecmwf_ifs025",
+                   gfs:"gfs_seamless", ukmo:"ukmo_seamless"};
 const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m:"rh",
   precipitation:"prcp_1h", wind_speed_10m:"ws10m", wind_gusts_10m:"wg10m",
   wind_direction_10m:"wdir", pressure_msl:"pres_msl", cloud_cover:"cc_total",
   cloud_cover_low:"cc_low", cloud_cover_mid:"cc_mid", cloud_cover_high:"cc_high",
   visibility:"vis",
   // Wind aloft, for the altitude selector. Coverage is uneven and that is
-  // fine: icon and meps publish all three, gfs stops at 120 m, ifs has only
-  // the surface. Whatever arrives becomes a profile; what does not, the power
-  // law fills in.
+  // fine: icon and meps publish all three, gfs stops at 120 m, ifs and ukmo
+  // have only the surface. Whatever arrives becomes a profile; what does not,
+  // the power law fills in.
   wind_speed_80m:"ws80m", wind_speed_120m:"ws120m", wind_speed_180m:"ws180m",
   wind_direction_80m:"wdir80", wind_direction_120m:"wdir120",
   wind_direction_180m:"wdir180"};
@@ -513,7 +518,7 @@ function fuse(){
     // Wind direction cannot go through the loop above: it is an angle, and
     // 350° and 10° average to 180°, which points the arrow exactly the wrong
     // way. Sum unit vectors instead. The length of the mean vector falls out
-    // of the same sum and is worth keeping — 1 means all four models agree on
+    // of the same sum and is worth keeping — 1 means every model agrees on
     // the direction, near 0 means they cancel and the arrow is meaningless,
     // which is a thing you want to see before planning a line into it.
     for(const [p,key] of [["wdir","wdir"],["wdir80","wdir80"],
@@ -577,8 +582,8 @@ function fuse(){
       ? row.vis <= MIST_VIS_M
       : (row.fog_n > 0 || (row.cb != null && row.cb < 100));
     // Intensity, not just presence. Visibility is the quantity fog is measured
-    // by everywhere else, and Open-Meteo carries it for icon, meps and gfs
-    // (ifs returns nothing, so this is a three-model mean). Full bar at 300 m
+    // by everywhere else, and Open-Meteo carries it for icon, meps, gfs and
+    // ukmo (ifs returns nothing, so this is a four-model mean). Full bar at 300 m
     // or less, nothing at 1 km — the standard fog threshold.
     row.fog_i = row.vis!=null
       ? Math.max(0, Math.min(1, Math.log(MIST_VIS_M/Math.max(row.vis,1))
@@ -890,7 +895,8 @@ const wzLevel = () => limitOf("wz");
 // stable night can double the speed between 10 m and 120 m.
 //
 // Open-Meteo carries 10, 80, 120 and 180 m, unevenly: icon and meps publish
-// all four, gfs stops at 120 m, ifs has only the surface. So the profile is
+// all four, gfs stops at 120 m, ifs and ukmo have only the surface. So the
+// profile is
 // whatever levels the hour actually has, and the gaps are filled by the power
 // law u(z) = u(zr)·(z/zr)^a, the standard description of the surface layer.
 //
@@ -2032,7 +2038,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v60",
+    "page v61",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
