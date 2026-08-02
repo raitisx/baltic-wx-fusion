@@ -76,7 +76,11 @@ def _ilmateenistus() -> list[dict]:
     out = []
     for st in ET.fromstring(r.content).findall(".//station"):
         lat, lon = st.findtext("latitude"), st.findtext("longitude")
-        name = st.findtext("name")
+        # .strip(), because the observation ingest strips and the join is on
+        # this string. The feed ships at least one name with a trailing space
+        # ("Tuulemäe "), and without this that station's readings can never be
+        # matched to a position — silently, and only for that station.
+        name = (st.findtext("name") or "").strip()
         if not (lat and lon and name):
             continue
         out.append({"kind": "ee", "station_id": name, "name": name,

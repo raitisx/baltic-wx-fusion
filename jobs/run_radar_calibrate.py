@@ -23,12 +23,12 @@ def main() -> int:
     conn.close()
     summary = radar_calibrate.merge_and_store(pairs)
     fitted = radar_calibrate.fit(summary)
-    print("qualified colours:", fitted["coverage"])
-    for feed, rows in sorted(summary.items()):
-        print(f"\n{feed}: {len(rows)} colours")
-        for e in rows[-8:]:
-            print(f"   {e['rgb']:>14}  n={e['n']:<5} mean {e['mean']:.2f} mm/h  "
-                  f"wet {100*e['wet_frac']:.0f}%")
+    for feed, note in sorted(fitted["coverage"].items()):
+        print(f"{feed}: {note}")
+    for feed, rows in sorted(fitted["scales"].items()):
+        print(f"\n{feed}")
+        for e in rows:
+            print(f"   {e['hex']}  n={e['n']:<5} -> {e['mmh']:6.2f} mm/h")
     return 0
 
 

@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import pathlib
 import re
 import tempfile
 import time
@@ -467,40 +468,86 @@ def fetch_overlays_window(t_from: dt.datetime, t_to: dt.datetime) -> list[dict]:
     return out
 
 
-# Colour -> mm/h, learned from the rain gauges and refreshed by the
-# radar-calibrate job. Empty until that job has run, and partial for a long
-# time after: a colour only appears here once forty gauge-hours have sat under
-# it. Everything not in the table keeps the hue rules, so this can only add
-# knowledge — there is no amount of collected data that makes the map worse.
+# Colour -> mm/h, measured against the national rain gauges.
+#
+# This is the thing that makes three radars into one map. Each feed paints its
+# own ramp and nothing in the imagery says what any step is worth, so the
+# classifier used to guess from hue: blues weak, greens middling, yellow up,
+# red top. That guess had two failures, both measured on a week of archive:
+#
+#   * WITHIN a feed it threw the gradation away. Every greenish pixel became
+#     one class, so 68% of Lithuania's echo — six distinct steps of its ramp —
+#     came out as one slab of #00e300. Latvia was worse than flat: its six
+#     blues landed in classes 1 and 2 in an order set by where the hue
+#     thresholds happened to fall, not by the ramp.
+#   * ACROSS feeds it made the same rain a different colour either side of a
+#     border. Latvian light rain read class 1, Lithuanian light rain class 3.
+#
+# The fix is to stop reading hue and read the measurement. Each feed's palette
+# is small and exact (LV 15 steps, EE 10, LT 12), and its ORDER is not a guess
+# either: ranking the steps by which colours border which, over 141 archived
+# frames, produces one unambiguous chain per feed, and the gauge means rise
+# monotonically along it. The rate on each step is the mean hourly total
+# recorded by gauges under that colour, shrunk towards the feed's own fitted
+# ramp where the sample is thin and forced monotone along the chain.
+#
+# Bundled in wxfusion/assets so it works with no network and no credentials;
+# the radar-calibrate job writes a refreshed table to R2 and that one wins.
+# A colour we cannot place still falls through to the hue rules.
 FEED_SCALE = {"LV": "LV", "EE": "EE", "LT": "LT2", "LT2": "LT2"}
 CAL_KEY = "maps/radar_cal/scales.json"
+RATES_ASSET = pathlib.Path(__file__).with_name("assets") / "radar_rates.json"
 _CAL_CACHE: dict = {}
 
 
+def _load_rates(path_or_body) -> dict:
+    d = json.loads(path_or_body)
+    out = {}
+    for feed, rows in (d.get("scales") or {}).items():
+        if rows:
+            out[feed] = (np.array([r["rgb"] for r in rows], dtype=np.float32),
+                         np.array([r["mmh"] for r in rows], dtype=np.float32))
+    return out
+
+
 def fitted_scales(force: bool = False) -> dict:
-    """{feed: (palette Nx3, rate N)} from R2. Fail-soft by design: no table,
-    no credentials, no network — the caller carries on with the hue rules."""
+    """{feed: (palette Nx3, rate N)}. The bundled table first so there is
+    always one, then R2 on top of it if the calibrate job has run."""
     if _CAL_CACHE and not force:
         return _CAL_CACHE
+    _CAL_CACHE.clear()
+    try:
+        _CAL_CACHE.update(_load_rates(RATES_ASSET.read_text()))
+        log.info("bundled radar rates: %s",
+                 {k: len(v[1]) for k, v in _CAL_CACHE.items()})
+    except Exception:
+        log.warning("bundled radar rate table unreadable", exc_info=True)
     try:
         body = r2_client().get_object(Bucket=config.R2_BUCKET,
                                       Key=CAL_KEY)["Body"].read()
-        for feed, rows in json.loads(body)["scales"].items():
-            if rows:
-                _CAL_CACHE[feed] = (
-                    np.array([r["rgb"] for r in rows], dtype=np.float32),
-                    np.array([r["mmh"] for r in rows], dtype=np.float32))
-        log.info("calibration table: %s", {k: len(v[1]) for k, v in _CAL_CACHE.items()})
+        fresh = _load_rates(body)
+        if fresh:
+            _CAL_CACHE.update(fresh)
+            log.info("R2 radar rates override: %s",
+                     {k: len(v[1]) for k, v in fresh.items()})
     except Exception:
-        log.info("no calibration table yet; classifying by hue")
-        _CAL_CACHE["_none"] = True
+        log.info("no refreshed calibration table in R2; using the bundled one")
     return _CAL_CACHE
 
 
-# How close a pixel has to be to a calibrated colour to inherit its rate. The
-# feeds are quantised into 16-unit buckets when they are measured, so half a
-# bucket in each channel is the natural radius.
-CAL_MAX_DIST = 24.0
+# How close a pixel has to be to a table colour to inherit its rate. LV and EE
+# are PNG and land on their palette exactly; the Lithuanian composite is JPEG
+# and spreads twelve colours over seventeen thousand, so the radius has to be
+# wide enough to pull the ringing back onto the step it came from.
+#
+# It is deliberately larger than the tightest gaps on the ramps (32 between
+# Latvia's two maroons, 38 between Lithuania's two yellows) because assignment
+# is nearest-colour, not a ball test: a pixel landing between two steps goes to
+# the nearer one, and those two steps are always ADJACENT on the ramp, so the
+# worst case is one step of error. What the radius actually decides is whether
+# a colour belongs to this feed's scale at all — everything beyond it is
+# something we have never measured, and falls through to the hue rules.
+CAL_MAX_DIST = 40.0
 
 
 def _classify_calibrated(arr: np.ndarray, feed: str):
@@ -583,11 +630,13 @@ def _classify_intensity(arr: np.ndarray, feed: str | None = None) -> np.ndarray:
     # whole story: over three live frames, 100% of Latvia's class-6 pixels were
     # white, while its real maroon top step appeared twice in total.
     cls[white] = 4 if (feed or "").upper().startswith("LV") else 6
-    # Measured rates win wherever a colour has been calibrated; the hue rules
-    # stay underneath for the rest.
+    # Measured rates win wherever a colour is on the feed's own scale; the hue
+    # rules above stay underneath for whatever is not. `echo` has to be part of
+    # the condition — a feed's no-data grey is opaque and would otherwise be
+    # snapped to whichever palette step it happens to sit nearest.
     by_cal, unknown = _classify_calibrated(arr, feed)
     if by_cal is not None:
-        cls = np.where(unknown, cls, by_cal).astype(np.uint8)
+        cls = np.where(unknown | ~echo, cls, by_cal).astype(np.uint8)
         cls[~opaque] = 0
     return _fill_enclosed(cls, opaque)
 
