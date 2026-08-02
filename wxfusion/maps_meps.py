@@ -232,11 +232,109 @@ FOG_COVER = 0.60
 FOG_CEILING_M = 60.0
 
 
-def _gate_ceiling(cb, lcc, fog):
+# The meteogram's own fog test, now applied on the grid as well. MEPS
+# publishes visibility_in_air on the same 2.5 km mesh as everything else here,
+# which is the quantity fog is measured by everywhere outside a model — and it
+# is the quantity the meteogram already decides on. Running two different
+# definitions in two columns of the same page is what made the map and the
+# strip disagree all summer: the map asked "is 60% of this cell fogged", the
+# strip asked "how far can you see", and those are not the same question.
+#
+# A kilometre, not the five the fog strip starts fading in at. Five kilometres
+# of visibility is no obstacle to a sensor looking down from 500 m, and the map
+# is a go/no-go picture, not a trend.
+FOG_VIS_M = 1000.0
+
+
+# The other half of the merge: the map's fog verdict, published per selectable
+# cell so the meteogram can draw the same thing the map paints.
+#
+# The page picks a point either as a station or as a 25 km LKS-92 cell, and
+# those cells are a fixed lattice — 23 across, 28 down over the shared extent.
+# One byte per foggy cell-hour is all this needs, so it is written sparsely:
+# most cells are clear in most hours, and a dense array would be 43 KB an hour
+# of almost entirely zeros.
+FOG_CELL_KEY = "maps/meps/fog_cells.json"
+FOG_CELL_M = 25000          # must match CELL in the page
+FOG_CELL_X0, FOG_CELL_Y0 = 235000, -40000
+FOG_CELL_NX, FOG_CELL_NY = 23, 28
+
+
+def _cell_centres_latlon():
+    """Lat/lon of every cell centre, as (ny, nx) arrays."""
+    from . import proj3059 as P
+    lat_px, lon_px = P.pixel_latlon()
+    iy, ix = np.mgrid[0:FOG_CELL_NY, 0:FOG_CELL_NX]
+    # Cell (0,0) starts at the bottom-left of the extent; the pixel grid runs
+    # top-down, hence Y1 minus the northing.
+    xc = FOG_CELL_X0 + (ix + 0.5) * FOG_CELL_M
+    yc = FOG_CELL_Y0 + (iy + 0.5) * FOG_CELL_M
+    px = np.clip(((xc - P.X0) / 1000.0).astype(int), 0, P.W - 1)
+    py = np.clip(((P.Y1 - yc) / 1000.0).astype(int), 0, P.H - 1)
+    return lat_px[py, px], lon_px[py, px]
+
+
+def write_fog_cells(s3, run_tag, hours_out, fogm, vis, latw, lonw):
+    """Sample the map's fog onto the page's cell lattice and publish it.
+
+    Nearest MEPS point per cell rather than an average: fog is patchy at 25 km
+    and averaging a fogged valley with the hill beside it produces a number
+    that describes neither.
+    """
+    if fogm is None or not hours_out:
+        return
+    try:
+        clat, clon = _cell_centres_latlon()
+        flat_lat = latw.ravel(); flat_lon = lonw.ravel()
+        idx = np.empty(clat.size, dtype=np.int64)
+        # Chunked so the 644 x ~75,000 distance matrix never exists at once.
+        cl = clat.ravel(); co = clon.ravel()
+        for a in range(0, cl.size, 64):
+            b = min(a + 64, cl.size)
+            d = ((flat_lat[None, :] - cl[a:b, None]) * 111.0) ** 2 \
+                + ((flat_lon[None, :] - co[a:b, None])
+                   * 111.0 * np.cos(np.radians(cl[a:b, None]))) ** 2
+            idx[a:b] = np.argmin(d, axis=1)
+        out = {}
+        for h in range(min(len(hours_out), fogm.shape[0])):
+            fh = fogm[h].ravel()[idx]
+            hit = np.flatnonzero(fh)
+            if not hit.size:
+                continue
+            if vis is not None:
+                vh = np.asarray(vis[h]).ravel()[idx]
+                # Twenty-metre steps: the test is at 1000 m and the strip fades
+                # out by 5000, so this is finer than the question it answers.
+                b = np.clip(np.rint(vh[hit] / 20.0), 0, 255).astype(int)
+            else:
+                b = np.full(hit.size, 255, dtype=int)
+            out[str(h)] = {str(int(c)): int(v) for c, v in zip(hit, b)}
+        body = {"run": run_tag, "hours": hours_out,
+                "nx": FOG_CELL_NX, "ny": FOG_CELL_NY,
+                "x0": FOG_CELL_X0, "y0": FOG_CELL_Y0, "cell": FOG_CELL_M,
+                "vis_step_m": 20, "fog": out,
+                "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+        s3.put_object(Bucket=config.R2_BUCKET, Key=FOG_CELL_KEY,
+                      Body=json.dumps(body).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=300")
+        log.info("fog cells: %d of %d hours have fog somewhere",
+                 len(out), len(hours_out))
+    except Exception:      # never fail a map run over the side channel
+        log.exception("fog cells: not written")
+
+
+def _gate_ceiling(cb, lcc, fog, vis=None):
     """Cloud base -> aviation ceiling, plus a separate fog mask.
 
     Fog gets its own colour on the map because it is its own decision: a
     300 m base is a low ceiling you might still work under, fog is not.
+
+    Three ways in, and they catch different things. MET Norway's own
+    fog_area_fraction is strict and areal. A cloud base on the deck is fog
+    whether or not that field agrees. Visibility under a kilometre is fog by
+    the definition every other instrument uses, and it is what the meteogram
+    tests, so including it is what makes the two agree.
     """
     import numpy as np
     cb = np.where(cb > FILL, np.nan, cb)
@@ -245,6 +343,8 @@ def _gate_ceiling(cb, lcc, fog):
     if fog is not None:
         fogm |= fog >= FOG_COVER
     fogm |= np.isfinite(cb) & (cb < FOG_CEILING_M)
+    if vis is not None:
+        fogm |= np.asarray(vis) <= FOG_VIS_M
     cb = np.where(fogm, 0.0, cb)
     return cb, fogm
 
@@ -412,6 +512,11 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             except Exception:
                 fog = None
+            try:
+                vis = np.array(
+                    ds.variables["visibility_in_air"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            except Exception:
+                vis = None
             # Kelvin here; the drawing code works in Celsius.
             try:
                 tair = np.array(
@@ -424,7 +529,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
         except Exception:
             log.exception("meps backfill: %s failed to open/fetch", ds_name)
             continue
-        cb, fogm = _gate_ceiling(cb, lcc, fog)
+        cb, fogm = _gate_ceiling(cb, lcc, fog, vis)
         xw, yw = P.to_xy(lonw, latw)
         borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
                        for line in c["lines"]] for c in borders]
@@ -507,6 +612,10 @@ def render_run(max_hours: int = 66) -> None:
         fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     except Exception:
         fog = None
+    try:
+        vis = np.array(ds.variables["visibility_in_air"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+    except Exception:
+        vis = None
     # Kelvin in the file; everything downstream works in Celsius.
     try:
         tair = np.array(
@@ -514,7 +623,7 @@ def render_run(max_hours: int = 66) -> None:
     except Exception:
         tair = None
     cb = _to_agl(cb, _terrain(ds, y0, y1, x0, x1))
-    cb, fogm = _gate_ceiling(cb, lcc, fog)
+    cb, fogm = _gate_ceiling(cb, lcc, fog, vis)
 
     from . import proj3059 as P
 
@@ -601,6 +710,8 @@ def render_run(max_hours: int = 66) -> None:
         hours_out.append(valid.strftime("%Y-%m-%dT%H:00:00Z"))
         if i % 12 == 0:
             log.info("rendered %d/%d hours", i, n - 1)
+
+    write_fog_cells(s3, run_tag, hours_out, fogm, vis, latw, lonw)
 
     manifest = {
         "run": run_tag,

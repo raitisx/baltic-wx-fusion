@@ -137,6 +137,10 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
         tair = grab("air_temperature_2m")          # Kelvin
     except Exception:
         tair = None
+    try:
+        vis = grab("visibility_in_air")            # metres
+    except Exception:
+        vis = None
 
     s3 = r2_client()
     written = 0
@@ -158,6 +162,11 @@ def store_run(url: str, leads=(1, 2, 3)) -> int:
             # Kelvin x100 stays inside uint16 for any temperature the planet
             # produces, so no new dtype and no sign to get wrong.
             arrays["t2m"] = (np.clip(tair[i], 150, 340) * 100).astype(np.uint16)
+        if vis is not None:
+            # Metres in tens: the fog test is at 1000 m and the strip fades out
+            # by 5000, so ten-metre steps are finer than the question, and the
+            # cap at 655 km is far past anything MEPS reports.
+            arrays["vis"] = (np.clip(vis[i], 0, 655350) / 10).astype(np.uint16)
         blob = pack(arrays, {"run": run.strftime("%Y%m%dT%H"), "hour": hour.strftime("%Y%m%dT%H"),
             "rows": int(y1 - y0 + 1), "cols": int(x1 - x0 + 1)})
         s3.put_object(Bucket=config.R2_BUCKET, Key=_key(hour),
@@ -180,7 +189,10 @@ def read_hour(hour: dt.datetime) -> dict | None:
     cb = np.where(cb >= CLEAR, np.nan, cb)
     lcc = z["lcc"].astype(np.float32) / 100.0
     fog = z["fog"].astype(np.float32) / 100.0
-    gated, fogm = _gate_ceiling(cb, lcc, fog)
+    # Hours stored before visibility was kept simply do not get the visibility
+    # arm of the fog test; they keep the verdict they were written with.
+    vis = (z["vis"].astype(np.float32) * 10.0) if "vis" in z else None
+    gated, fogm = _gate_ceiling(cb, lcc, fog, vis)
     lat, lon = _window_latlon()
     # Grids written before the freezing palette have no temperature in them;
     # those hours draw green as they always did.

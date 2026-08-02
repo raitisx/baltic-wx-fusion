@@ -596,7 +596,61 @@ function fuse(){
     FUSED.push(row);
   }
   shiftPrecipToHourStart();
+  applyMapFog();         // before the dew: fog keeps the ground wet
   computeDew();          // needs the rain already stamped to the hour it falls
+}
+
+// ---------- the map's fog, in the meteogram ----------
+// The two columns spent the summer disagreeing because they were answering
+// different questions. The map asked MET Norway "is 60% of this 2.5 km cell
+// fogged"; the strip asked a five-model blend "how far can you see"; a given
+// hour can pass one and fail the other. Both halves are merged now — the map
+// gained the visibility test (see _gate_ceiling in maps_meps), and the map run
+// publishes its own verdict per selectable cell, which is what this reads.
+//
+// The lattice is the same 25 km LKS-92 grid the map picker uses, indexed
+// cy*nx+cx from the south-west corner. The payload is sparse: only the
+// cell-hours where the map actually paints fog are in it, which on a normal
+// run is well under a percent of them.
+function fogCellIndex(lat, lon){
+  const fc=MV.loaded?.fogCells;
+  if(!fc || typeof proj4==="undefined" || lat==null) return null;
+  const [x,y]=proj4("EPSG:4326","EPSG:3059",[lon,lat]);
+  const cx=Math.floor((x-fc.x0)/fc.cell), cy=Math.floor((y-fc.y0)/fc.cell);
+  if(cx<0||cy<0||cx>=fc.nx||cy>=fc.ny) return null;
+  return cy*fc.nx+cx;
+}
+function applyMapFog(){
+  const fc=MV.loaded?.fogCells;
+  for(const r of FUSED){ r.map_fog=null; r.map_vis=null; }
+  if(!fc || !fc.fog || !FUSED.length) return false;
+  const ll=(typeof activeLatLon==="function") ? activeLatLon() : null;
+  const ci=ll ? fogCellIndex(ll.lat, ll.lon) : null;
+  if(ci==null) return false;
+  const hourOf={};
+  (fc.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
+  const step=fc.vis_step_m||20;
+  let n=0;
+  for(const r of FUSED){
+    const h=hourOf[r.ts];
+    if(h==null) continue;                    // outside this run's reach
+    const cell=fc.fog[String(h)];
+    const v=cell ? cell[String(ci)] : undefined;
+    r.map_fog = v!=null;
+    if(v==null) continue;
+    r.map_vis = v*step;
+    n++;
+    // Union on presence, and the lower of the two visibilities for depth. The
+    // map's figure is one 2.5 km cell over this spot; the strip's is a
+    // weighted mean of five models at a point, and averaging a fog with the
+    // four models that missed it is how a real fog ends up drawn as haze.
+    r.vis_pt = r.vis;
+    r.vis = (r.vis==null) ? r.map_vis : Math.min(r.vis, r.map_vis);
+    r.fog = true;
+    r.fog_i = Math.max(0, Math.min(1, Math.log(MIST_VIS_M/Math.max(r.vis,1))
+                                      / Math.log(MIST_VIS_M/DENSE_VIS_M)));
+  }
+  return n>0;
 }
 
 // Every precipitation number we receive — Open-Meteo's, the stations', and the
@@ -1419,8 +1473,14 @@ function render(){
       ["--temp","temp",f(r.t2m)+" °C"+(r.t2m_sd!=null?` ±${f(r.t2m_sd)}`:"")],
       ["--dew","dew pt",f(r.td2m)+" °C"],
       ["--humid","rel.humid",f(r.rh,0)+" %"],
+      // Say which side of the merge the number came from — the map's 2.5 km
+      // cell or the five-model point blend — because they can differ by a lot
+      // and "which one is this" is the first thing you want to know.
       ...(r.fog?[["--fog", r.vis!=null && r.vis<=FOG_VIS_M ? "fog" : "mist", r.vis!=null
-          ? `visibility ${Math.round(r.vis)} m · ${r.fog_n}/${r.fog_of} saturated`
+          ? `visibility ${Math.round(r.vis)} m`
+            + (r.map_fog ? ` · MEPS map ${Math.round(r.map_vis)} m`
+                         + (r.vis_pt!=null?` · point ${Math.round(r.vis_pt)} m`:" · no point figure")
+                         : ` · ${r.fog_n}/${r.fog_of} saturated`)
           : `${r.fog_n}/${r.fog_of} models saturated`]]:[]),
       ["--precip","precip (next h)",f(r.prcp_1h)+" mm"+(r.prcp_prob!=null?` · ${Math.round(r.prcp_prob*100)}% agree`:"")],
       ["--wind",`wind @ ${wzLevel()} m`, f(r.wsz)+" m/s"
@@ -1886,6 +1946,7 @@ const MAP_MANIFESTS={
   radarArchive:"maps/radar/archive.json", mepsArchive:"maps/meps/archive.json",
   um4Archive:"maps/um4/archive.json",
   gfs:"maps/gfs/latest.json", gfsArchive:"maps/gfs/archive.json",
+  fogCells:"maps/meps/fog_cells.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -2196,7 +2257,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v63",
+    "page v64",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
