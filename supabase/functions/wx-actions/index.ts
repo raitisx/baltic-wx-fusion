@@ -121,14 +121,88 @@ async function status() {
   return json({ runs: out, workflows: known, checked: new Date().toISOString() });
 }
 
+// --- heartbeat ------------------------------------------------------------
+//
+// GitHub's scheduler does not keep the hour. Measured over the last 21 fires
+// of tick.yml the median interval was 117 minutes, not 60, with a worst gap of
+// 4 h 26 m — every run succeeded, they just did not happen. The radar goes
+// stale for hours at a time and the composite is the freshest thing on the
+// page, so that is what people notice.
+//
+// So something outside GitHub has to keep time. pg_cron in the project's own
+// Postgres calls this every fifteen minutes; it looks at how old the newest
+// radar frame actually is and starts a tick only if nothing else has.
+//
+// Deliberately NOT behind WX_OPS_KEY, and that is a considered choice rather
+// than a shortcut. The only thing this endpoint can do is start the job that
+// is supposed to be running hourly anyway, and only when the data is already
+// stale — so the worst an abuser achieves is a map that stays up to date. The
+// two guards below cap it at one dispatch per staleness window, which is
+// tighter than the schedule it replaces.
+const MAPS_BASE = "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
+// How old the newest frame may be before we consider the hour missed. The job
+// is hourly and takes about two minutes, so anything past 65 minutes means a
+// fire was dropped rather than delayed in flight.
+const STALE_MIN = 65;
+
+function frameAge(frames: string[]): number | null {
+  // Frame keys are "YYYYMMDDTHHMM", UTC.
+  const last = frames[frames.length - 1];
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/.exec(last ?? "");
+  if (!m) return null;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  return (Date.now() - t) / 60000;
+}
+
+async function heartbeat() {
+  let age: number | null = null;
+  try {
+    const r = await fetch(`${MAPS_BASE}/maps/radar/latest.json`, {
+      headers: { "User-Agent": "baltic-wx-fusion-ops" },
+    });
+    if (r.ok) age = frameAge((await r.json()).frames ?? []);
+  } catch (_) { /* treat as unknown, below */ }
+  // Unknown age is not an excuse to dispatch on every call — an R2 blip would
+  // turn into a run every fifteen minutes.
+  if (age === null) return json({ ok: true, dispatched: false, reason: "no manifest" });
+  if (age < STALE_MIN) {
+    return json({ ok: true, dispatched: false, age_min: Math.round(age) });
+  }
+  // Second guard: a tick already on its way. The frame only appears when the
+  // run finishes, so without this a burst of calls during those two minutes
+  // would each see stale data and start another one.
+  const runR = await gh(`/repos/${OWNER}/${REPO}/actions/runs?per_page=20`);
+  if (runR.ok) {
+    const runs = (await runR.json()).workflow_runs ?? [];
+    const busy = runs.some((r: Record<string, unknown>) =>
+      String(r.path ?? "").endsWith("tick.yml") &&
+      (r.status === "queued" || r.status === "in_progress")
+    );
+    if (busy) {
+      return json({ ok: true, dispatched: false, reason: "tick already running",
+                    age_min: Math.round(age) });
+    }
+  }
+  const d = await gh(`/repos/${OWNER}/${REPO}/actions/workflows/tick.yml/dispatches`,
+                     { method: "POST", body: JSON.stringify({ ref: REF, inputs: {} }) });
+  if (d.status !== 204) {
+    return json({ error: `dispatch: HTTP ${d.status} ${await d.text()}` }, 502);
+  }
+  return json({ ok: true, dispatched: true, age_min: Math.round(age) });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
   try {
     if (!Deno.env.get("GH_TOKEN")) {
       return json({ error: "GH_TOKEN is not set on this function" }, 503);
     }
+    const op0 = new URL(req.url).searchParams.get("op") ?? "";
+    // Accepted on either verb: pg_net posts, a browser or curl gets, and the
+    // thing does the same work either way.
+    if (op0 === "heartbeat") return await heartbeat();
     if (req.method === "GET") {
-      const op = new URL(req.url).searchParams.get("op") ?? "status";
+      const op = op0 || "status";
       if (op !== "status") return json({ error: "unknown op" }, 400);
       return await status();
     }
