@@ -1271,7 +1271,263 @@ def _sweep_cache(limit: int = 400) -> None:
         p.unlink(missing_ok=True)
 
 
-def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | None:
+def _source_polar(shape, sw, ne, lat0, lon0):
+    """Range in km and azimuth in degrees from one antenna, for every pixel of
+    a source overlay — in the overlay's own geometry, before anything has been
+    reprojected."""
+    h, w = shape[:2]
+
+    def merc_y(la):
+        r = np.radians(la)
+        return np.log(np.tan(r) + 1.0 / np.cos(r))
+
+    # the inverse of what resample_mercator_image applies
+    my = merc_y(ne[0]) + ((np.arange(h) + 0.5) / h) * (merc_y(sw[0]) - merc_y(ne[0]))
+    lat = np.degrees(np.arctan(np.sinh(my)))[:, None]
+    lon = (sw[1] + ((np.arange(w) + 0.5) / w) * (ne[1] - sw[1]))[None, :]
+    dx = (lon - lon0) * 111.32 * np.cos(np.radians((lat + lat0) / 2.0))
+    dy = (lat - lat0) * 110.57
+    return np.hypot(dx, dy), (np.degrees(np.arctan2(dx, dy)) + 360.0) % 360.0
+
+
+def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
+    """Beam removal on the radar's OWN image, before merging or classifying.
+
+    The passes further down work on the shared 3059 grid, which is the right
+    place for anything that has to compare feeds. A beam is not that. It
+    belongs to one antenna, it is radial in that antenna's own geometry, and by
+    the time a frame has been reprojected onto somebody else's grid, quantised
+    into levels and had its enclosed holes filled, a dashed one-degree ray has
+    been smeared into something the shape tests no longer recognise. Catching
+    it here means the classifier never sees it.
+
+    Same wedge test as _remove_beams_polar — starts near the antenna, runs a
+    long way, holds a fixed few degrees of azimuth — but applied to the
+    source's own echo mask, and only for that source's own antennas.
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return arr
+    a = arr[..., 3].astype(int)
+    rgb = arr[..., :3].astype(int)
+    echo = (a > 60) & ((rgb.max(2) - rgb.min(2)) > 25)
+    if echo.sum() < BEAM_MIN_PX:
+        return arr
+    out, removed = arr, []
+    for name, la, lo in RADAR_SITES:
+        if not name.startswith((feed or "")[:2]):
+            continue
+        rng, azdeg = _source_polar(arr.shape, sw, ne, la, lo)
+        keep = echo & (rng <= R_MAX_KM)
+        if keep.sum() < BEAM_MIN_PX:
+            continue
+        az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
+        rb = np.clip(rng.astype(int), 0, R_MAX_KM)
+        occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
+        occ[az[keep], rb[keep]] = True
+        closed = ndimage.binary_closing(occ, structure=np.ones((1, BEAM_GAP_KM), bool))
+        lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
+        if n == 0:
+            continue
+        kill = np.zeros((N_AZ, R_MAX_KM + 1), bool)
+        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+            a0, a1 = sl[0].start, sl[0].stop
+            r0, r1 = sl[1].start, sl[1].stop
+            r_span = r1 - r0
+            if r_span < BEAM_MIN_LEN_KM:
+                continue
+            a_span = (a1 - a0) * 360.0 / N_AZ
+            width_km = (r0 + r1) / 2.0 * np.radians(a_span)
+            if width_km <= 0:
+                continue
+            elong = r_span / width_km
+            wedge = (a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
+                     and r0 <= BEAM_START_KM)
+            needle = (a_span <= BEAM_NARROW_DEG and elong >= BEAM_NARROW_ELONG)
+            if not (wedge or needle):
+                continue
+            kill[sl] |= (lab[sl] == i)
+            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
+        if not kill.any():
+            continue
+        gone = keep & kill[az, rb]
+        if gone.sum() < BEAM_MIN_PX // 2:
+            continue
+        if out is arr:
+            out = arr.copy()
+        out[gone] = 0                     # cleared outright, alpha and all
+    if removed:
+        log.info("source beams (%s): %s", feed, "; ".join(removed))
+    return out
+
+
+# The second kind of beam, and the one that survived everything else: a narrow
+# ray of anomalously STRONG echo lying INSIDE ordinary rain. Every test up to
+# here asks where echo stops — thin residue after an opening, connected blobs
+# in polar space, corridors with empty flanks — and none of them can see this,
+# because it is not surrounded by clear air. Measured on the 02.08 01:00
+# Latvian frame: in polar coordinates round Riga the rain and the ray are one
+# connected blob 125 degrees wide and 202 km long, elongation 0.6. There is no
+# shape there to find.
+#
+# So it is found the way the eye finds it, as a ridge: a few tenths of a degree
+# of azimuth running two whole intensity classes above the azimuths either side
+# of it, and holding that for tens of kilometres of range. Rain has no reason
+# to organise itself along a bearing from an antenna.
+#
+# The flank baseline skips the bins immediately beside the ray, or the ray's
+# own shoulders set the level it is being compared against.
+RIDGE_AZ_HALF = 24          # bins either side used for the flank median
+RIDGE_AZ_GAP = 6            # ... skipping these, next to the ray itself
+RIDGE_MIN_LEN_KM = 60
+RIDGE_LIFT_CLASSES = 2.0    # how far above its flanks a ray has to sit
+RIDGE_MAX_DEG = 5.0         # and how narrow it has to stay
+RIDGE_MIN_KM = 30           # ignore the clutter-dominated close range
+
+
+def _remove_beam_ridges(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
+    """Flatten narrow radial ridges of over-strong echo, in the radar's own
+    frame. The pixel keeps whatever its neighbours in azimuth have — the rain
+    under a beam is still rain, it is just not that heavy."""
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return lev
+    if (lev > 0).sum() < BEAM_MIN_PX:
+        return lev
+    out, removed = lev, []
+    for name, la, lo in RADAR_SITES:
+        if not name.startswith((feed or "")[:2]):
+            continue
+        rng, azdeg = _source_polar(lev.shape, sw, ne, la, lo)
+        az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
+        rb = rng.astype(int)
+        ok = (rb >= RIDGE_MIN_KM) & (rb <= R_MAX_KM)
+        if ok.sum() < BEAM_MIN_PX:
+            continue
+        # polar picture of the intensity, strongest pixel per cell
+        pol = np.zeros((N_AZ, R_MAX_KM + 1), np.float32)
+        np.maximum.at(pol, (az[ok], rb[ok]), out[ok].astype(np.float32))
+        stack = [np.roll(pol, k, axis=0)
+                 for k in range(-RIDGE_AZ_HALF, RIDGE_AZ_HALF + 1)
+                 if abs(k) > RIDGE_AZ_GAP]
+        flank = np.median(np.stack(stack), axis=0)
+        # Only where the flanks actually carry echo. Against empty sky the
+        # lift is just the ray's own brightness and every rain area qualifies.
+        hot = ((pol - flank) >= RIDGE_LIFT_CLASSES * SUB) & (pol > 0) & (flank > 0)
+        if not hot.any():
+            continue
+        hot = ndimage.binary_closing(hot, structure=np.ones((1, BEAM_GAP_KM), bool))
+        lab, n = ndimage.label(hot, structure=np.ones((3, 3)))
+        kill = np.zeros_like(hot)
+        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+            a0, a1 = sl[0].start, sl[0].stop
+            r0, r1 = sl[1].start, sl[1].stop
+            deg = (a1 - a0) * 360.0 / N_AZ
+            if (r1 - r0) < RIDGE_MIN_LEN_KM or deg > RIDGE_MAX_DEG:
+                continue
+            kill[sl] |= (lab[sl] == i)
+            removed.append(f"{name} {r0}-{r1} km {deg:.1f} deg")
+        if not kill.any():
+            continue
+        sel = ok & kill[az, rb]
+        if not sel.any():
+            continue
+        if out is lev:
+            out = lev.copy()
+        out[sel] = np.clip(flank[az[sel], rb[sel]], 0, LEV_MAX).astype(np.uint8)
+    if removed:
+        log.info("source beam ridges (%s): %s", feed, "; ".join(removed))
+    return out
+
+
+# The other half of the same idea, for the ray that sticks OUT of the rain
+# rather than lying inside it. On the 02.08 01:00 Latvian frame the streak runs
+# from 200 to 310 km from Riga at bearings 105-115 deg, and the bearings either
+# side of it have no echo at all beyond 200 km. In polar space it is joined to
+# the rain area further in, so the connected-blob test sees one shape 125 deg
+# wide and finds nothing; but as REACH per bearing it is unmistakable — one
+# narrow group of azimuths reaching a hundred kilometres past its neighbours.
+REACH_LIFT_KM = 60          # how far past the flanks a bearing has to reach
+REACH_MAX_DEG = 5.0         # over how narrow a group of bearings
+REACH_MARGIN_KM = 10        # keep this much past the flanks before cutting
+# The flanks have to HAVE a reach to be overshot. Without this an isolated
+# shower on a bearing whose neighbours are empty reads as a hundred-kilometre
+# spike, and on one frame that alone accounted for most of the detections.
+REACH_MIN_FLANK_KM = 40
+REACH_MAX_KM = 300          # past this we are outside every product anyway
+
+
+def _remove_beam_reach(lev: np.ndarray, feed: str | None, sw, ne) -> np.ndarray:
+    """Cut back bearings whose echo reaches far past every bearing near them."""
+    if (lev > 0).sum() < BEAM_MIN_PX:
+        return lev
+    out, removed = lev, []
+    for name, la, lo in RADAR_SITES:
+        if not name.startswith((feed or "")[:2]):
+            continue
+        rng, azdeg = _source_polar(lev.shape, sw, ne, la, lo)
+        az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
+        rb = rng.astype(int)
+        lit = (lev > 0) & (rb <= R_MAX_KM)
+        if lit.sum() < BEAM_MIN_PX:
+            continue
+        reach = np.zeros(N_AZ, np.float32)
+        np.maximum.at(reach, az[lit], rng[lit].astype(np.float32))
+        stack = [np.roll(reach, k) for k in range(-RIDGE_AZ_HALF, RIDGE_AZ_HALF + 1)
+                 if abs(k) > RIDGE_AZ_GAP]
+        flank = np.median(np.stack(stack), axis=0)
+        spike = ((reach - flank) >= REACH_LIFT_KM) & (flank >= REACH_MIN_FLANK_KM) \
+                & (reach <= REACH_MAX_KM)
+        if not spike.any():
+            continue
+        # groups of consecutive spiking bearings, wrapping round
+        idx = np.flatnonzero(spike)
+        groups, cur = [], [idx[0]]
+        for k in idx[1:]:
+            if k == cur[-1] + 1:
+                cur.append(k)
+            else:
+                groups.append(cur); cur = [k]
+        groups.append(cur)
+        if len(groups) > 1 and groups[0][0] == 0 and groups[-1][-1] == N_AZ - 1:
+            groups[0] = groups[-1] + groups[0]; groups.pop()
+        cut = np.zeros(N_AZ, np.float32)
+        hit = np.zeros(N_AZ, bool)
+        for g in groups:
+            deg = len(g) * 360.0 / N_AZ
+            if deg > REACH_MAX_DEG:
+                continue
+            hit[g] = True
+            cut[g] = flank[g] + REACH_MARGIN_KM
+            removed.append(f"{name} {np.median(flank[g]):.0f}->{reach[g].max():.0f} km "
+                           f"{deg:.1f} deg")
+        if not hit.any():
+            continue
+        sel = lit & hit[az] & (rng > cut[az])
+        if not sel.any():
+            continue
+        if out is lev:
+            out = lev.copy()
+        out[sel] = 0
+    if removed:
+        log.info("source beam reach (%s): %s", feed, "; ".join(removed))
+    return out
+
+
+def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
+    """Everything that belongs in the radar's own frame, then classify."""
+    if o is None:
+        return _classify_intensity(arr, feed)
+    arr = _remove_beams_source(arr, feed, o["sw"], o["ne"])
+    lev = _classify_intensity(arr, feed)
+    lev = _remove_beam_reach(lev, feed, o["sw"], o["ne"])
+    return _remove_beam_ridges(lev, feed, o["sw"], o["ne"])
+
+
+def _load_and_classify(url: str, s, feed: str | None = None,
+                       o: dict | None = None) -> np.ndarray | None:
     body = overlay_bytes(url, s)
     if body is None:
         return None
@@ -1280,7 +1536,7 @@ def _load_and_classify(url: str, s, feed: str | None = None) -> np.ndarray | Non
         sc = LT_MAXSIZE / max(img.size)
         img = img.resize((int(img.width * sc), int(img.height * sc)),
                          Image.NEAREST)
-    return _classify_intensity(np.array(img), feed)
+    return _prepare_source(np.array(img), feed, o)
 
 
 # Coverage is geometry, not opacity. Estonia paints its whole disc — 76,061 px
@@ -1433,7 +1689,13 @@ RING_MIN_PX_SECTOR = 12      # echo pixels before a sector has an opinion
 # almost certainly the edge of a rain area that happened to curve, and there is
 # no evidence of a blockage ring there to justify keeping them.
 RING_SEARCH_KM = (180, 300)
-RING_FEATHER_KM = 25.0
+# How far inside the arc the taper runs. Estonia gets twice as much as the
+# rest: its coverage edge is where its wide, pale, light-rain fields end, and a
+# 25 km taper across one of those is still legible as a line. The Latvian and
+# Lithuanian rims usually cut a smaller, brighter echo where a shorter taper is
+# enough and a longer one would eat weather.
+RING_FEATHER_KM = {"EE": 50.0}
+RING_FEATHER_DEFAULT = 25.0
 RING_EDGE_DEG = 12.0         # soften the ends of the arc, or we swap one edge
 
 
@@ -1506,6 +1768,7 @@ def _rim_alpha(lev: np.ndarray, feed: str) -> np.ndarray | None:
     from . import proj3059 as P
     yy, xx = np.mgrid[0:P.H, 0:P.W]
     a = np.ones((P.H, P.W), np.float32)
+    feather = RING_FEATHER_KM.get((feed or "").upper(), RING_FEATHER_DEFAULT)
     for cx, cy, r, a0, a1 in rings:
         d = np.hypot(xx - cx, yy - cy)
         ang = (np.degrees(np.arctan2(yy - cy, xx - cx)) + 360) % 360
@@ -1514,7 +1777,7 @@ def _rim_alpha(lev: np.ndarray, feed: str) -> np.ndarray | None:
         off = np.minimum((ang - a0) % 360, (a1 - ang) % 360)
         inside = ((ang - a0) % 360) <= ((a1 - a0) % 360 or 360)
         w = np.where(inside, np.clip(off / RING_EDGE_DEG, 0.0, 1.0), 0.0)
-        fade = np.clip((r - d) / RING_FEATHER_KM, 0.0, 1.0)
+        fade = np.clip((r - d) / feather, 0.0, 1.0)
         a = np.minimum(a, 1.0 - w * (1.0 - fade))
     return a.astype(np.float32)
 
@@ -1592,7 +1855,7 @@ def radar_composite(frames_back: int = 3) -> None:
         newest = max(newest or use[0]["time"], use[0]["time"])
         cls_stack = []
         for f in use:
-            cls = _load_and_classify(f["url"], s, code)
+            cls = _load_and_classify(f["url"], s, code, f)
             if cls is not None:
                 cls_stack.append((cls, f))
         if not cls_stack:
@@ -1732,7 +1995,7 @@ def radar_backfill(hours_back: int = 168) -> None:
                            key=lambda o: abs((o["time"] - target).total_seconds()))
                 if abs((best["time"] - target).total_seconds()) > 40 * 60:
                     continue
-                cls = _load_and_classify(best["url"], s, code)
+                cls = _load_and_classify(best["url"], s, code, best)
                 if cls is None:
                     continue
                 # Warp first, clean second — see the note in radar_composite.

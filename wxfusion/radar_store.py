@@ -39,6 +39,7 @@ from PIL import Image
 from . import config
 from .http import session
 from .scrape_maps import (_classify_intensity, _despeckle, _despeckle_intensity,
+                          _prepare_source,
                           _fade_edges,
                           _freezing_mask, _recolor, _remove_beam_lines,
                           _remove_beams_polar, LT_MAXSIZE, draw_borders,
@@ -210,7 +211,9 @@ def _classify_stored(s3, frame: dict):
         sc = LT_MAXSIZE / max(img.size)
         img = img.resize((int(img.width * sc), int(img.height * sc)), Image.NEAREST)
     import numpy as np
-    return _classify_intensity(np.array(img), frame["code"])
+    # Beams come off in the radar's own frame, before this is reprojected.
+    return _prepare_source(np.array(img), frame["code"],
+                           {"sw": tuple(frame["sw"]), "ne": tuple(frame["ne"])})
 
 
 def render_stored(hours_back: int = 336, force: bool = False) -> int:
