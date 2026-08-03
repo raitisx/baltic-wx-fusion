@@ -12,14 +12,14 @@ with no call upstream. This does the same for radar.
 
   maps/radar_src/YYYY/MM/DD/<YYYYMMDDHHMM><CODE>.png   as served, 365 days
   maps/radar_src/YYYY/MM/DD/index.json                 what is there, with bounds
-  maps/radar/frames3059/<stamp>.png                    rendered, rolling 14 days
+  maps/radar/frames3059/<stamp>.png                    rendered, rolling 21 days
 
 Sizes, measured on live frames rather than guessed. As served the three
 sources are 248 kB an hour together, Lithuania 204 kB of that. Stored as
 palette PNG they are 98 kB — 0.88 GB for a year rather than 2.2 — and for
 Estonia and Latvia that is bit-for-bit the same image. See REENCODE for what
 is and is not lost. The rendered composites are 31.5 kB an hour, and only a
-fortnight of them is kept now.
+three weeks of them is kept now.
 
 Storing the sources rather than the classified grids is deliberate. The
 classifier is the part that keeps changing — the whole gauge calibration
@@ -69,7 +69,11 @@ SRC_KEEP_DAYS = 365
 # even though the top 256 colours cover 97.2% of pixels. On a radar image the
 # rare colours are the heavy cores, and those are the ones worth keeping.
 REENCODE = True
-FRAME_KEEP_DAYS = 14
+# Long enough to cover every week the page can navigate to. The arrows
+# reach two whole weeks back, and a Monday-aligned week two back starts
+# up to 20 days behind today, so a fortnight left the oldest reachable
+# week with a meteogram and no maps beside it.
+FRAME_KEEP_DAYS = 21
 # How far a sweep may be from the hour it is filed under. The sources run on
 # their own ~10 minute cadence and do not line up with the clock.
 NEAR_MIN = 40

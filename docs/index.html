@@ -310,6 +310,34 @@ function rigaMidnight(d){
   t.setUTCMinutes(0,0,0);
   return t;
 }
+// How far the week arrows reach: two whole weeks back and one whole week
+// forward, Monday to Sunday, counted from the week today falls in. Whole weeks
+// because a half-drawn week is worse than no week — the day verdicts along the
+// top are per day and a truncated Sunday reads as a bad Sunday.
+const WEEKS_BACK=2, WEEKS_FWD=1;
+function weekRange(){
+  const cur=weekMonday(new Date());
+  return [new Date(cur.getTime()-WEEKS_BACK*7*86400e3),
+          new Date(cur.getTime()+WEEKS_FWD*7*86400e3)];
+}
+function clampWeek(d){
+  const [lo,hi]=weekRange();
+  return d<lo ? lo : (d>hi ? hi : d);
+}
+function goWeek(delta){
+  const want=new Date(weekStart.getTime()+delta*7*86400e3);
+  const at=clampWeek(want);
+  if(at.getTime()===weekStart.getTime()) return;   // already at the end of the range
+  weekStart=at; load();
+}
+// Grey the arrow out at the ends rather than letting it click into a week that
+// will never have anything in it.
+function syncWeekButtons(){
+  const [lo,hi]=weekRange();
+  const p=document.getElementById("wPrev"), n=document.getElementById("wNext");
+  if(p) p.disabled = weekStart.getTime()<=lo.getTime();
+  if(n) n.disabled = weekStart.getTime()>=hi.getTime();
+}
 function weekMonday(d){
   let t = rigaMidnight(d);
   for(let i=0;i<7;i++){
@@ -402,13 +430,18 @@ const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m
   wind_speed_80m:"ws80m", wind_speed_120m:"ws120m", wind_speed_180m:"ws180m",
   wind_direction_80m:"wdir80", wind_direction_120m:"wdir120",
   wind_direction_180m:"wdir180"};
-async function fetchOpenMeteoDirect(lat, lon, pastDays){
+async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
   u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
   u.searchParams.set("hourly", Object.keys(OM_VARS).join(","));
   u.searchParams.set("models", Object.values(OM_MODELS).join(","));
-  u.searchParams.set("forecast_days", "7");
-  u.searchParams.set("past_days", String(Math.min(Math.max(pastDays ?? 2, 2), 7)));
+  // Both windows follow the week being looked at rather than sitting at a
+  // fixed seven. The old pair — forecast 7, past capped at 7 — could not cover
+  // the navigable range at either end: a Monday-aligned next week finishes up
+  // to 13 days out, and two full weeks back reaches 20 days behind. Open-Meteo
+  // allows 16 forward and 92 back, so neither ceiling was ours to keep.
+  u.searchParams.set("forecast_days", String(Math.min(Math.max(fcDays ?? 7, 1), 16)));
+  u.searchParams.set("past_days", String(Math.min(Math.max(pastDays ?? 2, 2), 35)));
   u.searchParams.set("windspeed_unit", "ms");
   u.searchParams.set("timezone", "UTC");
   const r = await fetch(u);
@@ -467,7 +500,7 @@ const FOG_DRAW_MIN=0.02;
 const fogShown = r => !!r.fog && (r.fog_i ?? 0.55) >= FOG_DRAW_MIN;
 // How long rendered frames are kept. Beyond this the hour has to be redrawn
 // from the stored grid, which is a background job rather than a page load.
-const FRAME_DAYS=14;
+const FRAME_DAYS=21;   // matches FRAME_KEEP_DAYS on both writers
 const CEILING_COVER=60;
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
   "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis",
@@ -484,11 +517,11 @@ function expandWide(rows){
 }
 // 10-minute memo so flipping weeks or points back and forth does not refetch.
 const OM_CACHE = {};
-async function openMeteoCached(lat, lon, pastDays){
-  const key = `${lat},${lon}|${pastDays??2}`, now = Date.now();
+async function openMeteoCached(lat, lon, pastDays, fcDays){
+  const key = `${lat},${lon}|${pastDays??2}|${fcDays??7}`, now = Date.now();
   const hit = OM_CACHE[key];
   if(hit && now - hit.at < 600e3) return hit.rows;
-  const rows = await fetchOpenMeteoDirect(lat, lon, pastDays);
+  const rows = await fetchOpenMeteoDirect(lat, lon, pastDays, fcDays);
   OM_CACHE[key] = {at:now, rows};
   return rows;
 }
@@ -2269,7 +2302,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v65",
+    "page v66",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2302,6 +2335,7 @@ async function load(){
   err.hidden=true;
   status.textContent="loading…";
   const wEnd=new Date(weekStart.getTime()+7*86400e3);
+  syncWeekButtons();
   document.getElementById("wLabel").textContent=
     `Week ${fmtDM.format(new Date(weekStart.getTime()+12*3600e3))} – ${fmtDM.format(new Date(wEnd.getTime()-12*3600e3))}`;
   try{
@@ -2321,7 +2355,12 @@ async function load(){
     // that hour — that is the evidence trail). The current hour onwards always
     // comes live from Open-Meteo, so the server ingest can stay on a cheap
     // twice-daily cadence without the page ever showing a stale run.
-    if(pt && pt.lat!=null && wEnd.getTime()>now){
+    // No longer gated on the week reaching into the future. A week entirely in
+    // the past used to get nothing but the database, so any week the archive
+    // did not cover came up blank — which is what "last week does not show"
+    // was. The rule that matters is unchanged: archived rows always win, and
+    // this only fills where there are none.
+    if(pt && pt.lat!=null){
       const cutoff = now - 3600e3;   // keep DB rows strictly in the past
       // A cell picked off the map has no stored history — it only joined the
       // pipeline when you clicked it — so the past half of the week would be
@@ -2330,8 +2369,9 @@ async function load(){
       // current-run hindcast, not what we knew at the time, so they fill the
       // picture without ever overwriting real archived rows.
       const pastDays = Math.ceil((now - weekStart.getTime())/86400e3);
+      const fcDays   = Math.ceil((wEnd.getTime() - now)/86400e3);
       try{
-        const all = await openMeteoCached(pt.lat, pt.lon, pastDays);
+        const all = await openMeteoCached(pt.lat, pt.lon, pastDays, fcDays);
         const inWeek = e=>{const t=Date.parse(e.t);
           return t>=weekStart.getTime() && t<wEnd.getTime();};
         const live = all.filter(e=>inWeek(e) && Date.parse(e.t)>=cutoff);
@@ -2368,7 +2408,8 @@ async function init(){
     }
     sel.value=String(qv);
   }
-  weekStart = Q.week ? weekMonday(new Date(Q.week+"T12:00:00Z")) : weekMonday(new Date());
+  weekStart = clampWeek(Q.week ? weekMonday(new Date(Q.week+"T12:00:00Z"))
+                                : weekMonday(new Date()));
   let startPid = Q.point || "EVRA";
   try{
     if(Q.lat!=null && Q.lon!=null)
@@ -2384,8 +2425,8 @@ async function init(){
                        : `▣ ${startPt.name ?? "map cell"} · 25 km`);
   for(const k of ["cb","wg","wz"]) limSel(k).addEventListener("change",()=>{render();});
   opsInit();
-  document.getElementById("wPrev").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()-7*86400e3);load();});
-  document.getElementById("wNext").addEventListener("click",()=>{weekStart=new Date(weekStart.getTime()+7*86400e3);load();});
+  document.getElementById("wPrev").addEventListener("click",()=>goWeek(-1));
+  document.getElementById("wNext").addEventListener("click",()=>goWeek(+1));
   document.getElementById("wToday").addEventListener("click",()=>{weekStart=weekMonday(new Date());load();});
   initStaticMap();
   const cur=POINTS.find(p=>p.point_id===currentPid);

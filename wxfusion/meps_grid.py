@@ -17,7 +17,7 @@ Measured on the 20.07 09Z run over our window (300x248): 141 KiB an hour,
 3.3 MiB a day, 1.2 GiB a year. Three tiers, each with its own lifetime:
 
   grid    maps/meps_grid/YYYY/MM/DD/<hour>.npz   365 days
-  frames  maps/meps/<run>/<hour>_alt<thr>.png     14 days
+  frames  maps/meps/<run>/<hour>_alt<thr>.png     21 days
   onreq   maps/meps_req/<hour>_alt<thr>.png        1 day
 
 Anything inside the year re-renders from the grid in about a second, with no
@@ -51,7 +51,11 @@ GRID_PREFIX = "maps/meps_grid"
 MAGIC = b"WXG1"
 CLEAR = 65535           # cb sentinel: no cloud base at all
 KEEP_DAYS = 365
-FRAME_KEEP_DAYS = 14
+# Long enough to cover every week the page can navigate to. The arrows
+# reach two whole weeks back, and a Monday-aligned week two back starts
+# up to 20 days behind today, so a fortnight left the oldest reachable
+# week with a meteogram and no maps beside it.
+FRAME_KEEP_DAYS = 21
 REQ_KEEP_HOURS = 24
 
 
