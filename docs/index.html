@@ -459,6 +459,12 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays){
 const MIST_VIS_M=5000, FOG_VIS_M=1000, DENSE_VIS_M=300;
 // Full-strength fog draws up to the 300 m line on the ceiling scale.
 const FOG_FULL_M=300;
+// Below this the bar would be a hairline and the hour is 5 km and better, so
+// the strip draws nothing. ONE definition of "the meteogram is showing fog",
+// used by the strip that draws it and by the lidar bar that has to agree with
+// it — two copies of this test would drift apart within a week.
+const FOG_DRAW_MIN=0.02;
+const fogShown = r => !!r.fog && (r.fog_i ?? 0.55) >= FOG_DRAW_MIN;
 // How long rendered frames are kept. Beyond this the hour has to be redrawn
 // from the stored grid, which is a background job rather than a page load.
 const FRAME_DAYS=14;
@@ -850,21 +856,28 @@ function lidarWhy(r, cbLim, wgLim){
   const pr=r.prcp_1h??0, pp=r.prcp_prob??0;
   if(pr>=LIDAR_RAIN_MMH || pp>=LIDAR_RAIN_PROB)
     why.push(`rain ${pr.toFixed(2)} mm/h · ${Math.round(pp*100)}% agree`);
-  // Fog proper, not the mist the fog strip starts drawing at. That strip fades
-  // in from 5 km because it is showing a trend; five kilometres of visibility
-  // is no obstacle to a sensor looking down from 500 m, and calling it one
-  // would black out most autumn mornings for nothing. Below a kilometre it is
-  // a different matter.
+  // Any fog the strip draws sends this bar red — fogShown() is literally the
+  // test the strip loops on, so a bar in the cloud panel and a red hour here
+  // cannot disagree. This deliberately includes mist: it was drawing the line
+  // at a kilometre on the argument that 5 km of visibility is no obstacle to a
+  // sensor looking down from 500 m, which is true of the beam and beside the
+  // point of the bar. The bar is the summary, and a summary that reads "go"
+  // under a drawn fog bar is worse than one that is cautious.
   //
-  // Where visibility is missing — the stored archive carries none — the fog
-  // strip falls back to counting saturated models, and that fallback cannot be
-  // reused here: air at RH 100 with no dewpoint depression is exactly what
-  // rain looks like to a screen thermometer, so every wet archived hour came
-  // back "fog". A cloud base under 100 m says the same thing without the
-  // ambiguity, so that is the fallback instead.
-  if(r.vis!=null ? r.vis<=FOG_VIS_M : (r.cb!=null && r.cb<100))
-    why.push(r.vis!=null ? `fog · visibility ${Math.round(r.vis)} m`
-                         : `fog · cloud on the deck at ${Math.round(r.cb)} m`);
+  // The depth still goes in the reason, so the tooltip separates a 400 m fog
+  // from 3 km of haze even though both are red.
+  if(fogShown(r)){
+    if(r.vis!=null)
+      why.push(`${r.vis<=FOG_VIS_M?"fog":"mist"} · visibility ${Math.round(r.vis)} m`
+               + (r.map_fog?" · MEPS map":""));
+    else if(r.cb!=null && r.cb<100)
+      why.push(`fog · cloud on the deck at ${Math.round(r.cb)} m`);
+    else
+      // No visibility anywhere — every archived hour. Saturation at 2 m is all
+      // that is left and it cannot be told apart from rain, so say so rather
+      // than asserting fog.
+      why.push(`fog · ${r.fog_n}/${r.fog_of} models saturated, no visibility figure`);
+  }
   if(r.cb!=null && r.cb<cbLim)
     why.push(`ceiling ${Math.round(r.cb)} m · limit ${cbLim}`);
   const wgz = r.wgz ?? r.wg10m;
@@ -1366,9 +1379,8 @@ function render(){
     // reads directly against the ceiling trace above it rather than as a
     // separate stripe with a private scale of its own.
     for(const r of FUSED){
-      if(!r.fog) continue;
+      if(!fogShown(r)) continue;          // same test the lidar bar goes red on
       const i=r.fog_i ?? 0.55;
-      if(i < 0.02) continue;              // 5 km and better: nothing worth drawing
       const yTop=y(FOG_FULL_M*i);
       svgEl("rect",{x:xPos(r.ts)+0.5,y:yTop,width:xPos(r.ts+3600e3)-xPos(r.ts)-1,
                     height:Math.max(2,y0-yTop),fill:css("--fog"),opacity:.85},svg);
@@ -2257,7 +2269,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v64",
+    "page v65",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
