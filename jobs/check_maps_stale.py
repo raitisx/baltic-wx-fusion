@@ -11,16 +11,22 @@ Reads the public manifest — no credentials needed. Writes `maps=1|0` to
 GITHUB_OUTPUT; on any error it stays quiet (0) rather than triggering an
 expensive render on a transient blip.
 
-TWO clocks, because one of them measures the wrong thing. How long ago we drew
-the pictures is not how fresh they are. Measured on 02.08 at 15:30Z: drawn 8.0
-hours ago, but drawn FROM the 03Z run, which was 12.5 hours old with MET
-Norway already serving 12Z. On a twice-daily cadence the draw clock only
-crosses its threshold just before the next pass would have run anyway, and any
-re-render in between resets it, so it can miss a stale run entirely.
+The test is "is there a newer run than the one on screen", not "is the run on
+screen old". Those sound alike and are not: a run's age keeps climbing however
+often you redraw it, so an age limit a producer's own cadence cannot meet
+fires forever. GFS publishes six-hourly about five hours late, so its newest
+available run is routinely 5-11 h old and a 7 h limit was never satisfiable —
+the tick re-rendered it every hour, redrew the same run, and found it stale
+again. Between that and the same thing on the UM side the hourly tick was
+averaging 14.4 minutes and 402 billed minutes a day over 04-06.08.
 
-What that costs is horizon, which is the part that gets noticed. MEPS reaches
-66 hours: the 03Z run ended at 04.08 20Z, so the maps had no 5 August in them
-at all, while the 12Z run would already have reached 05.08 06Z.
+Comparing run tags settles it: once the newest run has been drawn there is
+nothing to do until the next one publishes. MIN_REDRAW_H is the floor for the
+other case — a newer run exists but cannot be fetched, which is where UM has
+been since 02.08 — so that retries a few times a day instead of every hour.
+
+One output per product. They used to share a flag, so a UM run that would not
+advance dragged MEPS through a full re-render beside it every time.
 """
 import datetime as dt
 import json
@@ -30,14 +36,27 @@ import sys
 import urllib.request
 
 BASE = os.environ.get("MAPS_BASE", "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev")
-# How long since we last drew them. 8 h: longer than a normal 12 h models
-# cadence leaves it right after a pass, short enough to catch a skipped pass
-# within the same working day.
+
+# What each producer's newest PUBLISHED run is, deduced from the clock: cycle
+# length and how long after a cycle it appears. Same idea as model_cycle() in
+# the Open-Meteo ingest, and the same numbers where they overlap.
+#
+# This exists because the age test on its own could not be satisfied. GFS runs
+# every six hours and publishes about five hours late, so its newest available
+# run is routinely 5-11 h old — permanently past a 7 h limit. Re-rendering
+# redrew the same run, the age kept climbing, and the next tick re-rendered it
+# again. Measured over 04-06.08 that loop, together with the same thing on the
+# UM side, ran the hourly tick at 14.4 minutes a go for 402 billed minutes a
+# day. The question is not how old the run is, it is whether a newer one
+# exists — and once it has been drawn, the answer is no.
+CYCLE_H = {"meps": 3, "um4": 12, "gfs": 6}
+DELAY_H = {"meps": 2, "um4": 5, "gfs": 5}
+# ...and a floor under how often the same product may be redrawn, for the case
+# a newer run exists but cannot be fetched. UM has been stuck on 02.08 12Z for
+# four days; without this it would be retried every hour forever.
+MIN_REDRAW_H = float(os.environ.get("MAPS_MIN_REDRAW_H", "3"))
+# Backstop only, for a manifest whose run tag will not parse at all.
 MAX_AGE_H = float(os.environ.get("MAPS_MAX_AGE_H", "8"))
-# How old the model RUN behind them may be. Seven hours lets the twice-daily
-# models pass be topped up once in between, which roughly halves the age of
-# the run the maps are drawn from and buys back the same in horizon.
-MAX_RUN_AGE_H = float(os.environ.get("MAPS_MAX_RUN_AGE_H", "7"))
 
 
 def _read(path: str) -> dict | None:
@@ -78,8 +97,24 @@ def ages(path: str) -> tuple[float | None, float | None]:
     return drawn, run
 
 
+def newest_run(kind: str, now: dt.datetime) -> str:
+    """Tag of the newest run of `kind` that could already be published."""
+    cyc, dly = CYCLE_H.get(kind, 6), DELAY_H.get(kind, 5)
+    t = now - dt.timedelta(hours=dly)
+    return t.replace(minute=0, second=0, microsecond=0,
+                     hour=(t.hour // cyc) * cyc).strftime("%Y%m%d%H")
+
+
+def drawn_run(path: str) -> str | None:
+    d = _read(path)
+    if not d:
+        return None
+    m = re.search(r"(\d{8})T(\d{2})", str(d.get("run", "")))
+    return (m.group(1) + m.group(2)) if m else None
+
+
 def main() -> int:
-    stale = gfs_stale = False
+    flags = {"meps": False, "um4": False, "gfs": False}
     # GFS is watched separately because it is repaired separately: it needs
     # eccodes, which the tick does not carry, so it gets its own output and its
     # own install rather than riding along with the MEPS/UM catch-up.
@@ -97,23 +132,32 @@ def main() -> int:
         drawn, run = ages(path)
         print(f"{path}: drawn {'?' if drawn is None else f'{drawn:.1f} h'} ago, "
               f"run {'?' if run is None else f'{run:.1f} h'} old")
-        old = ((drawn is not None and drawn > MAX_AGE_H)
-               or (run is not None and run > MAX_RUN_AGE_H))
+        kind = path.split("/")[1]
+        have, want = drawn_run(path), newest_run(kind, dt.datetime.now(dt.timezone.utc))
+        behind = have is not None and have < want
+        # The backstop is now only for a manifest whose run tag will not parse.
+        # Everything else is decided by "is there a newer run than the one on
+        # screen", which a re-render actually settles.
+        old = behind or (have is None and drawn is not None and drawn > MAX_AGE_H)
+        if old and drawn is not None and drawn < MIN_REDRAW_H:
+            print(f"  behind ({have} < {want}) but redrawn {drawn:.1f} h ago "
+                  f"— waiting for {MIN_REDRAW_H:.0f} h")
+            old = False
+        elif behind:
+            print(f"  newer run available: {have} -> {want}")
         if not old:
             continue
-        if path.startswith("maps/gfs/"):
-            gfs_stale = True
-        else:
-            stale = True
-    print(f"-> meps/um {'stale, re-rendering' if stale else 'fresh'}, "
-          f"gfs {'stale, re-rendering' if gfs_stale else 'fresh'} "
-          f"(drawn > {MAX_AGE_H:.0f} h or run > {MAX_RUN_AGE_H:.0f} h)")
+        flags[kind] = True
+    print("-> " + ", ".join(
+        f"{k} {'re-rendering' if v else 'fresh'}" for k, v in flags.items()))
 
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a") as fh:
-            fh.write(f"maps={'1' if stale else '0'}\n")
-            fh.write(f"gfs={'1' if gfs_stale else '0'}\n")
+            for k, v in flags.items():
+                fh.write(f"{'um' if k == 'um4' else k}={'1' if v else '0'}\n")
+            # Kept so an unedited workflow still works: the old single flag.
+            fh.write(f"maps={'1' if (flags['meps'] or flags['um4']) else '0'}\n")
     return 0
 
 
