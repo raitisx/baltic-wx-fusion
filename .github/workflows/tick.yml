@@ -99,10 +99,10 @@ jobs:
 
       # Only when the models pass was missed. Costs nothing on a normal tick.
       - name: Map dependencies (stale only)
-        if: always() && steps.stale.outputs.maps == '1'
+        if: always() && (steps.stale.outputs.meps == '1' || steps.stale.outputs.um == '1')
         run: pip install netCDF4 matplotlib
       - name: MEPS maps (stale catch-up)
-        if: always() && steps.stale.outputs.maps == '1'
+        if: always() && steps.stale.outputs.meps == '1'
         continue-on-error: true
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -111,7 +111,7 @@ jobs:
           R2_BUCKET: baltic-wx
         run: python jobs/run_maps.py
       - name: UM maps (stale catch-up)
-        if: always() && steps.stale.outputs.maps == '1'
+        if: always() && steps.stale.outputs.um == '1'
         continue-on-error: true
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
