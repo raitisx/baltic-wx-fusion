@@ -84,19 +84,26 @@ def _table(rows: list[tuple]):
     """rows: (model, run_time, valid_time, point_id, parameter, value)"""
     import pyarrow as pa
 
+    # run_time is part of the key, not just the filename. It was left out
+    # originally because one file was one run — but the five models run on
+    # different cycles, so an ingest carries several run times at once and a
+    # file named after one of them said nothing about the rest. Without this
+    # column a reader cannot answer "what did GFS's 06Z run say", which is the
+    # question the archive exists for.
     cells: dict[tuple, dict] = {}
-    for model, _run, valid, point_id, parameter, value in rows:
+    for model, run, valid, point_id, parameter, value in rows:
         if parameter not in PARAMS:
             continue
-        cells.setdefault((model, point_id, valid), {})[parameter] = value
+        cells.setdefault((model, run, point_id, valid), {})[parameter] = value
     if not cells:
         return None
 
-    keys = sorted(cells, key=lambda k: (k[0], k[1], k[2]))
+    keys = sorted(cells, key=lambda k: (k[0], k[1], k[2], k[3]))
     data = {
         "model": pa.array([k[0] for k in keys], pa.string()),
-        "point_id": pa.array([k[1] for k in keys], pa.string()),
-        "valid_time": pa.array([k[2] for k in keys], pa.timestamp("s", tz="UTC")),
+        "run_time": pa.array([k[1] for k in keys], pa.timestamp("s", tz="UTC")),
+        "point_id": pa.array([k[2] for k in keys], pa.string()),
+        "valid_time": pa.array([k[3] for k in keys], pa.timestamp("s", tz="UTC")),
     }
     for p in PARAMS:
         data[p] = pa.array([cells[k].get(p) for k in keys], pa.float32())
