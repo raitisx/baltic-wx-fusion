@@ -83,6 +83,39 @@ function sameSecret(given: string, want: string): boolean {
   return diff === 0;
 }
 
+// Why a diagnostics op: when a run fails, the only thing status() can say is
+// "failure". Reading which STEP failed needs api.github.com, and the places
+// this project is debugged from cannot reach it — so a broken pipeline meant
+// asking a human to open a browser and read a red line out loud. This returns
+// the failed steps of a run, or of the newest failed run if none is named.
+// Read-only, same exposure as status(): step names and timestamps for one
+// weather repo.
+async function jobs(runId: string) {
+  let id = runId;
+  if (!id) {
+    const r = await gh(`/repos/${OWNER}/${REPO}/actions/runs`
+      + `?per_page=20&status=failure`);
+    if (!r.ok) return json({ error: `runs: HTTP ${r.status}` }, 502);
+    const rs = (await r.json()).workflow_runs ?? [];
+    if (!rs.length) return json({ ok: true, runs: [] });
+    id = String(rs[0].id);
+  }
+  const r = await gh(`/repos/${OWNER}/${REPO}/actions/runs/${id}/jobs`);
+  if (!r.ok) return json({ error: `jobs: HTTP ${r.status}` }, 502);
+  const out = [];
+  for (const j of (await r.json()).jobs ?? []) {
+    out.push({
+      job: j.name,
+      conclusion: j.conclusion,
+      steps: (j.steps ?? []).map((s: Record<string, unknown>) => ({
+        n: s.number, name: s.name, status: s.status,
+        conclusion: s.conclusion, started: s.started_at, ended: s.completed_at,
+      })),
+    });
+  }
+  return json({ ok: true, run: id, jobs: out });
+}
+
 async function status() {
   // One call for the run history rather than one per workflow: fifty runs is
   // comfortably more than four workflows' worth of "most recent".
@@ -201,6 +234,9 @@ Deno.serve(async (req: Request) => {
     // Accepted on either verb: pg_net posts, a browser or curl gets, and the
     // thing does the same work either way.
     if (op0 === "heartbeat") return await heartbeat();
+    if (op0 === "jobs") {
+      return await jobs(new URL(req.url).searchParams.get("run") ?? "");
+    }
     if (req.method === "GET") {
       const op = op0 || "status";
       if (op !== "status") return json({ error: "unknown op" }, 400);

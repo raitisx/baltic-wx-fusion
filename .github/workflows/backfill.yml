@@ -29,6 +29,7 @@ on:
           - radar-calibrate
           - radar-sources
           - radar-render
+          - pairs-archive
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -109,6 +110,7 @@ jobs:
             radar-calibrate)  pip install pillow numpy pyproj boto3 psycopg[binary] ;;
             radar-sources)    pip install pillow numpy pyproj boto3 ;;
             radar-render)     pip install pillow numpy pyproj boto3 scipy scikit-image ;;
+            pairs-archive)    pip install pyarrow boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -268,3 +270,13 @@ jobs:
           RADAR_RENDER_HOURS: ${{ inputs.hours }}
           RADAR_RENDER_FORCE: ${{ inputs.force && '1' || '' }}
         run: python jobs/run_radar_render.py
+
+      - name: Move stored comparisons to R2, then free the space
+        if: inputs.target == 'pairs-archive'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_pairs_archive.py

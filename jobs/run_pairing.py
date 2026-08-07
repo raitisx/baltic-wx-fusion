@@ -3,8 +3,14 @@
 The cycle the whole weighting rests on:
 
   1. pair every past forecast hour against what actually happened
-  2. snapshot today's ranking, so it survives the data it came from
-  3. drop comparisons older than the retention window
+  2. total each day into wx.pair_stats_daily, and send the rows to R2
+  3. snapshot today's ranking, so it survives the data it came from
+
+The comparisons no longer accumulate in Postgres. They were 574 MB of it —
+245,000 rows a day, read only by a view taking thirty-day averages, and
+averages add. The daily totals give the same figures from about 5,000 rows a
+month, and the rows themselves are better off in R2 where a day costs a few
+megabytes and can still be read with DuckDB.
 
 Forecasts themselves are pruned separately in run_forecasts, on a much shorter
 window — they are bulky and disposable once scored. The comparisons are small
@@ -55,11 +61,16 @@ def main() -> int:
         conn.rollback()
         log.exception("weight refresh failed")
 
+    # Vestigial: pairing stopped writing to that table, so on a migrated
+    # database this finds nothing. Left in place so a run against a database
+    # still holding old rows tidies them, and harmless once it is empty.
     try:
         with conn.cursor() as cur:
             cur.execute("select public.wx_prune_pairs(%s)", (PAIR_KEEP_DAYS,))
-            log.info("pruned %d comparisons older than %d days",
-                     cur.fetchone()[0], PAIR_KEEP_DAYS)
+            n = cur.fetchone()[0]
+            if n:
+                log.info("pruned %d leftover comparisons older than %d days",
+                         n, PAIR_KEEP_DAYS)
         conn.commit()
     except Exception:
         conn.rollback()
