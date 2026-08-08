@@ -79,6 +79,10 @@ on:
         description: "obs-archive: delete hot rows past the window once archived"
         type: boolean
         default: true
+      pairs_prune:
+        description: "pairs-archive: delete rows once the R2 file is confirmed (off while the project is read-only)"
+        type: boolean
+        default: false
 
 jobs:
   backfill:
@@ -279,4 +283,5 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
+          PAIRS_PRUNE: ${{ inputs.pairs_prune && '1' || '0' }}
         run: python jobs/run_pairs_archive.py
