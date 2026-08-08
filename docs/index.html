@@ -498,6 +498,10 @@ const FOG_FULL_M=300;
 // it — two copies of this test would drift apart within a week.
 const FOG_DRAW_MIN=0.02;
 const fogShown = r => !!r.fog && (r.fog_i ?? 0.55) >= FOG_DRAW_MIN;
+// What the bar shows when the MAP calls it fog but visibility is not the
+// reason — same value the strip already uses when no model published a
+// visibility figure at all.
+const MAP_FOG_MIN_I = 0.55;
 // How long rendered frames are kept. Beyond this the hour has to be redrawn
 // from the stored grid, which is a background job rather than a page load.
 const FRAME_DAYS=21;   // matches FRAME_KEEP_DAYS on both writers
@@ -679,15 +683,35 @@ function applyMapFog(){
     if(v==null) continue;
     r.map_vis = v*step;
     n++;
-    // Union on presence, and the lower of the two visibilities for depth. The
-    // map's figure is one 2.5 km cell over this spot; the strip's is a
-    // weighted mean of five models at a point, and averaging a fog with the
-    // four models that missed it is how a real fog ends up drawn as haze.
-    r.vis_pt = r.vis;
-    r.vis = (r.vis==null) ? r.map_vis : Math.min(r.vis, r.map_vis);
+    // 255 is the top of the byte, so it means "at or above 5100 m", not
+    // "exactly 5100". That distinction is the whole of this branch.
+    //
+    // The map flags fog three ways: MET Norway's fog fraction over 60%, a
+    // cloud base under 60 m, or visibility under a kilometre. Only the third
+    // says anything about how far you can see. When one of the other two
+    // fires, visibility is often perfectly good and comes back saturated —
+    // and the intensity formula, fed 5100 m, returns zero, so the strip drew
+    // nothing at all for an hour the map had painted orange. Worse, taking
+    // the lower of the two would have dragged a genuine 15 km down to 5100.
+    //
+    // So a saturated reading is treated as no reading: leave the point's own
+    // visibility alone and fall back to the same 0.55 the strip already uses
+    // for "saturated models, no visibility figure". It is fog by one of the
+    // other two tests, and it gets a bar that says so.
+    const capped = v >= 255;
+    if(!capped){
+      // Union on presence, and the lower of the two visibilities for depth.
+      // The map's figure is one 2.5 km cell over this spot; the strip's is a
+      // weighted mean of five models at a point, and averaging a fog with the
+      // four that missed it is how a real fog ends up drawn as haze.
+      r.vis_pt = r.vis;
+      r.vis = (r.vis==null) ? r.map_vis : Math.min(r.vis, r.map_vis);
+    }
     r.fog = true;
-    r.fog_i = Math.max(0, Math.min(1, Math.log(MIST_VIS_M/Math.max(r.vis,1))
-                                      / Math.log(MIST_VIS_M/DENSE_VIS_M)));
+    const byVis = r.vis==null ? 0
+      : Math.max(0, Math.min(1, Math.log(MIST_VIS_M/Math.max(r.vis,1))
+                                / Math.log(MIST_VIS_M/DENSE_VIS_M)));
+    r.fog_i = capped ? Math.max(byVis, MAP_FOG_MIN_I) : byVis;
   }
   return n>0;
 }
@@ -2302,7 +2326,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v66",
+    "page v67",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
