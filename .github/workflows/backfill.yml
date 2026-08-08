@@ -30,6 +30,7 @@ on:
           - radar-sources
           - radar-render
           - pairs-archive
+          - pair-stats
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -83,6 +84,14 @@ on:
         description: "pairs-archive: delete rows once the R2 file is confirmed (off while the project is read-only)"
         type: boolean
         default: false
+      stats_from:
+        description: "pair-stats: first day to re-total from the R2 archive (YYYY-MM-DD, empty = 30 days back)"
+        type: string
+        default: ""
+      stats_to:
+        description: "pair-stats: last day (YYYY-MM-DD, empty = yesterday)"
+        type: string
+        default: ""
 
 jobs:
   backfill:
@@ -115,6 +124,7 @@ jobs:
             radar-sources)    pip install pillow numpy pyproj boto3 ;;
             radar-render)     pip install pillow numpy pyproj boto3 scipy scikit-image ;;
             pairs-archive)    pip install pyarrow boto3 ;;
+            pair-stats)       pip install pyarrow boto3 psycopg[binary] ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -285,3 +295,17 @@ jobs:
           R2_BUCKET: baltic-wx
           PAIRS_PRUNE: ${{ inputs.pairs_prune && '1' || '0' }}
         run: python jobs/run_pairs_archive.py
+
+      # Read-only against R2, and it can only raise a daily total, never lower
+      # one — so it is safe to run whenever the totals look thin.
+      - name: Rebuild the daily totals from the archived comparisons
+        if: inputs.target == 'pair-stats'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          PAIR_STATS_FROM: ${{ inputs.stats_from }}
+          PAIR_STATS_TO: ${{ inputs.stats_to }}
+        run: python jobs/rebuild_pair_stats.py

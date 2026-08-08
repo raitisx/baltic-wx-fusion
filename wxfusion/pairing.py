@@ -26,6 +26,7 @@ import psycopg
 log = logging.getLogger(__name__)
 
 PAIRING_SQL = """
+create temporary table _pairs on commit drop as
 with obs as (
   -- Snap observations to the nearest hour (METARs land at :20/:50, EE at
   -- 10-min slots) and average duplicates within the hour. The hot table
@@ -68,7 +69,6 @@ fcst as (
     and f.valid_time <= now()
     and u.value is not null
 )
-create temporary table _pairs on commit drop as
 select
   f.model, f.run_time, f.valid_time,
   extract(epoch from (f.valid_time - f.run_time))::int / 3600 as lead_h,
@@ -80,7 +80,13 @@ select
     when f.valid_time - f.run_time < interval '72 hours' then '48-72'
     else '72+'
   end as lead_bin,
-  f.point_id, f.parameter, f.value, o.value, f.value - o.value
+  f.point_id, f.parameter,
+  -- Named, because the table is read back by name twice: ROLLUP_SQL wants
+  -- "error", and the archive select wants all three in PAIR_COLS order.
+  -- Unaliased, both sides come out called "value" and the CREATE fails.
+  f.value          as forecast_val,
+  o.value          as observed_val,
+  f.value - o.value as error
 from fcst f
 join obs o
   on o.point_id = f.point_id
@@ -104,6 +110,15 @@ group by 1, 2, 3, 4
 on conflict (day, model, parameter, lead_bin) do update
   set n = excluded.n, sum_err = excluded.sum_err,
       sum_abs = excluded.sum_abs, sum_sq = excluded.sum_sq
+  -- ...but never downwards. A day is rebuilt from the forecasts still in the
+  -- hot table, and those are pruned on their own schedule, so re-totalling a
+  -- day whose long leads have since been dropped would quietly replace a full
+  -- day with a partial one. Seen for real: 05.08 re-totalled from 698k
+  -- comparisons to 327k because the runs that forecast it three days ahead
+  -- were no longer there. Keeping the larger count is right in both
+  -- directions — a pass that can see more evidence wins, one that can see
+  -- less leaves the record alone.
+  where excluded.n >= wx.pair_stats_daily.n
 """
 
 
