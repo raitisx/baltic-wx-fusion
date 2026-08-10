@@ -37,10 +37,14 @@ from . import archive, config
 
 log = logging.getLogger(__name__)
 
-# How much history each point's file carries. The page pages two weeks back and
-# one forward; sixteen days leaves a margin over the fourteen it actually asks
-# for. Overridable so phase 4 can be tuned without a code change.
-KEEP_DAYS = 16
+# How much history each point's file carries. The page pages two weeks back
+# (WEEKS_BACK=2), and the oldest visible Monday can be up to twenty days ago, so
+# twenty-one days covers the furthest hour it can show. The forecast side of the
+# hot table only holds a fortnight, so a fresh file starts with fourteen days of
+# forecasts — but the merge accumulates, so within a week the file carries the
+# full twenty-one, which is more archived forecast history than wx_point_window
+# could ever return. Overridable so phase 4 can tune it without a code change.
+KEEP_DAYS = 21
 
 FCST_PREFIX = "meteogram/fcst/"
 OBS_PREFIX = "meteogram/obs/"

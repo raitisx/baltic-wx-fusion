@@ -98,7 +98,7 @@ on:
         type: string
         default: ""
       mg_keep:
-        description: "meteogram: rolling days published per point (empty = 16)"
+        description: "meteogram: rolling days published per point (empty = 21)"
         type: string
         default: ""
 
@@ -332,5 +332,5 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           METEOGRAM_POINTS: ${{ inputs.mg_points }}
-          METEOGRAM_KEEP_DAYS: ${{ inputs.mg_keep || '16' }}
+          METEOGRAM_KEEP_DAYS: ${{ inputs.mg_keep || '21' }}
         run: python jobs/publish_meteogram.py

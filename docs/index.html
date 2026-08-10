@@ -530,6 +530,31 @@ async function openMeteoCached(lat, lon, pastDays, fcDays){
   return rows;
 }
 
+// The historical half of the meteogram — the archived forecast that covered
+// each past hour, and the observations beside it — comes from R2 now, not from
+// wx_point_window / wx_point_obs_window. One gzipped file per point on the same
+// public bucket as the maps, carrying the whole rolling window; load() slices
+// it to the visible week. This is what lets wx.forecasts_h and
+// wx.observations_h stop holding a fortnight and ninety days purely so these
+// two calls have something to read. Same shape the RPCs returned, so the fusion
+// downstream is untouched, and the RPCs stay as the fallback — a cell picked off
+// the map has no file, but it never had a stored row either.
+const MG_CACHE = {};
+async function meteogramHist(pid){
+  const now = Date.now(), hit = MG_CACHE[pid];
+  if(hit && now - hit.at < 600e3) return hit.data;   // whole window; weeks slice it
+  const grab = async kind => {
+    // gzip on the stored object; fetch() inflates it from Content-Encoding.
+    const r = await fetch(`${MAPS_BASE}/meteogram/${kind}/${encodeURIComponent(pid)}.json`);
+    if(!r.ok) throw new Error(`meteogram ${kind}: HTTP ${r.status}`);
+    return r.json();
+  };
+  const [fc, obs] = await Promise.all([grab("fcst"), grab("obs")]);
+  const data = {fc, obs};
+  MG_CACHE[pid] = {at: now, data};
+  return data;
+}
+
 function fuse(){
   const t0 = weekStart.getTime();
   const wIdx = {};
@@ -2326,7 +2351,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v67",
+    "page v68",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2365,15 +2390,29 @@ async function load(){
   try{
     const pid=currentPid || "EVRA";
     const pt=POINTS.find(p=>p.point_id===pid);
-    const [fc,obs,w]=await Promise.all([
-      rpc("wx_point_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
-      rpc("wx_point_obs_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
+    const inWeek = t => { const x=Date.parse(t); return x>=weekStart.getTime() && x<wEnd.getTime(); };
+    // History from R2, sliced to the visible week. If the file is missing — a
+    // cell picked off the map, or a point not yet published — fall back to the
+    // RPCs, which is what the page read before and returns nothing for exactly
+    // those cells anyway. Runs alongside the weights fetch.
+    const histP = meteogramHist(pid).then(h=>({
+        fc: h.fc.filter(e=>inWeek(e.t)), obs: h.obs.filter(e=>inWeek(e.t)),
+      })).catch(async e=>{
+        console.warn("meteogram R2 → RPC fallback:", e.message);
+        const [fc,obs]=await Promise.all([
+          rpc("wx_point_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
+          rpc("wx_point_obs_window",{p_point_id:pid, p_start:weekStart.toISOString(), p_end:wEnd.toISOString()}),
+        ]);
+        return {fc, obs};
+      });
+    const [hist, w]=await Promise.all([
+      histP,
       // Skill weights sharpen the blend; they are not what makes it work.
       // If they fail to load the fusion falls back to equal weights and says
       // so in the footer, which is a far better outcome than a blank page.
       rpc("wx_weights",{}).catch(e=>{ console.warn("weights:",e); return []; }),
     ]);
-    FC=expandWide(fc); OBS=obs; WEIGHTS=w; liveSource="db";
+    FC=expandWide(hist.fc); OBS=hist.obs; WEIGHTS=w; liveSource="db";
     const now=Date.now();
     // Past hours come from the database (the archived run that actually covered
     // that hour — that is the evidence trail). The current hour onwards always
