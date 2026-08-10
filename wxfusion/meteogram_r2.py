@@ -30,6 +30,8 @@ import datetime as dt
 import gzip
 import json
 import logging
+import os
+from urllib.parse import quote
 
 from botocore.exceptions import ClientError
 
@@ -179,6 +181,97 @@ def _merge(existing: list[dict] | None, fresh: list[dict],
         if row["t"] >= cutoff:
             merged[key(row)] = row
     return sorted(merged.values(), key=lambda r: (r["t"], key(r)))
+
+
+def verify(conn, pubkey: str, sample: int = 8, week_days: int = 7) -> dict:
+    """Fetch published files over the PUBLIC url — the browser's exact path,
+    gzip and all — and confirm they equal what the page's RPCs return for the
+    same window. This is the gate the retention cut waits on: if the page were
+    silently falling back to the RPCs, cutting the tables would blank it, so
+    prove the R2 path actually serves the same rows first.
+
+    Compares R2 (public, no credentials) against wx_point_window /
+    wx_point_obs_window (via PostgREST, the publishable key) — both exactly the
+    two sources the browser reaches. Raises AssertionError on any mismatch.
+    """
+    import datetime as _dt
+
+    import requests
+
+    supa = os.environ.get("SUPABASE_URL", "https://xxxywjxmdpildafzbnpj.supabase.co")
+    base = config.MAPS_BASE
+    now = _dt.datetime.now(_dt.timezone.utc)
+    # Compare only the settled window: the newest couple of hours are where a
+    # just-arrived observation, a fresh run, or a public-cache lag (max-age 600)
+    # legitimately make the file and the live RPC differ for a moment. Below
+    # this cutoff both are stable, so any difference there is a real fault.
+    lo = (now - _dt.timedelta(days=week_days)).strftime("%Y-%m-%dT%H:%M:%S")
+    hi = (now - _dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    p_start = lo + "+00:00"
+    p_end = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    # Station points with recent obs, so both files are non-trivial.
+    with conn.cursor() as cur:
+        cur.execute("""
+            select pt.point_id
+            from wx.points pt
+            join wx.observations_h o on o.source=pt.kind and o.station_id=pt.station_id
+            where o.time > now() - interval '2 days'
+            group by pt.point_id
+            order by pt.point_id
+            limit %s""", (sample,))
+        points = [r[0] for r in cur]
+    if not points:
+        raise AssertionError("verify: no sample points with recent observations")
+
+    hdr = {"apikey": pubkey, "Authorization": f"Bearer {pubkey}",
+           "Content-Type": "application/json"}
+
+    def _rpc(fn, pid):
+        r = requests.post(f"{supa}/rest/v1/rpc/{fn}",
+                          json={"p_point_id": pid, "p_start": p_start, "p_end": p_end},
+                          headers=hdr, timeout=60)
+        r.raise_for_status()
+        return r.json()
+
+    def _r2(kind, pid):
+        # requests inflates Content-Encoding: gzip transparently, same as fetch().
+        r = requests.get(f"{base}/meteogram/{kind}/{quote(pid, safe='')}.json", timeout=60)
+        r.raise_for_status()
+        return r.json()
+
+    def _in(t):
+        return lo <= t[:19] < hi
+
+    checked = 0
+    for pid in points:
+        # forecasts: freshest run per (model, valid_time), settled window only
+        rpc_f = {(x["m"], x["t"][:19]): x for x in _rpc("wx_point_window", pid) if _in(x["t"])}
+        r2_f = {(x["m"], x["t"][:19]): x for x in _r2("fcst", pid) if _in(x["t"])}
+        assert set(rpc_f) == set(r2_f), (
+            f"{pid} fcst keys differ: rpc={len(rpc_f)} r2={len(r2_f)} "
+            f"only_rpc={list(set(rpc_f)-set(r2_f))[:3]} "
+            f"only_r2={list(set(r2_f)-set(rpc_f))[:3]}")
+        for k, rv in rpc_f.items():
+            for p in _FCST_VALS:
+                a, b = rv.get(p), r2_f[k].get(p)
+                if a is None or b is None:
+                    assert (a is None) == (b is None) or abs((a or 0) - (b or 0)) < 0.01, \
+                        f"{pid} {k} {p}: rpc={a} r2={b}"
+                else:
+                    assert abs(float(a) - float(b)) < 0.01, f"{pid} {k} {p}: rpc={a} r2={b}"
+        # observations: {t,p,v}, settled window only
+        rpc_o = {(x["t"][:19], x["p"]): float(x["v"]) for x in _rpc("wx_point_obs_window", pid) if _in(x["t"])}
+        r2_o = {(x["t"][:19], x["p"]): float(x["v"]) for x in _r2("obs", pid) if _in(x["t"])}
+        assert set(rpc_o) == set(r2_o), (
+            f"{pid} obs keys differ: rpc={len(rpc_o)} r2={len(r2_o)}")
+        for k, v in rpc_o.items():
+            assert abs(v - r2_o[k]) < 0.01, f"{pid} obs {k}: rpc={v} r2={r2_o[k]}"
+        checked += 1
+        log.info("verify: %s ok (fcst %d, obs %d rows)", pid, len(rpc_f), len(rpc_o))
+
+    log.info("verify: %d points match the RPCs over the public R2 path", checked)
+    return {"checked": checked, "points": points}
 
 
 def publish(conn, keep_days: int = KEEP_DAYS, hot_days: int | None = None,

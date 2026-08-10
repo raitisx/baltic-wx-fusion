@@ -333,4 +333,7 @@ jobs:
           R2_BUCKET: baltic-wx
           METEOGRAM_POINTS: ${{ inputs.mg_points }}
           METEOGRAM_KEEP_DAYS: ${{ inputs.mg_keep || '21' }}
+          # Verify the public read path after a full run (auto-skips when
+          # mg_points limits it to a sample that was not fully written).
+          METEOGRAM_VERIFY: "1"
         run: python jobs/publish_meteogram.py

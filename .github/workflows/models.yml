@@ -84,6 +84,10 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
+          # Self-check: fetch the published files over the public URL and
+          # confirm they equal the page's RPCs. continue-on-error keeps a
+          # verify blip from failing the pass, but it shows up red in the step.
+          METEOGRAM_VERIFY: "1"
         run: python jobs/publish_meteogram.py
 
       # Must precede pairing: it is what precipitation gets scored against.
