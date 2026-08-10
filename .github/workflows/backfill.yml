@@ -32,6 +32,7 @@ on:
           - pairs-archive
           - pair-stats
           - meteogram
+          - pairing-r2
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -135,6 +136,7 @@ jobs:
             pairs-archive)    pip install pyarrow boto3 ;;
             pair-stats)       pip install pyarrow boto3 psycopg[binary] ;;
             meteogram)        : ;;   # psycopg + boto3 already in requirements.txt
+            pairing-r2)       pip install duckdb pyarrow pytz ;;  # + psycopg/boto3 from requirements
           esac
 
       - name: Radar map backfill -> R2
@@ -337,3 +339,15 @@ jobs:
           # mg_points limits it to a sample that was not fully written).
           METEOGRAM_VERIFY: "1"
         run: python jobs/publish_meteogram.py
+
+      # Read-only: does pairing from the R2 archive reproduce the daily totals
+      # that pairing from forecasts_h gives? The gate the truncate waits on.
+      - name: Pairing R2 parity check
+        if: inputs.target == 'pairing-r2'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/pair_r2_parity.py
