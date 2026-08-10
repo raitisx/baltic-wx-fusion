@@ -24,18 +24,26 @@ import os
 import sys
 
 sys.path.insert(0, ".")
-from wxfusion import db, pairing  # noqa: E402
+from wxfusion import db, pairing, pairing_r2  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("run_pairing")
 
 PAIR_DAYS = int(os.environ.get("PAIR_WINDOW_DAYS", "3"))
 PAIR_KEEP_DAYS = int(os.environ.get("PAIR_KEEP_DAYS", "60"))
+# Where the forecast side comes from. 'r2' reads the archive via DuckDB and does
+# not touch forecasts_h, which is what lets the hot table be dropped; 'hot' is
+# the original path against forecasts_h, kept as a lever. Proven identical to
+# 1e-11 by the pairing-r2 parity check before the switch.
+PAIR_SOURCE = os.environ.get("PAIR_FCST_SOURCE", "r2")
 
 
 def main() -> int:
     conn = db.connect()
-    pairing.run(conn, days=PAIR_DAYS)
+    if PAIR_SOURCE == "hot":
+        pairing.run(conn, days=PAIR_DAYS)
+    else:
+        pairing_r2.run(conn, days=PAIR_DAYS)
 
     # Snapshot before pruning: the ranking has to outlive its evidence.
     try:

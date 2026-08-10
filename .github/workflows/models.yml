@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install netCDF4 matplotlib numpy pillow pyproj scipy scikit-image pyarrow eccodes
+        run: pip install -r requirements.txt && pip install netCDF4 matplotlib numpy pillow pyproj scipy scikit-image pyarrow eccodes duckdb pytz
 
       - name: Cadence gate
         id: gate
@@ -54,7 +54,13 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          FORECAST_KEEP_DAYS: "14"
+          # Down from 14. Nothing needs the fortnight any more: the page reads
+          # its history from R2, and pairing reads its runs from the R2 archive
+          # (PAIR_FCST_SOURCE=r2). All the hot table still feeds is the meteogram
+          # publish, which only refreshes the last few days over the rolling R2
+          # files. Three days is that, plus slack for a throttled pass. The full
+          # run history stays in R2; this is only the hot mirror.
+          FORECAST_KEEP_DAYS: "3"
         run: python jobs/run_forecasts.py
       - name: Observation archive + prune
         if: always()
@@ -65,7 +71,11 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          OBS_KEEP_DAYS: "90"
+          # Down from 90. The page reads observation history from R2 now, and
+          # pairing (3-day window) and radar calibration (30 h) need only days.
+          # Sixteen covers the oldest week the page can page to; the archive
+          # keeps the full ninety-plus in R2.
+          OBS_KEEP_DAYS: "16"
           OBS_ARCHIVE_DAYS: "3"
           OBS_ARCHIVE_MAX: "40"
         run: python jobs/run_obs_archive.py

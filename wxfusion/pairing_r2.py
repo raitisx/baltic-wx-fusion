@@ -134,6 +134,115 @@ group by 1, 2, 3, 4
 """
 
 
+def _duck_pairs_sql(files: list[str], now: dt.datetime, days: int) -> str:
+    """Individual comparison rows, in archive.PAIR_COLS order — the same rows the
+    live pairing builds in its _pairs temp table, for the rollup and the archive."""
+    cols = ", ".join(_FCST_PARAMS)
+    files_lit = "[" + ", ".join(repr(f) for f in files) + "]"
+    now_lit = "TIMESTAMPTZ '" + now.strftime("%Y-%m-%d %H:%M:%S") + "+00'"
+    return f"""
+with fcst as (
+  select model, run_time, valid_time, point_id, parameter, value
+  from (
+    unpivot (
+      select model, run_time, valid_time, point_id, {cols}
+      from read_parquet({files_lit})
+    ) on {cols} into name parameter value value
+  )
+  where value is not null
+    and valid_time >= {now_lit} - interval {days} day
+    and valid_time <= {now_lit}
+)
+select f.model, f.run_time, f.valid_time,
+  cast(date_diff('hour', f.run_time, f.valid_time) as integer) as lead_h,
+  case
+    when f.valid_time - f.run_time < interval 6 hour  then '0-6'
+    when f.valid_time - f.run_time < interval 12 hour then '6-12'
+    when f.valid_time - f.run_time < interval 24 hour then '12-24'
+    when f.valid_time - f.run_time < interval 48 hour then '24-48'
+    when f.valid_time - f.run_time < interval 72 hour then '48-72'
+    else '72+'
+  end as lead_bin,
+  f.point_id, f.parameter,
+  f.value as forecast_val, o.value as observed_val, f.value - o.value as error
+from fcst f
+join obs o on o.point_id = f.point_id and o.parameter = f.parameter
+          and o.time = f.valid_time
+where f.valid_time >= f.run_time
+"""
+
+
+UPSERT = """
+insert into wx.pair_stats_daily
+  (day, model, parameter, lead_bin, n, sum_err, sum_abs, sum_sq)
+values (%s, %s, %s, %s, %s, %s, %s, %s)
+on conflict (day, model, parameter, lead_bin) do update
+  set n = excluded.n, sum_err = excluded.sum_err,
+      sum_abs = excluded.sum_abs, sum_sq = excluded.sum_sq
+  where excluded.n >= wx.pair_stats_daily.n
+"""
+
+
+def run(conn, days: int = 3, load_extra: int = 8, archive_to_r2: bool = True) -> int:
+    """Nightly pairing, forecasts from R2 instead of forecasts_h.
+
+    Builds the comparison rows from the archive via DuckDB, totals them into
+    wx.pair_stats_daily (never downwards, exactly as the live pairing does), and
+    archives the rows per day to R2. Reads observations from Postgres; loads
+    nothing bulky into it, so it runs with the hot forecast table already gone.
+    """
+    import collections
+
+    from . import archive
+
+    with conn.cursor() as cur:
+        cur.execute("select now()")
+        now = cur.fetchone()[0]
+    lo = now - dt.timedelta(days=days + load_extra)  # cover the longest lead
+    obs = _obs_arrow(conn, now, days)
+
+    by_day = collections.defaultdict(list)
+    with tempfile.TemporaryDirectory() as tmp:
+        files = _download_runs(lo, now, tmp)
+        if not files:
+            log.warning("pairing_r2: no archived runs in window")
+            return 0
+        import duckdb
+        con = duckdb.connect()
+        con.register("obs", obs)
+        rows = con.execute(_duck_pairs_sql(files, now, days)).fetchall()
+        con.close()
+
+    # Roll up in Python (a couple of million rows, a handful of MB) and group
+    # for the per-day archive at the same time.
+    totals: dict = collections.defaultdict(lambda: [0, 0.0, 0.0, 0.0])
+    for r in rows:
+        # r in PAIR_COLS order: ..., valid_time(2), lead_bin(4), model(0),
+        # parameter(6), error(9)
+        day = r[2].date()
+        err = r[9]
+        t = totals[(day, r[0], r[6], r[4])]
+        t[0] += 1; t[1] += err; t[2] += abs(err); t[3] += err * err
+        by_day[day].append(r)
+
+    written = 0
+    with conn.cursor() as cur:
+        for (day, model, param, lead_bin), (n, se, sa, sq) in totals.items():
+            cur.execute(UPSERT, (day, model, param, lead_bin, n, se, sa, sq))
+            written += cur.rowcount
+    conn.commit()
+    log.info("pairing_r2: %d rows -> %d daily totals over %d days (%d written/raised)",
+             len(rows), len(totals), days, written)
+
+    if archive_to_r2:
+        for day, day_rows in sorted(by_day.items()):
+            try:
+                archive.write_pairs_day(day_rows, day)
+            except Exception:
+                log.exception("pairs archive failed for %s", day)
+    return len(rows)
+
+
 def _month_prefixes(lo: dt.datetime, hi: dt.datetime) -> list[str]:
     out, y, m = [], lo.year, lo.month
     while (y, m) <= (hi.year, hi.month):
