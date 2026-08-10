@@ -255,6 +255,13 @@ FOG_VIS_M = 1000.0
 # most cells are clear in most hours, and a dense array would be 43 KB an hour
 # of almost entirely zeros.
 FOG_CELL_KEY = "maps/meps/fog_cells.json"
+# The live file above only carries the current run's forecast hours, so scrubbing
+# into the past left the fog strip blank while the archived map frames still
+# showed the fog. This second file keeps the freshest run's fog for each past
+# valid-hour, exactly as maps/meps/archive.json keeps the frames — same 21-day
+# window, keyed by the same YYYYMMDDTHH valid-hour tag.
+FOG_CELL_ARCHIVE_KEY = "maps/meps/fog_cells_archive.json"
+FOG_ARCHIVE_KEEP_DAYS = 21   # matches FRAME_KEEP_DAYS on the map frames
 FOG_CELL_M = 25000          # must match CELL in the page
 FOG_CELL_X0, FOG_CELL_Y0 = 235000, -40000
 FOG_CELL_NX, FOG_CELL_NY = 23, 28
@@ -320,8 +327,46 @@ def write_fog_cells(s3, run_tag, hours_out, fogm, vis, latw, lonw):
                       CacheControl="public, max-age=300")
         log.info("fog cells: %d of %d hours have fog somewhere",
                  len(out), len(hours_out))
+        try:
+            _archive_fog_cells(s3, run_tag, hours_out, out)
+        except Exception:
+            log.exception("fog archive: not updated")   # live file already written
     except Exception:      # never fail a map run over the side channel
         log.exception("fog cells: not written")
+
+
+def _archive_fog_cells(s3, run_tag, hours_out, out):
+    """Fold this run's foggy hours into the rolling per-hour archive.
+
+    Keyed by valid-hour (YYYYMMDDTHH), a later run overwriting an hour it still
+    forecasts, so each hour ends up carrying its freshest run — the same rule
+    maps/meps/archive.json applies to the frames. Hours past the frame window
+    are dropped. Written whole each pass; it stays small because fog is sparse.
+    """
+    try:
+        prev = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key=FOG_CELL_ARCHIVE_KEY)["Body"].read())
+        hours = prev.get("hours", {}) if isinstance(prev, dict) else {}
+    except Exception:
+        hours = {}   # first run, or unreadable — start clean
+
+    for h_str, cells in out.items():
+        vtag = hours_out[int(h_str)][:13].replace("-", "")   # 2026-08-08T07 -> 20260808T07
+        hours[vtag] = {"run": run_tag, "fog": cells}
+
+    cutoff = (dt.datetime.now(dt.timezone.utc)
+              - dt.timedelta(days=FOG_ARCHIVE_KEEP_DAYS)).strftime("%Y%m%dT%H")
+    hours = {k: v for k, v in hours.items() if k >= cutoff}
+
+    body = {"nx": FOG_CELL_NX, "ny": FOG_CELL_NY,
+            "x0": FOG_CELL_X0, "y0": FOG_CELL_Y0, "cell": FOG_CELL_M,
+            "vis_step_m": 20, "hours": hours,
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    s3.put_object(Bucket=config.R2_BUCKET, Key=FOG_CELL_ARCHIVE_KEY,
+                  Body=json.dumps(body).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("fog archive: %d valid-hours retained", len(hours))
 
 
 def _gate_ceiling(cb, lcc, fog, vis=None):

@@ -681,7 +681,7 @@ function fuse(){
 // cell-hours where the map actually paints fog are in it, which on a normal
 // run is well under a percent of them.
 function fogCellIndex(lat, lon){
-  const fc=MV.loaded?.fogCells;
+  const fc=MV.loaded?.fogCells || MV.loaded?.fogCellsArchive;   // same lattice
   if(!fc || typeof proj4==="undefined" || lat==null) return null;
   const [x,y]=proj4("EPSG:4326","EPSG:3059",[lon,lat]);
   const cx=Math.floor((x-fc.x0)/fc.cell), cy=Math.floor((y-fc.y0)/fc.cell);
@@ -689,21 +689,32 @@ function fogCellIndex(lat, lon){
   return cy*fc.nx+cx;
 }
 function applyMapFog(){
-  const fc=MV.loaded?.fogCells;
+  const fc=MV.loaded?.fogCells;          // latest run: current + future hours
+  const fca=MV.loaded?.fogCellsArchive;  // freshest run per past valid-hour
   for(const r of FUSED){ r.map_fog=null; r.map_vis=null; }
-  if(!fc || !fc.fog || !FUSED.length) return false;
+  const haveLive=!!(fc && fc.fog), haveArch=!!(fca && fca.hours);
+  if((!haveLive && !haveArch) || !FUSED.length) return false;
   const ll=(typeof activeLatLon==="function") ? activeLatLon() : null;
   const ci=ll ? fogCellIndex(ll.lat, ll.lon) : null;
   if(ci==null) return false;
+  const cis=String(ci);
   const hourOf={};
-  (fc.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
-  const step=fc.vis_step_m||20;
+  if(haveLive) (fc.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
+  const step=(fc?.vis_step_m || fca?.vis_step_m || 20);
   let n=0;
   for(const r of FUSED){
-    const h=hourOf[r.ts];
-    if(h==null) continue;                    // outside this run's reach
-    const cell=fc.fog[String(h)];
-    const v=cell ? cell[String(ci)] : undefined;
+    // The live file for the hours it still reaches; the per-hour archive for a
+    // date the axis has moved past — the map frames are kept the same way, so
+    // the strip stops disagreeing with the picture over past fog.
+    let v;
+    const h=haveLive ? hourOf[r.ts] : undefined;
+    if(h!=null){
+      const cell=fc.fog[String(h)];
+      v = cell ? cell[cis] : undefined;
+    }else if(haveArch){
+      const rec=fca.hours[vtagOf(new Date(r.ts).toISOString())];
+      v = rec && rec.fog ? rec.fog[cis] : undefined;
+    }
     r.map_fog = v!=null;
     if(v==null) continue;
     r.map_vis = v*step;
@@ -2041,6 +2052,7 @@ const MAP_MANIFESTS={
   um4Archive:"maps/um4/archive.json",
   gfs:"maps/gfs/latest.json", gfsArchive:"maps/gfs/archive.json",
   fogCells:"maps/meps/fog_cells.json",
+  fogCellsArchive:"maps/meps/fog_cells_archive.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -2351,7 +2363,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v68",
+    "page v69",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
