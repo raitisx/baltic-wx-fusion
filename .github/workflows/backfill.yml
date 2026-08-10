@@ -31,6 +31,7 @@ on:
           - radar-render
           - pairs-archive
           - pair-stats
+          - meteogram
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -92,6 +93,14 @@ on:
         description: "pair-stats: last day (YYYY-MM-DD, empty = yesterday)"
         type: string
         default: ""
+      mg_points:
+        description: "meteogram: limit to these point_ids (comma list, empty = all)"
+        type: string
+        default: ""
+      mg_keep:
+        description: "meteogram: rolling days published per point (empty = 16)"
+        type: string
+        default: ""
 
 jobs:
   backfill:
@@ -125,6 +134,7 @@ jobs:
             radar-render)     pip install pillow numpy pyproj boto3 scipy scikit-image ;;
             pairs-archive)    pip install pyarrow boto3 ;;
             pair-stats)       pip install pyarrow boto3 psycopg[binary] ;;
+            meteogram)        : ;;   # psycopg + boto3 already in requirements.txt
           esac
 
       - name: Radar map backfill -> R2
@@ -309,3 +319,18 @@ jobs:
           PAIR_STATS_FROM: ${{ inputs.stats_from }}
           PAIR_STATS_TO: ${{ inputs.stats_to }}
         run: python jobs/rebuild_pair_stats.py
+
+      # Republish per-point meteogram history to R2. Read-only against Postgres
+      # and additive against the bucket, so safe to run whenever; a subset of
+      # points can be named to check the files against the RPCs first.
+      - name: Publish per-point meteogram history to R2
+        if: inputs.target == 'meteogram'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          METEOGRAM_POINTS: ${{ inputs.mg_points }}
+          METEOGRAM_KEEP_DAYS: ${{ inputs.mg_keep || '16' }}
+        run: python jobs/publish_meteogram.py

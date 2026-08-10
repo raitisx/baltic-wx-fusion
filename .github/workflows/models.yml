@@ -70,6 +70,22 @@ jobs:
           OBS_ARCHIVE_MAX: "40"
         run: python jobs/run_obs_archive.py
 
+      # Side channel, like the fog cells: republish each point's forecast and
+      # observation history to R2 in the exact shape the page's wx_point_window
+      # / wx_point_obs_window RPCs return. Once the page reads these the hot
+      # tables no longer have to hold a fortnight for it, which is most of what
+      # fills the database. Reads only — additive until phases 2 and 4.
+      - name: Publish per-point meteogram history to R2
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/publish_meteogram.py
+
       # Must precede pairing: it is what precipitation gets scored against.
       - name: Radar verification (radar -> point observations)
         if: always()
