@@ -110,10 +110,17 @@ jobs:
         run: python jobs/run_radar_verify.py
 
       # Compare, rank, snapshot the ranking, then drop old comparisons.
+      # Pairing reads its forecasts from the R2 archive now (PAIR_FCST_SOURCE=r2),
+      # so it needs the bucket credentials — the old forecasts_h path only used
+      # R2 for the optional pairs archive and could run without them.
       - name: Verification (once a day, morning pass)
         if: always() && steps.gate.outputs.pairing == '1'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
           PAIR_KEEP_DAYS: "60"
         run: python jobs/run_pairing.py
 
