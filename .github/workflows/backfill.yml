@@ -256,6 +256,10 @@ jobs:
         if: inputs.target == 'radar-verify'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
           RADAR_VERIFY_HOURS: ${{ inputs.hours }}
         run: python jobs/run_radar_verify.py
 

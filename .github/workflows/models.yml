@@ -106,6 +106,15 @@ jobs:
         continue-on-error: true
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # Reads the radar composite frames from R2 to sample them at each
+          # point; without these it raised "R2 credentials not configured" and,
+          # being continue-on-error, failed silently every pass — so source
+          # 'radar' never got a single row and precip was only ever scored at
+          # the gauge sites.
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
           RADAR_VERIFY_HOURS: "48"
         run: python jobs/run_radar_verify.py
 
