@@ -747,7 +747,15 @@ function applyMapFog(){
     const byVis = r.vis==null ? 0
       : Math.max(0, Math.min(1, Math.log(MIST_VIS_M/Math.max(r.vis,1))
                                 / Math.log(MIST_VIS_M/DENSE_VIS_M)));
-    r.fog_i = capped ? Math.max(byVis, MAP_FOG_MIN_I) : byVis;
+    // The map flagged this cell as fog — by fog-fraction, a ceiling on the
+    // deck, OR visibility — so it draws a fog bar whichever test fired. It used
+    // to fall back to byVis alone when the byte was a real reading, but a cell
+    // fogged by fraction or ceiling while visibility stays decent computes a
+    // byVis below FOG_DRAW_MIN and vanished: the map painted orange and the
+    // strip drew nothing under it. Floor every map-fog hour at the same
+    // "fog present" value the saturated case already used; denser fog (lower
+    // visibility, higher byVis) still draws darker.
+    r.fog_i = Math.max(byVis, MAP_FOG_MIN_I);
   }
   return n>0;
 }
@@ -2363,7 +2371,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v69",
+    "page v70",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
