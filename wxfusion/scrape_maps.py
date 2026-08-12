@@ -2024,9 +2024,31 @@ def radar_composite(frames_back: int = 3) -> None:
     _archive_note(s3, vtag)
 
 
+# A frame within this many minutes of the top of the hour is as good as the
+# ~5-min source can give; anything farther keeps getting revisited until a
+# closer sweep appears.
+RADAR_HOUR_TOL_MIN = 12
+
+
+def _frame_offset_s(tag: str | None, hour: dt.datetime) -> float:
+    """Seconds between a stored frame's sweep time and the top of its hour;
+    inf when there is no frame or the tag will not parse."""
+    if not tag:
+        return float("inf")
+    try:
+        t = dt.datetime.strptime(tag[:13], "%Y%m%dT%H%M").replace(
+            tzinfo=dt.timezone.utc)
+    except (ValueError, TypeError):
+        return float("inf")
+    return abs((t - hour).total_seconds())
+
+
 def _archive_note(s3, vtag: str) -> None:
-    """Keep a permanent hourly index: first stored frame of each hour goes
-    into maps/radar/archive.json (frames themselves are never deleted)."""
+    """Permanent hourly index: for each hour keep the frame NEAREST the top of
+    it. A sweep closer to :00 replaces a farther one already stored — so an
+    early tick that grabbed :35 before meteolapa published the on-hour sweep is
+    upgraded the moment the :05 arrives. Frames on R2 are never deleted, so the
+    superseded bytes simply stop being referenced."""
     hour = vtag[:11]  # YYYYMMDDTHH
     try:
         arch = json.loads(s3.get_object(
@@ -2034,8 +2056,13 @@ def _archive_note(s3, vtag: str) -> None:
         )["Body"].read())
     except Exception:
         arch = {"path": "maps/radar/frames3059", "hours": {}}
-    if hour not in arch["hours"]:
+    hour_dt = dt.datetime.strptime(hour, "%Y%m%dT%H").replace(tzinfo=dt.timezone.utc)
+    if _frame_offset_s(vtag, hour_dt) < _frame_offset_s(arch["hours"].get(hour), hour_dt):
         arch["hours"][hour] = vtag
+        # Bump the per-hour revision so the stable frame URL busts its cache the
+        # moment the hour is redrawn (same mechanism the backfill uses).
+        arch.setdefault("rev", {})[hour] = dt.datetime.now(
+            dt.timezone.utc).strftime("%y%m%d%H%M")
         s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
                       Body=json.dumps(arch).encode(),
                       ContentType="application/json",
@@ -2043,11 +2070,12 @@ def _archive_note(s3, vtag: str) -> None:
 
 
 def _hour_covered(arch: dict, hour: dt.datetime) -> bool:
-    """An hour counts as covered only if its archived frame sits within 40 min
-    of :00. A frame the live job happened to grab at :49 is better than
-    nothing, but it should still be upgraded to an hour-aligned one."""
-    tag = arch["hours"].get(hour.strftime("%Y%m%dT%H"))
-    return bool(tag) and int(tag[11:13] or 0) <= 40
+    """Covered only if the hour's frame is within RADAR_HOUR_TOL_MIN of :00.
+    A frame the live job grabbed at :35 — or one a pass stored before the
+    on-hour sweep was published — counts as not covered, so the hour is
+    revisited and upgraded to a closer sweep when one appears."""
+    tag = arch.get("hours", {}).get(hour.strftime("%Y%m%dT%H"))
+    return _frame_offset_s(tag, hour) <= RADAR_HOUR_TOL_MIN * 60
 
 
 def radar_backfill(hours_back: int = 168) -> None:
@@ -2094,6 +2122,15 @@ def radar_backfill(hours_back: int = 168) -> None:
             hour_key = target.strftime("%Y%m%dT%H")
             if not force and _hour_covered(arch, target):
                 continue
+            # Never trade a good frame for a worse one. Whatever is stored for
+            # this hour, only overwrite it with a sweep strictly closer to :00 —
+            # so a pass that finds nothing nearer than the :35 already on file
+            # leaves it alone, and the :05 that turns up next pass replaces it.
+            cur_off = _frame_offset_s(arch.get("hours", {}).get(hour_key), target)
+            avail = [abs((o["time"] - target).total_seconds()) for o in overlays
+                     if abs((o["time"] - target).total_seconds()) <= 40 * 60]
+            if not force and (not avail or min(avail) >= cur_off):
+                continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             cold = _freezing_mask(target)
             got = False
@@ -2134,6 +2171,12 @@ def radar_backfill(hours_back: int = 168) -> None:
                          stamp.strftime("%H:%M"),
                          round((stamp - target).total_seconds() / 60))
             vtag = stamp.strftime("%Y%m%dT%H%M")
+            # The nearest sweep this composite actually landed on (stamp is the
+            # latest feed used) may still be no closer than what is already
+            # stored — the pre-render check bounds the best case, this is the
+            # real one. Don't downgrade or needlessly re-store an equal frame.
+            if not force and _frame_offset_s(vtag, target) >= cur_off:
+                continue
             buf = io.BytesIO()
             canvas.save(buf, "PNG", optimize=True)
             s3.put_object(Bucket=config.R2_BUCKET,
