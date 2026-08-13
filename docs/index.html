@@ -203,7 +203,7 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · dots are measuring stations · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
+    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are measuring stations · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
     <div class="mapnote" id="mapDiag"></div>
   </aside>
 
@@ -1953,6 +1953,39 @@ function renderTable(){
 // per click, so repeat visits to the same area reuse the same verification
 // history instead of spawning a new point each time.
 const CELL=25000;
+// Largest Baltic cities, for orientation. Coordinates carried over from the
+// previous meteo service on the TTA tracker; labelDir 'left' keeps an eastern
+// city's text from running off the map or into a neighbour. Reference only —
+// drawn pointer-events:none so a click still picks the cell underneath.
+const CITIES=[
+  {n:"Rīga",lat:56.9496,lon:24.1052},
+  {n:"Vilnius",lat:54.6872,lon:25.2797},
+  {n:"Tallinn",lat:59.4370,lon:24.7536},
+  {n:"Kaunas",lat:54.8985,lon:23.9036,d:"left"},
+  {n:"Klaipėda",lat:55.7033,lon:21.1443},
+  {n:"Šiauliai",lat:55.9349,lon:23.3138},
+  {n:"Panevėžys",lat:55.7278,lon:24.3574},
+  {n:"Daugavpils",lat:55.8747,lon:26.5359,d:"left"},
+  {n:"Tartu",lat:58.3776,lon:26.7290,d:"left"},
+  {n:"Liepāja",lat:56.5088,lon:21.0107},
+  {n:"Jelgava",lat:56.6499,lon:23.7229},
+  {n:"Pärnu",lat:58.3858,lon:24.4971},
+  {n:"Narva",lat:59.3773,lon:28.1903,d:"left"},
+  {n:"Ventspils",lat:57.3894,lon:21.5606},
+];
+// The two big rivers, as plain blue lines (no label) — just enough to orient
+// the eye. [lon,lat] waypoints tracing the course; the SVG clips whatever runs
+// past the map edge. Daugava: Gulf of Rīga up the valley to the Belarus
+// border. Nemunas: in from the south past Kaunas, then west to the Curonian
+// Lagoon.
+const RIVERS=[
+  [[24.02,57.04],[24.10,56.95],[24.36,56.86],[24.72,56.74],[25.25,56.60],
+   [25.72,56.62],[25.86,56.50],[26.17,56.35],[26.54,55.87],[27.17,55.90],
+   [27.65,55.80]],
+  [[23.97,54.02],[24.16,54.16],[24.05,54.40],[23.95,54.63],[23.88,54.90],
+   [23.58,55.05],[22.77,55.08],[22.58,55.07],[22.10,55.08],[21.48,55.35],
+   [21.30,55.28]],
+];
 let smapMarker=null, smapCell=null, selectedCell=null;
 function metersToPx(x,y){ return [(x-GX0)/(GX1-GX0)*570, (GY1-y)/(GY1-GY0)*690]; }
 // Stations get dots and can be picked. Verification cells (g_*) are sampling
@@ -1991,6 +2024,29 @@ function initStaticMap(){
   }
   const haveProj = typeof proj4!=="undefined";
   if(haveProj){
+    // Rivers first (under the dots), then cities, then the station dots on top.
+    for(const riv of RIVERS){
+      const pts=riv.map(([lo,la])=>{
+        const [mx,my]=proj4("EPSG:4326","EPSG:3059",[lo,la]);
+        const [px,py]=metersToPx(mx,my);
+        return px.toFixed(1)+","+py.toFixed(1);
+      }).join(" ");
+      mk("polyline",{points:pts,fill:"none",stroke:"#5a93c8","stroke-width":1.6,
+        "stroke-opacity":0.8,"stroke-linejoin":"round","stroke-linecap":"round",
+        "pointer-events":"none"});
+    }
+    for(const c of CITIES){
+      const [mx,my]=proj4("EPSG:4326","EPSG:3059",[c.lon,c.lat]);
+      const [px,py]=metersToPx(mx,my);
+      if(px<0||px>570||py<0||py>690) continue;
+      const left=c.d==="left";
+      mk("circle",{cx:px,cy:py,r:2,fill:"#3a3524",stroke:"#fdf9ec",
+        "stroke-width":0.6,"pointer-events":"none"});
+      mk("text",{x:left?px-3:px+3,y:py-2,"font-size":"9.2",fill:"#2a2617",
+        "text-anchor":left?"end":"start","pointer-events":"none",
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:2.2;stroke-linejoin:round"
+      }).textContent=c.n;
+    }
     for(const p of POINTS){
       if(p.lat==null || !isStation(p)) continue;
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
@@ -2387,7 +2443,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v72",
+    "page v73",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
