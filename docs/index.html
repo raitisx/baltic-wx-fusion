@@ -1972,16 +1972,22 @@ function initStaticMap(){
   const ov=document.getElementById("smapOv");
   const NS="http://www.w3.org/2000/svg";
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);ov.appendChild(e);return e;};
-  // 25 km LKS-92 grid — the cells you can actually select, emphasised at 100 km
-  for(let x=Math.ceil(GX0/CELL)*CELL;x<=GX1;x+=CELL){
-    const [px]=metersToPx(x,0);
-    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":x%100000===0?0.8:0.35,opacity:x%100000===0?0.75:0.5});
-    if(x%100000===0) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#8a8468"}).textContent=(x/1000);
+  // 25 km LKS-92 grid — drawn on the SAME lattice as the selectable cells
+  // (origin GX0/GY0, stepping by CELL), so every line is a real cell boundary.
+  // The old loop stepped absolute multiples of 25 km (250, 275, …); because
+  // GX0=235000 is not a multiple of 25 km the drawn grid sat a constant 10 km
+  // off the cells you actually click. Every fourth line (100 km) is emphasised
+  // and labelled with its LKS-92 easting/northing in km — the same number that
+  // appears in a cell's label.
+  for(let i=0,x=GX0;x<=GX1;i++,x+=CELL){
+    const [px]=metersToPx(x,0); const major=i%4===0;
+    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?0.75:0.5});
+    if(major) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(x/1000);
   }
-  for(let y=Math.ceil(GY0/CELL)*CELL;y<=GY1;y+=CELL){
-    const [,py]=metersToPx(0,y);
-    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":y%100000===0?0.8:0.35,opacity:y%100000===0?0.75:0.5});
-    if(y%100000===0) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#8a8468"}).textContent=(y/1000);
+  for(let j=0,y=GY0;y<=GY1;j++,y+=CELL){
+    const [,py]=metersToPx(0,y); const major=j%4===0;
+    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?0.75:0.5});
+    if(major) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(y/1000);
   }
   const haveProj = typeof proj4!=="undefined";
   if(haveProj){
@@ -2381,7 +2387,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v70",
+    "page v71",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
