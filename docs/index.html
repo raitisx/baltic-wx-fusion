@@ -406,7 +406,17 @@ const Q = {
   wz: QS.has("wz") ? +QS.get("wz") : null,
   week: QS.get("week"),
 };
-const MAPS_BASE = QS.get("maps") || "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
+// Where the maps, meteogram JSON and radar frames are read from. Explicit
+// ?maps= wins. Otherwise: when the page is served under a /meteo path (the
+// Cloudflare Worker on ttaero.lv/meteo, which proxies the baltic-wx bucket at
+// that same prefix), read everything same-origin from there — no cross-origin
+// CORS on the meteogram fetch. Served straight off the r2.dev bucket URL, fall
+// back to that bucket. Both resolve to the same objects.
+const MAPS_BASE = QS.get("maps") || (() => {
+  const p = location.pathname.replace(/\/+$/, "");
+  if (p.endsWith("/meteo")) return location.origin + p;
+  return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
+})();
 
 // Direct Open-Meteo fetch. The server-side ingest runs twice a day and exists
 // to build the archive (stored forecast per lead) that skill weights and
