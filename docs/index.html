@@ -1472,13 +1472,19 @@ function render(){
     // trace so the trace stays the thing you read first.
     for(let i=0;i<FUSED.length;i++){
       const r=FUSED[i];
-      if((r.prcp_1h ?? 0) < 0.1) continue;
+      // Match the green precip bars' gate (>0.01), not the old 0.1: light rain
+      // painted a bar but no shaft, so the ceiling panel looked dry when it was
+      // not. Opacity tracks agreement so a trace/uncertain hour is faint and a
+      // wet, agreed one is bold — same idea as the bars.
+      const pr=r.prcp_1h ?? 0;
+      if(pr<=0.01) continue;
       const base=rows[i].cb;
       if(base==null) continue;
       const yTop=base>1000 ? top+bandH : y(base);
+      const op=(0.4+0.55*(r.prcp_prob??1)).toFixed(2);
       svgEl("line",{x1:xPos(r.ts+1800e3),x2:xPos(r.ts+1800e3),y1:yTop,y2:y0,
                     stroke:css("--rainshaft"),"stroke-width":1.6,
-                    "stroke-dasharray":"3 3","stroke-opacity":.85},svg);
+                    "stroke-dasharray":"3 3","stroke-opacity":op},svg);
     }
     svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
     for(const r of rows) if(r.cb!=null && r.cb>1000)
@@ -2443,7 +2449,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v73",
+    "page v74",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
