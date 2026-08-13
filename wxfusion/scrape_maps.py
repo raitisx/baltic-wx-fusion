@@ -2024,10 +2024,20 @@ def radar_composite(frames_back: int = 3) -> None:
     _archive_note(s3, vtag)
 
 
-# A frame within this many minutes of the top of the hour is as good as the
-# ~5-min source can give; anything farther keeps getting revisited until a
-# closer sweep appears.
-RADAR_HOUR_TOL_MIN = 12
+# How close to the top of the hour a stored frame has to be before an hour
+# counts as covered — as a function of how many times the backfill has already
+# tried to improve it. The first pass insists on a near-perfect frame (≤4 min)
+# and revisits everything else; the second relaxes to ≤6, and the third and
+# every pass after it to ≤9. So an hour whose upstream simply never published a
+# sweep nearer than, say, 8 min keeps getting retried a couple of times, then
+# settles instead of being re-fetched forever. Index is the attempt count,
+# clamped to the last entry.
+RADAR_TOL_SCHEDULE_MIN = (4, 6, 9)
+
+
+def _hour_tol_min(tries: int) -> int:
+    """Coverage tolerance in minutes for an hour tried `tries` times."""
+    return RADAR_TOL_SCHEDULE_MIN[min(tries, len(RADAR_TOL_SCHEDULE_MIN) - 1)]
 
 
 def _frame_offset_s(tag: str | None, hour: dt.datetime) -> float:
@@ -2070,12 +2080,46 @@ def _archive_note(s3, vtag: str) -> None:
 
 
 def _hour_covered(arch: dict, hour: dt.datetime) -> bool:
-    """Covered only if the hour's frame is within RADAR_HOUR_TOL_MIN of :00.
-    A frame the live job grabbed at :35 — or one a pass stored before the
-    on-hour sweep was published — counts as not covered, so the hour is
-    revisited and upgraded to a closer sweep when one appears."""
-    tag = arch.get("hours", {}).get(hour.strftime("%Y%m%dT%H"))
-    return _frame_offset_s(tag, hour) <= RADAR_HOUR_TOL_MIN * 60
+    """Covered only if the hour's frame is within the current tolerance of :00,
+    and the tolerance widens with each attempt (see RADAR_TOL_SCHEDULE_MIN). A
+    frame the live job grabbed at :35 — or one a pass stored before the on-hour
+    sweep was published — starts out not covered, so the hour is revisited and
+    upgraded to a closer sweep when one appears; after a few tries the bar
+    relaxes so a genuinely-unbeatable frame stops being re-fetched."""
+    hk = hour.strftime("%Y%m%dT%H")
+    tag = arch.get("hours", {}).get(hk)
+    tries = arch.get("tries", {}).get(hk, 0)
+    return _frame_offset_s(tag, hour) <= _hour_tol_min(tries) * 60
+
+
+def _radar_stats(arch: dict) -> str:
+    """One-line histogram of how close each archived hour's frame sits to :00,
+    plus how many are settled at their current tolerance and the deepest retry
+    count. Logged either side of a backfill so a run's effect is visible."""
+    hours = arch.get("hours", {})
+    tries = arch.get("tries", {})
+    edges = (4, 6, 9, 12)
+    counts = [0] * (len(edges) + 1)
+    settled = 0
+    for hk, tag in hours.items():
+        try:
+            h = dt.datetime.strptime(hk, "%Y%m%dT%H").replace(
+                tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        off_m = _frame_offset_s(tag, h) / 60.0
+        for i, e in enumerate(edges):
+            if off_m <= e:
+                counts[i] += 1
+                break
+        else:
+            counts[-1] += 1
+        if off_m <= _hour_tol_min(tries.get(hk, 0)):
+            settled += 1
+    return ("radar archive %d h  |  <=4m:%d  <=6m:%d  <=9m:%d  <=12m:%d  "
+            ">12m:%d  |  settled:%d  max-tries:%d" % (
+                len(hours), counts[0], counts[1], counts[2], counts[3],
+                counts[4], settled, max(tries.values(), default=0)))
 
 
 def radar_backfill(hours_back: int = 168) -> None:
@@ -2093,6 +2137,7 @@ def radar_backfill(hours_back: int = 168) -> None:
 
     from . import proj3059 as P
 
+    log.info("before: %s", _radar_stats(arch))
     rev = dt.datetime.now(dt.timezone.utc).strftime("%y%m%d%H%M")
     force = os.environ.get("BACKFILL_FORCE", "") == "1"
     if force:
@@ -2122,6 +2167,14 @@ def radar_backfill(hours_back: int = 168) -> None:
             hour_key = target.strftime("%Y%m%dT%H")
             if not force and _hour_covered(arch, target):
                 continue
+            # This hour is not yet covered at its current tolerance, so this
+            # pass is an attempt on it — count it whether or not a closer sweep
+            # turns out to exist. Enough attempts widen the tolerance (see
+            # _hour_tol_min), which is what lets an unbeatable frame settle
+            # instead of being re-fetched every pass.
+            if not force:
+                tmap = arch.setdefault("tries", {})
+                tmap[hour_key] = tmap.get(hour_key, 0) + 1
             # Never trade a good frame for a worse one. Whatever is stored for
             # this hour, only overwrite it with a sweep strictly closer to :00 —
             # so a pass that finds nothing nearer than the :35 already on file
@@ -2201,3 +2254,4 @@ def radar_backfill(hours_back: int = 168) -> None:
                       CacheControl="public, max-age=300")
     log.info("radar backfill: %d hourly composites added (archive now %d h)",
              done, len(arch["hours"]))
+    log.info("after:  %s", _radar_stats(arch))
