@@ -370,6 +370,19 @@ function setPoint(pid, label){
   const n=document.getElementById("selNote");
   if(n) n.textContent=label||"";
   placeMapMarkers();
+  savePoint();
+}
+// Remember the selected point across sessions. A station keeps just its id (it
+// comes back in the server list); a 25 km cell keeps its lat/lon/name so it can
+// be re-ensured to the same point on the next visit.
+function savePoint(){
+  try{
+    const p=(POINTS||[]).find(x=>x.point_id===currentPid);
+    const rec = (p && !isStation(p) && p.lat!=null)
+      ? {pid:p.point_id, lat:p.lat, lon:p.lon, name:p.name}
+      : {pid:currentPid};
+    localStorage.setItem("wxPoint", JSON.stringify(rec));
+  }catch(e){}
 }
 
 // Where the meteogram is being read, drawn on all three maps. They share the
@@ -2515,7 +2528,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v78",
+    "page v79",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2643,14 +2656,23 @@ async function init(){
   }
   weekStart = clampWeek(Q.week ? weekMonday(new Date(Q.week+"T12:00:00Z"))
                                 : weekMonday(new Date()));
-  let startPid = Q.point || "EVRA";
+  // Point selection: an explicit ?point/?lat wins, otherwise the point
+  // remembered from last time (localStorage), otherwise Riga Intl.
+  let saved=null;
+  try{ saved=JSON.parse(localStorage.getItem("wxPoint")||"null"); }catch(e){}
+  const urlPt = Q.point!=null || Q.lat!=null;
+  let startPid = Q.point || (!urlPt && saved && saved.pid) || "EVRA";
+  let wantLat=Q.lat, wantLon=Q.lon, wantName=Q.name;
+  if(!urlPt && saved && saved.lat!=null){
+    wantLat=saved.lat; wantLon=saved.lon; wantName=saved.name;
+  }
   try{
-    if(Q.lat!=null && Q.lon!=null)
-      startPid = await rpc("wx_ensure_point",{p_lat:Q.lat, p_lon:Q.lon, p_name:Q.name});
+    if(wantLat!=null && wantLon!=null)
+      startPid = await rpc("wx_ensure_point",{p_lat:wantLat, p_lon:wantLon, p_name:wantName});
     POINTS=await rpc("wx_points_list",{});
   }catch(e){ POINTS=[{point_id:"EVRA",name:"Riga Intl",lat:56.9236,lon:23.9711}]; }
-  if(Q.lat!=null && !POINTS.some(p=>p.point_id===startPid))
-    POINTS.push({point_id:startPid, name:Q.name??"map cell", lat:Q.lat, lon:Q.lon});
+  if(wantLat!=null && !POINTS.some(p=>p.point_id===startPid))
+    POINTS.push({point_id:startPid, name:wantName??"map cell", lat:wantLat, lon:wantLon});
   let startPt=POINTS.find(p=>p.point_id===startPid);
   if(!startPt) startPt=POINTS.find(p=>p.point_id==="EVRA") ?? POINTS[0];
   if(startPt) setPoint(startPt.point_id,
