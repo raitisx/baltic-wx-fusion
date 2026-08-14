@@ -242,8 +242,7 @@
         <button id="mapPrev">◀</button>
         <button id="mapPlay">▶ play</button>
         <button id="mapNext">▶</button>
-        <span class="mtime" id="mapTime"></span>
-        <span class="mapsub">scrub the meteogram above to seek — the black line is the playhead</span>
+        <span class="mtime" id="mapTime" style="margin-left:auto"></span>
       </div>
       <div class="mapcols">
         <div class="mapcol">
@@ -312,6 +311,8 @@ const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day
 const fmtTime = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtWd   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short"});
 const fmtDNM  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"numeric",month:"short"});
+const fmtDD   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"2-digit"});
+const fmtMon  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,month:"short"});
 const fmtNowTab = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",
   day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 function rigaHour(d){ return parseInt(fmtHour.format(d),10); }
@@ -1266,7 +1267,7 @@ function render(){
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
   const headerH=34;
-  const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+3,0) + 20;
+  const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+3,0) + 30;
   const svg=svgEl("svg",{viewBox:`0 0 ${P.width} ${totalH}`, "aria-label":"7-day flight meteogram"});
   chart.appendChild(svg);
 
@@ -1642,7 +1643,7 @@ function render(){
   // The crosshair is the maps' seek bar: it runs the full height of the chart
   // and ends in a handle at the bottom, and the maps below follow whatever hour
   // it sits on. It stays put when the pointer leaves, and map playback moves it.
-  const seekBottom=totalH-3;
+  const seekBottom=totalH-9;   // clear of the SVG edge so the handle is not clipped
   const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:seekBottom,stroke:"#000","stroke-width":1.3,visibility:"hidden"},svg);
   const seekDot=svgEl("circle",{cx:0,cy:seekBottom,r:4.5,fill:"#000",stroke:"#fdf9ec","stroke-width":1,visibility:"hidden"},svg);
   const placeSeek=x=>{
@@ -2506,7 +2507,8 @@ function mapShow(i){
   MV.idx=Math.max(0,Math.min(MV.hours.length-1,i));
   const iso=MV.hours[MV.idx];
   if(window.__seekTo) window.__seekTo(Date.parse(iso));   // move the seek line
-  const label=fmtDT.format(new Date(iso));
+  const d=new Date(iso);
+  const label=`${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;  // 01.Aug. 11:00
   document.getElementById("mapTime").textContent=label;
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
   const m=mepsSrc(iso), mImg=document.getElementById("imgMeps");
@@ -2585,7 +2587,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v88",
+    "page v89",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
