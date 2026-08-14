@@ -6,9 +6,11 @@ whether each bearing tripped the beam thresholds — so a missed beam shows up a
 a near-miss table rather than silence. Writes nothing to R2 or the archive.
 """
 import os
+import sys
 import logging
 
-from wxfusion import scrape_maps
+sys.path.insert(0, ".")
+from wxfusion import scrape_maps  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
