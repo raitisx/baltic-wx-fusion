@@ -28,7 +28,7 @@
     min-height:100vh; padding:14px;
   }
   .layout{display:flex;gap:16px;max-width:1480px;margin:0 auto;align-items:flex-start}
-  .sidebar{width:272px;flex:none;position:sticky;top:10px}
+  .sidebar{width:360px;flex:none;position:sticky;top:10px}
   .main{flex:1;min-width:0}
   h1{font-size:18px;font-weight:700;margin:0 0 10px;color:var(--ink);letter-spacing:.2px}
   .side label{display:block;font-size:12px;color:var(--text);margin:8px 0 3px;font-weight:700}
@@ -48,8 +48,8 @@
   .weekbar{display:flex;gap:8px;align-items:center;margin-bottom:6px}
   .weekbar .wlabel{font-size:15px;font-weight:700;color:var(--ink);min-width:220px;text-align:center}
   .status{
-    display:block;height:15px;line-height:15px;font-size:11px;color:var(--muted);
-    text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;
+    display:block;line-height:1.5;font-size:10px;color:var(--muted);
+    text-align:left;white-space:normal;margin-top:6px;
   }
   /* Jobs drawer: shut by default, because on a normal day it is not what the
      page is for. */
@@ -174,6 +174,8 @@
       <option value="10" selected>10</option>
       <option value="12">12</option>
       <option value="15">15</option>
+      <option value="18">18</option>
+      <option value="20">20</option>
     </select>
     <!-- Flight altitude for the wind panel. Same list as the ceiling, because
          it is the same number — the height the job is flown at — with 10 m in
@@ -205,6 +207,7 @@
     </div>
     <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are measuring stations · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
     <div class="mapnote" id="mapDiag"></div>
+    <span class="status" id="status"></span>
   </aside>
 
   <main class="main">
@@ -214,13 +217,11 @@
       <button id="wNext">next week ▶</button>
       <button id="wToday">today</button>
     </div>
-    <span class="status" id="status"></span>
     <div id="chart"></div>
     <div class="err" id="err" hidden></div>
     <div class="tip" id="tip"></div>
 
     <div class="mapview" id="mapView" hidden>
-      <h2 id="mapTitle">Hourly maps — <span id="mapTimeHead"></span></h2>
       <div class="mapcols">
         <div class="mapcol">
           <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
@@ -1288,6 +1289,13 @@ function render(){
       ly-=14;
     }
   }
+  // Thin black separators between the stacked meteograms and their legends, so
+  // each panel reads as its own row rather than one tall block.
+  for(let k=1;k<PANELS.length;k++){
+    const yb=panelTop[PANELS[k].id]-1.5;
+    svgEl("line",{x1:0,x2:P.width-P.right,y1:yb,y2:yb,stroke:"#000",
+                  "stroke-width":0.5,"stroke-opacity":.5},svg);
+  }
 
   // padBottom reserves a strip along the floor of a panel that the data scale
   // does not use — the grid, the box and the day rules still span the whole
@@ -1441,6 +1449,12 @@ function render(){
     placeLimitBox("cb", top + p.h / 2, totalH);
     const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
+    // Legends for the two things sharing this top band: the grey cloud-cover
+    // strips and the black observation markers riding the 1 km+ line.
+    svgEl("text",{x:6,y:top+10,"font-size":"9.5","font-weight":"700",
+                  fill:css("--muted")},svg).textContent="cloudiness";
+    svgEl("text",{x:6,y:top+bandH-2,"font-size":"9.5","font-weight":"700",
+                  fill:css("--cloud")},svg).textContent="real meas";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
 
@@ -1965,19 +1979,37 @@ const CELL=25000;
 // drawn pointer-events:none so a click still picks the cell underneath.
 const CITIES=[
   {n:"Rīga",lat:56.9496,lon:24.1052},
-  {n:"Vilnius",lat:54.6872,lon:25.2797},
   {n:"Tallinn",lat:59.4370,lon:24.7536},
+  {n:"Vilnius",lat:54.6872,lon:25.2797},
   {n:"Kaunas",lat:54.8985,lon:23.9036,d:"left"},
   {n:"Klaipėda",lat:55.7033,lon:21.1443},
   {n:"Šiauliai",lat:55.9349,lon:23.3138},
   {n:"Panevėžys",lat:55.7278,lon:24.3574},
   {n:"Daugavpils",lat:55.8747,lon:26.5359,d:"left"},
-  {n:"Tartu",lat:58.3776,lon:26.7290,d:"left"},
   {n:"Liepāja",lat:56.5088,lon:21.0107},
   {n:"Jelgava",lat:56.6499,lon:23.7229},
+  {n:"Ventspils",lat:57.3894,lon:21.5606},
+  {n:"Tartu",lat:58.3776,lon:26.7290,d:"left"},
   {n:"Pärnu",lat:58.3858,lon:24.4971},
   {n:"Narva",lat:59.3773,lon:28.1903,d:"left"},
-  {n:"Ventspils",lat:57.3894,lon:21.5606},
+  {n:"Madona",lat:56.8500,lon:26.2233,d:"left"},
+  {n:"Alūksne",lat:57.4247,lon:27.0442,d:"left"},
+  {n:"Kuldīga",lat:56.9683,lon:21.9704},
+  {n:"Jēkabpils",lat:56.5000,lon:25.8586},
+  {n:"Rēzekne",lat:56.5100,lon:27.3325,d:"left"},
+  {n:"Saldus",lat:56.6667,lon:22.5000},
+  {n:"Valka",lat:57.7742,lon:26.0125,d:"left"},
+  {n:"Cēsis",lat:57.3121,lon:25.2758},
+  {n:"Haapsalu",lat:58.9433,lon:23.5417},
+  {n:"Kuressaare",lat:58.2529,lon:22.4849},
+  {n:"Võru",lat:57.8339,lon:26.9908,d:"left"},
+  {n:"Paide",lat:58.8853,lon:25.5578},
+  {n:"Rakvere",lat:59.3464,lon:26.3555,d:"left"},
+  {n:"Palanga",lat:55.9200,lon:21.0678},
+  {n:"Tauragė",lat:55.2528,lon:22.2903},
+  {n:"Utena",lat:55.4986,lon:25.6031,d:"left"},
+  {n:"Druskininkai",lat:54.0186,lon:23.9714},
+  {n:"Ainaži",lat:57.8703,lon:24.3567},
 ];
 // The two big rivers, as plain blue lines (no label) — just enough to orient
 // the eye. [lon,lat] waypoints tracing the course; the SVG clips whatever runs
@@ -2065,9 +2097,9 @@ function initStaticMap(){
       const left=c.d==="left";
       mk("circle",{cx:px,cy:py,r:2,fill:"#3a3524",stroke:"#fdf9ec",
         "stroke-width":0.6,"pointer-events":"none"});
-      mk("text",{x:left?px-5:px+5,y:py-4,"font-size":"27.6",fill:"#2a2617",
+      mk("text",{x:left?px-4:px+4,y:py-3,"font-size":"13.8",fill:"#2a2617",
         "text-anchor":left?"end":"start","pointer-events":"none",
-        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:6.5;stroke-linejoin:round"
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.25;stroke-linejoin:round"
       }).textContent=c.n;
     }
     for(const p of POINTS){
@@ -2387,7 +2419,7 @@ function mapShow(i){
   document.getElementById("mapSlider").value=MV.idx;
   const label=fmtDT.format(new Date(iso));
   document.getElementById("mapTime").textContent=label;
-  document.getElementById("mapTimeHead").textContent=label;
+  { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
   const m=mepsSrc(iso), mImg=document.getElementById("imgMeps");
   if(m && m.request) requestMapHour(m.request, mImg);
   showFrame(mImg, document.getElementById("mepsTime"), m&&m.url, m&&m.cap, "0.15");
@@ -2466,7 +2498,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v75",
+    "page v76",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
