@@ -2355,3 +2355,67 @@ def radar_backfill(hours_back: int = 168) -> None:
     log.info("radar backfill: %d hourly composites added (archive now %d h)",
              done, len(arch["hours"]))
     log.info("after:  %s", _radar_stats(arch))
+
+
+def radar_render_one(ts_iso: str) -> None:
+    """Force re-render one hour's composite with the current cleaning and store
+    it, updating only that hour's archive entry. For checking a fix on a single
+    frame before deciding whether to re-render the rest of the archive."""
+    s = session()
+    s3 = r2_client()
+    from . import proj3059 as P
+    try:
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key="maps/radar/archive.json"
+        )["Body"].read())
+    except Exception:
+        arch = {"path": "maps/radar/frames3059", "hours": {}}
+    target = dt.datetime.fromisoformat(ts_iso)
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=dt.timezone.utc)
+    target = target.replace(minute=0, second=0, microsecond=0)
+    hour_key = target.strftime("%Y%m%dT%H")
+    rev = dt.datetime.now(dt.timezone.utc).strftime("%y%m%d%H%M")
+    overlays = fetch_overlays_window(target - dt.timedelta(minutes=40),
+                                     target + dt.timedelta(minutes=40))
+    canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    cold = _freezing_mask(target)
+    used = []
+    for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
+        cands = [o for o in overlays if o["code"] == code]
+        if not cands:
+            continue
+        best = min(cands, key=lambda o: abs((o["time"] - target).total_seconds()))
+        if abs((best["time"] - target).total_seconds()) > 40 * 60:
+            continue
+        cls = _load_and_classify(best["url"], s, code, best)
+        if cls is None:
+            continue
+        grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
+        grid = _despeckle_intensity(
+            _remove_beam_lines(_remove_beams_polar(_despeckle(grid))))
+        canvas.alpha_composite(_recolor(grid, cold, code))
+        used.append(best["time"])
+    if not used:
+        log.info("render-one %s: no source frames in window", hour_key)
+        return
+    canvas = _fade_edges(canvas)
+    draw_borders(canvas)
+    stamp = max(used)
+    vtag = stamp.strftime("%Y%m%dT%H%M")
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG", optimize=True)
+    s3.put_object(Bucket=config.R2_BUCKET,
+                  Key=f"maps/radar/frames3059/{vtag}.png",
+                  Body=buf.getvalue(), ContentType="image/png",
+                  CacheControl="public, max-age=604800")
+    arch.setdefault("hours", {})[hour_key] = vtag
+    arch.setdefault("rev", {})[hour_key] = rev
+    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar/archive.json",
+                  Body=json.dumps(arch).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("render-one %s: stored %s (nearest sweep %s, %+d min) — archive "
+             "updated for this hour only", hour_key, vtag,
+             stamp.strftime("%H:%M"),
+             round((stamp - target).total_seconds() / 60))

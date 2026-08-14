@@ -34,6 +34,7 @@ on:
           - meteogram
           - pairing-r2
           - radar-diag
+          - radar-render-one
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -104,7 +105,7 @@ on:
         type: string
         default: ""
       diag_ts:
-        description: "radar-diag: frame to examine, UTC (e.g. 2026-08-11T17:00)"
+        description: "radar-diag / radar-render-one: frame to examine or re-render, UTC (e.g. 2026-08-11T17:00)"
         type: string
         default: ""
 
@@ -143,6 +144,7 @@ jobs:
             meteogram)        : ;;   # psycopg + boto3 already in requirements.txt
             pairing-r2)       pip install duckdb pyarrow pytz ;;  # + psycopg/boto3 from requirements
             radar-diag)       pip install pillow numpy pyproj scipy scikit-image boto3 ;;
+            radar-render-one) pip install pillow numpy pyproj scipy scikit-image boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -327,6 +329,19 @@ jobs:
           RADAR_DIAG_TS: ${{ inputs.diag_ts }}
           RADAR_BEAM_DEBUG: "1"
         run: python jobs/run_radar_beam_diag.py
+
+      # Force re-render one hour with the current cleaning, updating only that
+      # hour's archive entry — for eyeballing a beam/cleaning fix on a single
+      # frame before re-rendering any history.
+      - name: Radar single-hour re-render
+        if: inputs.target == 'radar-render-one'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_RENDER_TS: ${{ inputs.diag_ts }}
+        run: python jobs/run_radar_render_one.py
 
       # Read-only against R2, and it can only raise a daily total, never lower
       # one — so it is safe to run whenever the totals look thin.
