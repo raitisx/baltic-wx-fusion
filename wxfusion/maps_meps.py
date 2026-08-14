@@ -199,7 +199,7 @@ def rain_cmaps():
 # Total cloud cover, drawn as a grey wash beneath everything else — the way
 # meteo.pl shows cloud — so the fused map is not blank when the only weather is
 # cloud. Light where thin, darker toward overcast; nothing below a few percent.
-CLOUD_COLORS = ["#eae7e0", "#c7c5bf", "#afada8"]
+CLOUD_COLORS = ["#f5f1ea", "#c7c5bf", "#a8a6a1"]
 
 
 def _cloud_cmap():
