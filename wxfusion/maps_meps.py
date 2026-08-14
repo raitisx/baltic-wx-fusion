@@ -562,8 +562,10 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
             tzinfo=dt.timezone.utc)
         hour_keys = [(run_dt + dt.timedelta(hours=h)).strftime("%Y%m%dT%H")
                      for h in leads]
-        if all(arch["hours"].get(k, "") >= run_tag for k in hour_keys):
-            continue  # newer or same coverage already present
+        if not force and all(arch["hours"].get(k, "") >= run_tag for k in hour_keys):
+            continue  # newer or same coverage already present (force ignores this
+            #            so a re-style pass revisits every run, not just the ones
+            #            whose hours no newer run has claimed)
         try:
             ds = nc.Dataset(ds_name if ds_name.startswith("http")
                             else DAP_BASE + ds_name)
@@ -575,7 +577,10 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
             y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
             latw = lat[y0:y1 + 1, x0:x1 + 1]
             lonw = lon[y0:y1 + 1, x0:x1 + 1]
-            n = max(leads) + 1
+            # +2, not +1: an hour's precip is acc[i+1]-acc[i], so the LAST lead
+            # needs one step beyond it or it is silently skipped (which left the
+            # 3-hourly run-time hours un-re-rendered on a force pass).
+            n = max(leads) + 2
             cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
