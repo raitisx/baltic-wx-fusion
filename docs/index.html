@@ -2154,9 +2154,9 @@ function initStaticMap(){
       // the denser national-network stations — LVĢMC, meteo.lt, Estonia, the
       // ones that actually measure rain — as smaller teal dots with a tighter
       // hit area, so ~250 of them stay pickable without swamping the map.
-      mk("circle",{cx:px,cy:py,r:metar?4.5:2.2,
-        fill:metar?"#1c2c85":"#0f7a55","fill-opacity":metar?0.85:0.85,
-        stroke:"#fdf9ec","stroke-width":metar?1.5:0.7});
+      mk("circle",{cx:px,cy:py,r:metar?4.5:1.1,
+        fill:metar?"#1c2c85":"#14532d","fill-opacity":metar?0.85:0.9,
+        stroke:"#fdf9ec","stroke-width":metar?1.5:0.4});
       const c=mk("circle",{cx:px,cy:py,r:metar?15:6,fill:"#000","fill-opacity":0});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
@@ -2545,7 +2545,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v81",
+    "page v82",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
