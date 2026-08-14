@@ -1637,32 +1637,23 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
                 v[inb] = lev[ry[inb], rx[inb]]
                 vals.append(v)
             # Both flanks have to agree that there is rain here, or the pixel
-            # goes dry. The mean alone was the whole reason a pale streak
-            # survived where the beam had been: outside the storm one flank
-            # holds echo and the other holds nothing, and half of something is
-            # still something — class 2, pale green, running the length of the
-            # condemned bearing. Measured on the 31.07 22:01 LV frame it turned
-            # 221 beam pixels into 400, which is a longer and more visible line
-            # than the beam it replaced.
+            # goes dry. Filling from whichever single side happens to hold echo
+            # is what left the beam visible: outside a storm one flank holds
+            # scattered echo and the other holds nothing, and half of something
+            # is still something — a pale class-1/2 streak running the whole
+            # length of the condemned bearing. That one-sided fill is exactly
+            # the residual "cone" that survived cleaning.
             #
-            # Requiring both keeps exactly the case that was asked for — a beam
-            # crossing real rain is bridged from its neighbours at full
-            # strength — and drops the case that was not, a beam in clear air
-            # being replaced by a ghost of itself.
-            # Delete the beam bearing and fill it from the flanks, as asked:
-            # bridge where rain sits on both sides (their mean), take whichever
-            # side has rain when only one does, and leave it empty only where
-            # neither neighbour carries anything. The flanks are sampled off the
-            # ray to either side (see above), so a beam crossing rain is rebuilt
-            # at full strength and a beam in clear air is simply erased. No
-            # per-wedge veto any more: the flank fill is the safeguard, so a
-            # detected beam is always deleted rather than spared for sitting on
-            # rain it can be bridged across.
-            ssum = vals[0] + vals[1]
-            cnt = ((vals[0] > 0).astype(np.float32)
-                   + (vals[1] > 0).astype(np.float32))
-            newv = np.where(cnt > 0,
-                            np.clip(np.rint(ssum / np.maximum(cnt, 1.0)),
+            # Requiring both flanks keeps the one case that should be kept — a
+            # real rain band crossing the ray, where both neighbours are wet, is
+            # bridged at full strength — and deletes everything else along the
+            # ray: a beam grazing scattered cells, or standing in clear air, is
+            # erased rather than half-rebuilt into a line. The whole-frame
+            # BEAM_MAX_REMOVE_FRAME backstop still guards against condemning an
+            # actual narrow band that has nothing beside it to bridge from.
+            both = (vals[0] > 0) & (vals[1] > 0)
+            newv = np.where(both,
+                            np.clip(np.rint((vals[0] + vals[1]) / 2.0),
                                     0, LEV_MAX), 0).astype(np.uint8)
             if out is lev:
                 out = lev.copy()
