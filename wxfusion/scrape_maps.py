@@ -783,6 +783,20 @@ BEAM_NARROW_ELONG = 8.0
 # that were real weather all sat 270 km or more out — radial by coincidence,
 # seen from a distant radar, not emanating from one.
 BEAM_START_KM = 150
+# A third shape, for the isolated beam in a near-empty frame. When a radar's
+# own picture is almost all beam and little rain, the ray arrives dashed and
+# wobbling across a bin or two, so binary_closing leaves it as a string of
+# short, pencil-thin, wildly elongated fragments — none reaching the 80 km a
+# wedge or needle needs. The reach/hot detectors downstream can't help either:
+# they flag a bearing by how far it overshoots its neighbours, and an isolated
+# beam has none. But nothing in real weather is 2 deg wide and fifteen-times
+# elongated: a fragment that thin and that stretched, starting near the
+# antenna, is a beam whatever its length. Measured on the 11.08 17:01 LV frame,
+# whose only Riga echo was the beam, the trunk fragments ran elong 22-55 at
+# 0.5-2.5 deg; the tightest real cell in the 27-frame sample was under 5.
+BEAM_HAIR_DEG = 2.0
+BEAM_HAIR_ELONG = 15.0
+BEAM_HAIR_LEN = 20
 
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
@@ -1349,13 +1363,15 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                      and r0 <= BEAM_START_KM)
             needle = (long_enough and a_span <= BEAM_NARROW_DEG
                       and elong >= BEAM_NARROW_ELONG)
+            hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
+                    and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
             # Log any component that even looks ray-ish, flagged or not, so a
             # beam that fell just outside the shape gates is visible.
             if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
                 log.info("beam_diag %s %s: comp r%d-%d span%d aspan%.1f elong%.1f "
-                         "start%d -> wedge=%s needle=%s", feed, name, r0, r1,
-                         r_span, a_span, elong, r0, wedge, needle)
-            if not (wedge or needle):
+                         "start%d -> wedge=%s needle=%s hair=%s", feed, name, r0,
+                         r1, r_span, a_span, elong, r0, wedge, needle, hair)
+            if not (wedge or needle or hair):
                 continue
             kill[sl] |= (lab[sl] == i)
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
