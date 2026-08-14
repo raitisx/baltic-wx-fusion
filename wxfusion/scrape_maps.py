@@ -1313,6 +1313,9 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
     rgb = arr[..., :3].astype(int)
     echo = (a > 60) & ((rgb.max(2) - rgb.min(2)) > 25)
     if echo.sum() < BEAM_MIN_PX:
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            log.info("beam_diag %s: source-shape echo %d px (< %d) — shape pass "
+                     "skipped", feed, int(echo.sum()), BEAM_MIN_PX)
         return arr
     out, removed = arr, []
     for name, la, lo in RADAR_SITES:
@@ -1321,6 +1324,9 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
         rng, azdeg = _source_polar(arr.shape, sw, ne, la, lo)
         keep = echo & (rng <= R_MAX_KM)
         if keep.sum() < BEAM_MIN_PX:
+            if os.environ.get("RADAR_BEAM_DEBUG"):
+                log.info("beam_diag %s %s: source-shape keep %d px (< %d) — site "
+                         "skipped", feed, name, int(keep.sum()), BEAM_MIN_PX)
             continue
         az = (azdeg / 360.0 * N_AZ).astype(int) % N_AZ
         rb = np.clip(rng.astype(int), 0, R_MAX_KM)
@@ -1335,16 +1341,20 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
             a0, a1 = sl[0].start, sl[0].stop
             r0, r1 = sl[1].start, sl[1].stop
             r_span = r1 - r0
-            if r_span < BEAM_MIN_LEN_KM:
-                continue
             a_span = (a1 - a0) * 360.0 / N_AZ
             width_km = (r0 + r1) / 2.0 * np.radians(a_span)
-            if width_km <= 0:
-                continue
-            elong = r_span / width_km
-            wedge = (a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
+            elong = r_span / width_km if width_km > 0 else 0.0
+            long_enough = r_span >= BEAM_MIN_LEN_KM
+            wedge = (long_enough and a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
                      and r0 <= BEAM_START_KM)
-            needle = (a_span <= BEAM_NARROW_DEG and elong >= BEAM_NARROW_ELONG)
+            needle = (long_enough and a_span <= BEAM_NARROW_DEG
+                      and elong >= BEAM_NARROW_ELONG)
+            # Log any component that even looks ray-ish, flagged or not, so a
+            # beam that fell just outside the shape gates is visible.
+            if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
+                log.info("beam_diag %s %s: comp r%d-%d span%d aspan%.1f elong%.1f "
+                         "start%d -> wedge=%s needle=%s", feed, name, r0, r1,
+                         r_span, a_span, elong, r0, wedge, needle)
             if not (wedge or needle):
                 continue
             kill[sl] |= (lab[sl] == i)
