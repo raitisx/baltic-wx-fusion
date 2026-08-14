@@ -341,7 +341,6 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           RADAR_RENDER_TS: ${{ inputs.diag_ts }}
-          RADAR_BEAM_DEBUG: "1"
         run: python jobs/run_radar_render_one.py
 
       # Read-only against R2, and it can only raise a daily total, never lower
