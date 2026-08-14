@@ -2151,9 +2151,11 @@ function initStaticMap(){
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[c.lon,c.lat]);
       const [px,py]=metersToPx(mx,my);
       if(px<0||px>570||py<0||py>690) continue;
-      mk("circle",{cx:px,cy:py,r:2,fill:"#3a3524",stroke:"#fdf9ec",
-        "stroke-width":0.6,"pointer-events":"none"});
-      // Every label snaps by its bottom-left corner to just right of the dot,
+      mk("path",{d:`M${(px-2.6).toFixed(1)} ${(py-2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py+2.6).toFixed(1)} `
+                  +`M${(px-2.6).toFixed(1)} ${(py+2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py-2.6).toFixed(1)}`,
+        stroke:"#3a3524","stroke-width":1.1,"stroke-linecap":"round",
+        style:"paint-order:stroke;stroke-linejoin:round","pointer-events":"none"});
+      // Every label snaps by its bottom-left corner to just right of the mark,
       // so the name reads up and to the right from the point it marks.
       mk("text",{x:px+4,y:py,"font-size":"16.6",fill:"#2a2617",
         "text-anchor":"start","pointer-events":"none",
@@ -2558,7 +2560,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v83",
+    "page v84",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
