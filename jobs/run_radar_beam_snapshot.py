@@ -40,6 +40,7 @@ def _raw_grid(url, s, code, o):
 
 def _compose(overlays, target, cold, clean):
     canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    echo = np.zeros((P.H, P.W), bool)               # union of classified echo
     for code in ORDER:
         cands = [o for o in overlays if o["code"] == code]
         if not cands:
@@ -58,19 +59,33 @@ def _compose(overlays, target, cold, clean):
             grid = _raw_grid(best["url"], s, code, best)
             if grid is None:
                 continue
+        if grid.shape == echo.shape:
+            echo |= grid > 0
         canvas.alpha_composite(sm._recolor(grid, cold, code))
     canvas = sm._fade_edges(canvas)
     sm.draw_borders(canvas)
-    return canvas
+    return canvas, echo
 
 
-def _emit(name, img):
-    small = img.convert("RGB")
+def _diff_img(raw_echo, clean_echo):
+    """removed (raw&~clean)=red, added (clean&~raw)=blue, kept=green, on cream."""
+    h, w = raw_echo.shape
+    img = np.full((h, w, 3), (251, 243, 222), np.uint8)
+    kept = raw_echo & clean_echo
+    removed = raw_echo & ~clean_echo
+    added = clean_echo & ~raw_echo
+    img[kept] = (150, 200, 150)
+    img[removed] = (220, 30, 30)
+    img[added] = (30, 60, 230)
+    return Image.fromarray(img, "RGB")
+
+
+def _emit(name, img, width=540):
     # cream backdrop so transparent areas are visible
-    bg = Image.new("RGB", small.size, (251, 243, 222))
+    bg = Image.new("RGB", img.size, (251, 243, 222))
     bg.paste(img.convert("RGB"), (0, 0), img.split()[-1] if img.mode == "RGBA" else None)
-    w = 380
-    bg = bg.resize((w, int(bg.height * w / bg.width)), Image.BILINEAR)
+    if width != img.width:
+        bg = bg.resize((width, int(bg.height * width / bg.width)), Image.NEAREST)
     buf = io.BytesIO()
     bg.save(buf, "PNG", optimize=True)
     b = base64.b64encode(buf.getvalue()).decode()
@@ -94,6 +109,12 @@ else:
 
 log.info("snapshot target %s, %d overlays", target.isoformat(), len(overlays))
 cold = sm._freezing_mask(target)
-_emit("RAW", _compose(overlays, target, cold, clean=False))
-_emit("CLEAN", _compose(overlays, target, cold, clean=True))
+raw_canvas, raw_echo = _compose(overlays, target, cold, clean=False)
+clean_canvas, clean_echo = _compose(overlays, target, cold, clean=True)
+_emit("RAW", raw_canvas)
+_emit("CLEAN", clean_canvas)
+_emit("DIFF", _diff_img(raw_echo, clean_echo))
+log.info("diff: %d removed, %d added, %d kept px",
+         int((raw_echo & ~clean_echo).sum()), int((clean_echo & ~raw_echo).sum()),
+         int((raw_echo & clean_echo).sum()))
 log.info("snapshot done")
