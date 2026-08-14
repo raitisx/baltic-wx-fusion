@@ -794,9 +794,13 @@ BEAM_START_KM = 150
 # antenna, is a beam whatever its length. Measured on the 11.08 17:01 LV frame,
 # whose only Riga echo was the beam, the trunk fragments ran elong 22-55 at
 # 0.5-2.5 deg; the tightest real cell in the 27-frame sample was under 5.
-BEAM_HAIR_DEG = 2.0
+BEAM_HAIR_DEG = 3.0
 BEAM_HAIR_ELONG = 15.0
 BEAM_HAIR_LEN = 20
+# Smallest removal worth writing. Was BEAM_MIN_PX // 2 (75) inline; lowered
+# because an isolated beam's whole footprint can be smaller than that and still
+# be exactly what wants clearing.
+BEAM_MIN_REMOVE_PX = 30
 
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
@@ -1378,7 +1382,14 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
         if not kill.any():
             continue
         gone = keep & kill[az, rb]
-        if gone.sum() < BEAM_MIN_PX // 2:
+        # An isolated beam lives in a near-empty frame, so its whole removal can
+        # be well under the old 75 px "don't bother" floor and still be the only
+        # thing worth removing. 30 px is a real feature, not speckle, and the
+        # shape gates above already vouch that it is a ray.
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            log.info("beam_diag %s %s: would clear %d px (floor %d)",
+                     feed, name, int(gone.sum()), BEAM_MIN_REMOVE_PX)
+        if gone.sum() < BEAM_MIN_REMOVE_PX:
             continue
         if out is arr:
             out = arr.copy()
