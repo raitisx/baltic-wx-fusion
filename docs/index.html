@@ -247,9 +247,11 @@
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
 
-    <details id="tableWrap"><summary>Data table (fused hourly values)</summary><div id="tableBox"></div></details>
+    <!-- Data table and Jobs drawer are debug tooling — hidden on the normal
+         page, revealed with ?debug=1 (see boot). -->
+    <details id="tableWrap" hidden><summary>Data table (fused hourly values)</summary><div id="tableBox"></div></details>
 
-    <details id="ops" class="ops">
+    <details id="ops" class="ops" hidden>
       <summary><span class="opsarrow">&#9656;</span> Jobs <span class="opssum" id="opsSum"></span></summary>
       <div class="opsbody">
         <div class="opskey">
@@ -1648,9 +1650,11 @@ function render(){
              + ` · sun ${Math.round(r.dew.elev)}°`]] : []),
       // Every reason, not the first one: knowing the hour is out on gusts AND
       // a 200 m ceiling is what tells you whether waiting an hour helps.
+      // Each blocking reason on its own line (an array value renders stacked),
+      // so "gusts AND a 200 m ceiling" reads as two lines, not one run-on.
       ...(r.lidar
           ? [[r.lidar.length?"--lidarno":"--lidarok", "lidar",
-              r.lidar.length ? r.lidar.join(" · ") : "go — every limit clear"]]
+              r.lidar.length ? r.lidar : "go — every limit clear"]]
           : []),
     ];
     for(const [c,l,v] of rows){
@@ -1658,7 +1662,10 @@ function render(){
       const td1=document.createElement("td"); td1.className="lbl";
       const key=document.createElement("i"); key.style.borderColor=`var(${c})`;
       td1.appendChild(key); td1.appendChild(document.createTextNode(l));
-      const td2=document.createElement("td"); td2.className="v"; td2.textContent=v;
+      const td2=document.createElement("td"); td2.className="v";
+      if(Array.isArray(v)){
+        for(const line of v){ const d=document.createElement("div"); d.textContent=line; td2.appendChild(d); }
+      } else td2.textContent=v;
       tr.appendChild(td1); tr.appendChild(td2); tb.appendChild(tr);
     }
     tip.appendChild(tb);
@@ -2498,7 +2505,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v76",
+    "page v77",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2638,6 +2645,12 @@ async function init(){
   document.getElementById("wPrev").addEventListener("click",()=>goWeek(-1));
   document.getElementById("wNext").addEventListener("click",()=>goWeek(+1));
   document.getElementById("wToday").addEventListener("click",()=>{weekStart=weekMonday(new Date());load();});
+  // Debug tooling off the main page; ?debug=1 brings the data table and the
+  // Jobs drawer back.
+  if(QS.has("debug")){
+    const tw=document.getElementById("tableWrap"); if(tw) tw.hidden=false;
+    const op=document.getElementById("ops"); if(op) op.hidden=false;
+  }
   initStaticMap();
   const cur=POINTS.find(p=>p.point_id===currentPid);
   if(cur?.lat!=null) placeSmapMarker(cur.lat,cur.lon);
