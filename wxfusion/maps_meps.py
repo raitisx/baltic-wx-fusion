@@ -199,7 +199,7 @@ def rain_cmaps():
 # Total cloud cover, drawn as a grey wash beneath everything else — the way
 # meteo.pl shows cloud — so the fused map is not blank when the only weather is
 # cloud. Light where thin, darker toward overcast; nothing below a few percent.
-CLOUD_COLORS = ["#d4cfc1", "#8f8b80", "#5f5b52"]
+CLOUD_COLORS = ["#eae7e0", "#c7c5bf", "#afada8"]
 
 
 def _cloud_cmap():
@@ -209,12 +209,16 @@ def _cloud_cmap():
 
 def _draw_clouds(ax, xw, yw, tcc, cmap, alpha=0.6):
     """One hour of total cloud fraction (0..1) as a grey underlay. tcc None (an
-    older grid without the field, or a fetch that lacked it) draws nothing."""
+    older grid without the field, or a fetch that lacked it) draws nothing.
+
+    gouraud shading interpolates across the 2.5 km MEPS cells instead of
+    painting each as a flat block, so the wash reads as continuous cloud on the
+    ~1 px/km canvas rather than a lattice of squares."""
     if tcc is None:
         return
     cc = np.where(tcc >= 0.05, tcc, np.nan)
     ax.pcolormesh(xw, yw, cc, cmap=cmap, vmin=0.0, vmax=1.0,
-                  alpha=alpha, shading="auto", zorder=0)
+                  alpha=alpha, shading="gouraud", zorder=0)
 
 
 def _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm, alpha=0.9):
