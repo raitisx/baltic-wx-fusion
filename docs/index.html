@@ -98,6 +98,12 @@
     color:var(--threshold);border-color:var(--threshold)}
   .limbox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
     text-align:center;margin-top:1px;line-height:1.1}
+  /* Compact variant (altitude): arrow-less number with the label to its right. */
+  .limbox.compact{width:auto;display:flex;align-items:center;gap:3px}
+  .limbox.compact select{width:auto;padding:1px 3px;-webkit-appearance:none;
+    -moz-appearance:none;appearance:none;background-image:none;text-align:center;
+    color:var(--wind);border-color:var(--wind)}
+  .limbox.compact .cbcap{margin-top:0;color:var(--wind)}
   svg text{font-family:inherit}
   .tip{
     position:fixed;pointer-events:none;z-index:10;display:none;
@@ -1128,7 +1134,7 @@ function linePath(rows, key, y){
 const LIMITS={
   cb: {sel:"selCb", cap:"cloud limit", fallback:700, box:null, el:null},
   wg: {sel:"selWg", cap:"gust limit",  fallback:10,  box:null, el:null},
-  wz: {sel:"selWz", cap:"altitude m",  fallback:10,  box:null, el:null},
+  wz: {sel:"selWz", cap:"alt.m", fallback:10, box:null, el:null, compact:true, capRight:true},
 };
 function limSel(k){
   const L=LIMITS[k];
@@ -1223,14 +1229,14 @@ function placeLimitBox(k, yVB, totalH){
   const L=LIMITS[k];
   if(!L.box){
     L.box=document.createElement("div");
-    L.box.className="limbox";
+    L.box.className="limbox"+(L.compact?" compact":"");
     const sel=limSel(k);
     sel.hidden=false;
     L.box.appendChild(sel);
     if(L.cap){
       const cap=document.createElement("div");
       cap.className="cbcap"; cap.textContent=L.cap;
-      L.box.appendChild(cap);
+      L.box.appendChild(cap);   // a compact box lays this to the right (see CSS)
     }
   }
   L.box.style.top=(yVB/totalH*100).toFixed(3)+"%";
@@ -1409,7 +1415,10 @@ function render(){
     // goes above them: it says what the whole panel is about, so it reads
     // before the traces rather than after the limit that applies to them.
     placeLimitBox("wg", panelTop[p.id] + p.h*p.at + 20, totalH);
-    placeLimitBox("wz", panelTop[p.id] + p.h*p.at - 46, totalH);
+    // Altitude sits by the direction strip: it is the height the wind — and,
+    // more to the point, its direction — is read at, and direction aloft often
+    // differs from the ground.
+    placeLimitBox("wz", panelTop[p.id] + p.h - DIR_H/2, totalH);
     svgEl("path",{d:linePath(FUSED,"wsz",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
     for(const r of FUSED) if(r.wgz!=null)
       svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wgz),y2:y(r.wgz),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
@@ -2572,7 +2581,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v85",
+    "page v86",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
