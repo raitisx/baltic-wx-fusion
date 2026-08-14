@@ -239,9 +239,9 @@
 
     <div class="mapview" id="mapView" hidden>
       <div class="mapctl">
-        <button id="mapPrev">◀</button>
-        <button id="mapPlay">▶ play</button>
-        <button id="mapNext">▶</button>
+        <button id="mapPrev">&lt;</button>
+        <button id="mapPlay">▶</button>
+        <button id="mapNext">&gt;</button>
         <span class="mtime" id="mapTime" style="margin-left:auto"></span>
       </div>
       <div class="mapcols">
@@ -2575,8 +2575,8 @@ async function initMapsViewer(){
   document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
   document.getElementById("mapPlay").addEventListener("click",()=>{
     const btn=document.getElementById("mapPlay");
-    if(MV.playing){ clearInterval(MV.playing); MV.playing=null; btn.textContent="▶ play"; return; }
-    btn.textContent="⏸ stop";
+    if(MV.playing){ clearInterval(MV.playing); MV.playing=null; btn.textContent="▶"; return; }
+    btn.textContent="⏸";
     MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),500);
   });
   limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
@@ -2587,7 +2587,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v89",
+    "page v90",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

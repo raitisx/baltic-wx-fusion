@@ -678,10 +678,19 @@ def render_run(max_hours: int = 66) -> None:
     cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+    # Grey wash = low + medium cloud only, combined under random overlap
+    # (1 - Π(1-cc)). High cirrus is left out on purpose: it barely shades the
+    # ground and is not what a VFR pilot cares about, and total cloud_area_fraction
+    # was painting overcast grey wherever thin high cloud drifted over. Fall back
+    # to total cloud only if the mid-level field is missing.
     try:
-        tcc = np.array(ds.variables["cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+        mcc = np.array(ds.variables["medium_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+        tcc = 1.0 - (1.0 - lcc) * (1.0 - mcc)
     except Exception:
-        tcc = None
+        try:
+            tcc = np.array(ds.variables["cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+        except Exception:
+            tcc = None
     try:
         fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     except Exception:
