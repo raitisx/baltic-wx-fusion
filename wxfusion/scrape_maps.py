@@ -1450,27 +1450,19 @@ BEAM_FLANK_BINS = 3         # clean bearings offset to rebuild from
 BEAM_GROW_BINS = 0
 # What ONE wedge may take, as a fraction of the feed's echo in that frame.
 # The frame ceiling below is all-or-nothing, so a single greedy detection used
-# to veto every good one beside it. This is checked per wedge, after its
-# rebuild is computed and before it is written, so a bad wedge is dropped on
-# its own. 4% is roughly twice what the largest legitimate wedge took across
-# the 27-frame sample.
-WEDGE_MAX_REMOVE = 0.04
-# A ceiling on what this pass may take from one feed in one frame. Not a
-# tuning knob — a floor under a bad day. Measured across 27 feed-frames the
-# median removal is 2.2%, but one Estonian frame lost 97.4% of its echo: a
-# narrow band of rain, condemned bearings whose rotated neighbours were empty,
-# and the whole field rebuilt as nothing. Any repair that large is a
-# misdiagnosis by definition, and the frame is better off untouched than
-# blank.
-# Two ceilings, because one number cannot tell the two cases apart. A frame
-# with one or two rays in it can legitimately lose a lot — on 02.08 the Riga
-# streak alone was 9% of Latvia's echo, because Latvia had little echo and one
-# long bright ray. A frame that condemns a fan of bearings and then removes a
-# third of everything has misdiagnosed a band of rain, and no single wedge
-# explains it.
-BEAM_FEW_WEDGES = 3
-BEAM_MAX_REMOVE_FEW = 0.20
-BEAM_MAX_REMOVE_MANY = 0.08
+# The old per-wedge veto (WEDGE_MAX_REMOVE = 4%) is gone: it spared exactly the
+# beams that sit on rain, which is what we were asked to delete. The flank fill
+# is the safeguard instead — a beam over rain is bridged, not lost.
+#
+# One disaster backstop remains, over the whole stage: if the NET removal
+# (echo that ended up empty, after the flank fill had its chance to bridge)
+# is more than this fraction of the feed's echo, none of it is applied. A net
+# loss that large means a band of rain was condemned as a fan of rays with
+# nothing beside it to bridge from — a misdiagnosis, and the frame is better
+# left alone than blanked. Set well above any legitimate case: a real beam
+# nets almost nothing (bridged), and even an isolated beam that is most of a
+# sparse frame stays under it.
+BEAM_MAX_REMOVE_FRAME = 0.55
 # How far a condemned wedge may grow into its shoulders. ZERO, and that is a
 # measurement rather than a default. Growing while a neighbouring bearing still
 # half-failed the test looked right on one frame, and across 27 it took 8.24%
@@ -1628,7 +1620,6 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
             gsel.append(np.zeros(N_AZ, bool)); gsel[-1][g] = True
         if not touched.any():
             continue
-        echo_tot = max(int((lev > 0).sum()), 1)
         for off, gs, note in zip(offs, gsel, gnotes):
             sel = ok & gs[az]
             if not sel.any():
@@ -1658,19 +1649,21 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
             # crossing real rain is bridged from its neighbours at full
             # strength — and drops the case that was not, a beam in clear air
             # being replaced by a ghost of itself.
-            both = (vals[0] > 0) & (vals[1] > 0)
-            newv = np.where(both, np.clip(np.rint((vals[0] + vals[1]) / 2.0),
-                                          0, LEV_MAX), 0).astype(np.uint8)
-            # Judge each wedge on its own before accepting it. The ceiling in
-            # _prepare_source is the whole stage's, and being all-or-nothing it
-            # threw away four good wedges to veto a fifth — which is why 5 of
-            # 27 frames came out with no beam work at all. Here a greedy wedge
-            # simply does not get written and its neighbours still do.
-            lost = int(((lev[sy, sx] > 0) & (newv == 0)).sum())
-            if lost / echo_tot > WEDGE_MAX_REMOVE:
-                notes.append(f"{note} SKIPPED, would take "
-                             f"{lost / echo_tot * 100:.1f}% of the echo")
-                continue
+            # Delete the beam bearing and fill it from the flanks, as asked:
+            # bridge where rain sits on both sides (their mean), take whichever
+            # side has rain when only one does, and leave it empty only where
+            # neither neighbour carries anything. The flanks are sampled off the
+            # ray to either side (see above), so a beam crossing rain is rebuilt
+            # at full strength and a beam in clear air is simply erased. No
+            # per-wedge veto any more: the flank fill is the safeguard, so a
+            # detected beam is always deleted rather than spared for sitting on
+            # rain it can be bridged across.
+            ssum = vals[0] + vals[1]
+            cnt = ((vals[0] > 0).astype(np.float32)
+                   + (vals[1] > 0).astype(np.float32))
+            newv = np.where(cnt > 0,
+                            np.clip(np.rint(ssum / np.maximum(cnt, 1.0)),
+                                    0, LEV_MAX), 0).astype(np.uint8)
             if out is lev:
                 out = lev.copy()
             out[sy, sx] = newv
@@ -1697,13 +1690,17 @@ def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
     lev, wedges = _repair_beams_source(lev, feed, o["sw"], o["ne"])
     if lev is plain:
         return plain
-    cap = (BEAM_MAX_REMOVE_FEW if wedges <= BEAM_FEW_WEDGES
-           else BEAM_MAX_REMOVE_MANY)
+    # Only a disaster backstop now, not a per-beam veto. With the flanks doing
+    # the fill, a real beam over rain nets almost no loss (it is bridged), so a
+    # large net removal means the detector condemned a fan of bearings that was
+    # actually a band of rain with nothing beside it to bridge from. Above this
+    # the frame is left alone; below it, confident beams — including an isolated
+    # one that is most of a sparse frame — are deleted as asked.
     was = int((plain > 0).sum())
     gone = int(((plain > 0) & (lev == 0)).sum())
-    if was and gone / was > cap:
-        log.warning("source beams (%s): %d wedges would take %.0f%% of the "
-                    "echo (%d of %d px) — leaving the frame alone",
+    if was and gone / was > BEAM_MAX_REMOVE_FRAME:
+        log.warning("source beams (%s): %d wedges would net %.0f%% of the "
+                    "echo (%d of %d px) — misdiagnosis, leaving the frame alone",
                     feed, wedges, 100 * gone / was, gone, was)
         return plain
     return lev
