@@ -231,9 +231,16 @@
     <div class="tip" id="tip"></div>
 
     <div class="mapview" id="mapView" hidden>
+      <div class="mapctl">
+        <button id="mapPrev">◀</button>
+        <button id="mapPlay">▶ play</button>
+        <button id="mapNext">▶</button>
+        <span class="mtime" id="mapTime"></span>
+        <span class="mapsub">scrub the meteogram above to seek — the black line is the playhead</span>
+      </div>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Ceiling + precip <span class="mapsub" id="mepsTime">pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
+          <div class="mapcolhead">TTAero fused <span class="mapsub" id="mepsTime">pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -244,13 +251,6 @@
           <div class="mapcolhead">Radar LV+EE+LT <span class="mapsub" id="radarTime"></span></div>
           <div class="stack"><img class="mimg" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
         </div>
-      </div>
-      <div class="mapctl">
-        <button id="mapPrev">◀</button>
-        <button id="mapPlay">▶ play</button>
-        <button id="mapNext">▶</button>
-        <input type="range" id="mapSlider" min="0" max="0" value="0">
-        <span class="mtime" id="mapTime"></span>
       </div>
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
@@ -1622,7 +1622,23 @@ function render(){
 
   drawNowLine(svg, plotTop, plotBottom);
 
-  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:plotBottom,stroke:"#000","stroke-width":1.3,visibility:"hidden"},svg);
+  // The crosshair is the maps' seek bar: it runs the full height of the chart
+  // and ends in a handle at the bottom, and the maps below follow whatever hour
+  // it sits on. It stays put when the pointer leaves, and map playback moves it.
+  const seekBottom=totalH-3;
+  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:seekBottom,stroke:"#000","stroke-width":1.3,visibility:"hidden"},svg);
+  const seekDot=svgEl("circle",{cx:0,cy:seekBottom,r:4.5,fill:"#000",stroke:"#fdf9ec","stroke-width":1,visibility:"hidden"},svg);
+  const placeSeek=x=>{
+    cross.setAttribute("x1",x); cross.setAttribute("x2",x);
+    seekDot.setAttribute("cx",x);
+    cross.setAttribute("visibility","visible");
+    seekDot.setAttribute("visibility","visible");
+  };
+  // Let map playback / the prev-next buttons drive the seek line too.
+  window.__seekTo=ts=>{
+    if(ts>=FUSED[0].ts && ts<=FUSED[FUSED.length-1].ts+3600e3) placeSeek(xPos(ts));
+  };
+  if(MV.hours && MV.hours[MV.idx]) window.__seekTo(Date.parse(MV.hours[MV.idx]));
   const tip=document.getElementById("tip");
   const hit=svgEl("rect",{x:P.left,y:plotTop,width:P.width-P.left-P.right,height:plotBottom-plotTop,fill:"transparent"},svg);
   hit.addEventListener("pointermove",ev=>{
@@ -1632,8 +1648,7 @@ function render(){
     h=Math.max(0,Math.min(HOURS-1,h));
     const r=FUSED[h];
     const x=xPos(r.ts);
-    cross.setAttribute("x1",x); cross.setAttribute("x2",x);
-    cross.setAttribute("visibility","visible");
+    placeSeek(x);
     if(window.__setMapHour) window.__setMapHour(r.ts);
     tip.style.display="block";
     const px=ev.clientX+14, flip=px+240>window.innerWidth;
@@ -2463,7 +2478,7 @@ function mapShow(i){
   if(!MV.hours.length) return;
   MV.idx=Math.max(0,Math.min(MV.hours.length-1,i));
   const iso=MV.hours[MV.idx];
-  document.getElementById("mapSlider").value=MV.idx;
+  if(window.__seekTo) window.__seekTo(Date.parse(iso));   // move the seek line
   const label=fmtDT.format(new Date(iso));
   document.getElementById("mapTime").textContent=label;
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
@@ -2527,8 +2542,6 @@ async function initMapsViewer(){
   }));
   if(!Object.keys(MV.loaded).length){ miss.hidden=false; return; }
   view.hidden=false;
-  const sl=document.getElementById("mapSlider");
-  sl.addEventListener("input",()=>mapShow(+sl.value));
   document.getElementById("mapPrev").addEventListener("click",()=>mapShow(MV.idx-1));
   document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
   document.getElementById("mapPlay").addEventListener("click",()=>{
@@ -2545,7 +2558,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v82",
+    "page v83",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2562,7 +2575,6 @@ function setMapAxis(){
   const t0=weekStart.getTime();
   for(let h=0;h<HOURS;h++)
     MV.hours.push(new Date(t0+h*3600e3).toISOString().slice(0,19)+"Z");
-  document.getElementById("mapSlider").max=MV.hours.length-1;
   const now=Date.now();
   let idx=MV.hours.findIndex(h=>Date.parse(h)>=now);
   if(idx<0) idx=MV.hours.length-1;
