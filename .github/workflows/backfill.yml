@@ -35,6 +35,7 @@ on:
           - pairing-r2
           - radar-diag
           - radar-render-one
+          - radar-snapshot
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -145,6 +146,7 @@ jobs:
             pairing-r2)       pip install duckdb pyarrow pytz ;;  # + psycopg/boto3 from requirements
             radar-diag)       pip install pillow numpy pyproj scipy scikit-image boto3 ;;
             radar-render-one) pip install pillow numpy pyproj scipy scikit-image boto3 ;;
+            radar-snapshot)   pip install pillow numpy pyproj scipy scikit-image boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -342,6 +344,15 @@ jobs:
           R2_BUCKET: baltic-wx
           RADAR_RENDER_TS: ${{ inputs.diag_ts }}
         run: python jobs/run_radar_render_one.py
+
+      # Render the current (or RADAR_SNAP_TS) composite RAW vs CLEAN and print
+      # both as base64 PNG into the log, so the frame can be inspected from a box
+      # that cannot reach R2. Writes nothing.
+      - name: Radar beam before/after snapshot
+        if: inputs.target == 'radar-snapshot'
+        env:
+          RADAR_SNAP_TS: ${{ inputs.diag_ts }}
+        run: python jobs/run_radar_beam_snapshot.py
 
       # Read-only against R2, and it can only raise a daily total, never lower
       # one — so it is safe to run whenever the totals look thin.
