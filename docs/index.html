@@ -137,7 +137,7 @@
   .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
          background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
          pointer-events:none;z-index:3}
-  .mapctl{display:flex;gap:3px;align-items:center;margin:-30px 0 8px;flex-wrap:wrap}
+  .mapctl{display:flex;gap:3px;align-items:center;margin:-30px 0 8px;flex-wrap:wrap;position:relative;z-index:5}
   .mapctl input[type=range]{flex:1;min-width:200px;accent-color:var(--ink)}
   .mapctl .mtime{font-size:12px;font-weight:700;color:var(--ink);min-width:150px}
   @media (max-width:900px){
@@ -2587,7 +2587,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v92",
+    "page v93",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
