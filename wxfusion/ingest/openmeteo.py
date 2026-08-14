@@ -97,25 +97,33 @@ def fetch(points: list[dict]) -> list[tuple]:
     fetched_at = dt.datetime.now(dt.timezone.utc)
     s = session()
     rows: list[tuple] = []
-    # Open-Meteo supports comma-separated multi-location requests.
-    lat = ",".join(f"{p['lat']:.4f}" for p in points)
-    lon = ",".join(f"{p['lon']:.4f}" for p in points)
-    r = s.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": ",".join(HOURLY_VARS),
-            "models": ",".join(config.OPENMETEO_MODELS.values()),
-            "forecast_days": config.FORECAST_DAYS,
-            "windspeed_unit": "ms",
-            "timezone": "UTC",
-        },
-        timeout=120,
-    )
-    r.raise_for_status()
-    payload = r.json()
-    locations = payload if isinstance(payload, list) else [payload]
+    # Open-Meteo packs every location into the query string, so one request for
+    # all points eventually trips the server's URI length limit (a 414 as the
+    # point list grows: national stations, plus a virtual point per map click).
+    # Batch the points instead — the locations come back in request order, so
+    # accumulating them keeps them aligned with `points` for the zip below.
+    MAX_POINTS_PER_REQUEST = 100
+    locations: list = []
+    for start in range(0, len(points), MAX_POINTS_PER_REQUEST):
+        chunk = points[start:start + MAX_POINTS_PER_REQUEST]
+        lat = ",".join(f"{p['lat']:.4f}" for p in chunk)
+        lon = ",".join(f"{p['lon']:.4f}" for p in chunk)
+        r = s.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": ",".join(HOURLY_VARS),
+                "models": ",".join(config.OPENMETEO_MODELS.values()),
+                "forecast_days": config.FORECAST_DAYS,
+                "windspeed_unit": "ms",
+                "timezone": "UTC",
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        locations += payload if isinstance(payload, list) else [payload]
 
     for point, loc in zip(points, locations):
         hourly = loc.get("hourly", {})
