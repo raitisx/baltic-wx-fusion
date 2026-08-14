@@ -1448,11 +1448,17 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
     """Find bearings that do not belong, and rebuild them from their
     neighbours. Returns (levels, how many wedges were rebuilt)."""
     if (lev > 0).sum() < BEAM_MIN_PX:
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            log.info("beam_diag %s: only %d echo px (< BEAM_MIN_PX=%d) — beam "
+                     "repair skipped for the whole frame", feed,
+                     int((lev > 0).sum()), BEAM_MIN_PX)
         return lev, 0
     out, notes, kept = lev, [], 0
     mine = [(n, la, lo) for n, la, lo in RADAR_SITES
             if n.startswith((feed or "")[:2])]
     if not mine:
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            log.info("beam_diag %s: no radar sites match this feed prefix", feed)
         return lev, 0        # every caller unpacks two; this path returned one
     # Each antenna judges only the pixels it is the nearest to. Without this,
     # Lithuania's Vilnius sees echo over Laukuva's half of the country as a
@@ -1466,6 +1472,10 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
         rb = rng.astype(int)
         ok = (rb >= RIDGE_MIN_KM) & (rb <= R_MAX_KM) & (nearest == si)
         if (ok & (out > 0)).sum() < BEAM_MIN_PX:
+            if os.environ.get("RADAR_BEAM_DEBUG"):
+                log.info("beam_diag %s %s: only %d echo px in this site's own "
+                         "sector (< %d) — site skipped", feed, name,
+                         int((ok & (out > 0)).sum()), BEAM_MIN_PX)
             continue
         pol = np.zeros((N_AZ, R_MAX_KM + 1), np.float32)
         np.maximum.at(pol, (az[ok], rb[ok]), out[ok].astype(np.float32))
@@ -1679,7 +1689,12 @@ def beam_diag(ts_iso: str) -> None:
                  round((best["time"] - target).total_seconds() / 60))
         # Runs _prepare_source -> _repair_beams_source, which logs the notes and
         # (with the debug env) the per-bearing near-miss table. Nothing stored.
-        _load_and_classify(best["url"], s, code, best)
+        lev = _load_and_classify(best["url"], s, code, best)
+        if lev is None:
+            log.info("beam_diag %s: overlay did not load (fetch/decoded None)", code)
+        else:
+            log.info("beam_diag %s: classified echo = %d px (BEAM_MIN_PX=%d)",
+                     code, int((lev > 0).sum()), BEAM_MIN_PX)
 
 
 def _load_and_classify(url: str, s, feed: str | None = None,
