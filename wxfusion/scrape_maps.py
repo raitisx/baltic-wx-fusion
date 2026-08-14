@@ -878,17 +878,21 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
             a0, a1 = sl[0].start, sl[0].stop
             r0, r1 = sl[1].start, sl[1].stop
             r_span = r1 - r0
-            if r_span < BEAM_MIN_LEN_KM:
-                continue
             a_span = (a1 - a0) * 360.0 / N_AZ
             width_km = (r0 + r1) / 2.0 * np.radians(a_span)
-            if width_km <= 0:
-                continue
-            elong = r_span / width_km
-            wedge = (a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
+            elong = r_span / width_km if width_km > 0 else 0.0
+            long_enough = r_span >= BEAM_MIN_LEN_KM
+            wedge = (long_enough and a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
                      and r0 <= BEAM_START_KM)
-            needle = (a_span <= BEAM_NARROW_DEG and elong >= BEAM_NARROW_ELONG)
-            if not (wedge or needle):
+            needle = (long_enough and a_span <= BEAM_NARROW_DEG
+                      and elong >= BEAM_NARROW_ELONG)
+            hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
+                    and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
+            if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
+                log.info("beam_diag polar %s: comp r%d-%d span%d aspan%.1f "
+                         "elong%.1f start%d -> wedge=%s needle=%s hair=%s", name,
+                         r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
+            if not (wedge or needle or hair):
                 continue
             kill_bins[sl] |= (lab[sl] == i)
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
@@ -898,7 +902,10 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
             continue
         # Only ever clear pixels that were lit; the closing was for detection.
         gone = keep & kill_bins[az, rb]
-        if gone.sum() < BEAM_MIN_PX // 2:
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            log.info("beam_diag polar %s: would clear %d px (floor %d)",
+                     name, int(gone.sum()), BEAM_MIN_REMOVE_PX)
+        if gone.sum() < BEAM_MIN_REMOVE_PX:
             continue
         out[gone] = 0
 
