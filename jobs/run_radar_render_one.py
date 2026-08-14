@@ -16,10 +16,14 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 
 def main() -> None:
-    ts = os.environ.get("RADAR_RENDER_TS", "").strip()
-    if not ts:
-        raise SystemExit("set RADAR_RENDER_TS, e.g. 2026-08-11T17:00")
-    scrape_maps.radar_render_one(ts)
+    raw = os.environ.get("RADAR_RENDER_TS", "").strip()
+    if not raw:
+        raise SystemExit("set RADAR_RENDER_TS, e.g. 2026-08-11T17:00 "
+                         "(comma-separate several)")
+    # Sequential in one process, so each re-render reads the archive the last
+    # one wrote — no lost updates across the several hours.
+    for ts in [t.strip() for t in raw.split(",") if t.strip()]:
+        scrape_maps.radar_render_one(ts)
 
 
 if __name__ == "__main__":
