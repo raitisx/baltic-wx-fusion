@@ -102,8 +102,8 @@
   .limbox.compact{width:auto;display:flex;align-items:center;gap:3px}
   .limbox.compact select{width:auto;padding:1px 3px;-webkit-appearance:none;
     -moz-appearance:none;appearance:none;background-image:none;text-align:center;
-    color:var(--wind);border-color:var(--wind)}
-  .limbox.compact .cbcap{margin-top:0;color:var(--wind)}
+    color:var(--threshold);border-color:var(--threshold)}
+  .limbox.compact .cbcap{margin-top:0;color:var(--threshold)}
   svg text{font-family:inherit}
   .tip{
     position:fixed;pointer-events:none;z-index:10;display:none;
@@ -1133,8 +1133,8 @@ function linePath(rows, key, y){
 // limitOf() rather than the DOM.
 const LIMITS={
   cb: {sel:"selCb", cap:"cloud limit", fallback:700, box:null, el:null},
-  wg: {sel:"selWg", cap:"gust limit",  fallback:10,  box:null, el:null},
-  wz: {sel:"selWz", cap:"alt.m", fallback:10, box:null, el:null, compact:true, capRight:true},
+  wg: {sel:"selWg", cap:"gust lim.", fallback:10, box:null, el:null, compact:true},
+  wz: {sel:"selWz", cap:"alt.m", fallback:10, box:null, el:null, compact:true},
 };
 function limSel(k){
   const L=LIMITS[k];
@@ -1312,6 +1312,9 @@ function render(){
   // from. The last row's baseline lands on the mark and the rest stack above,
   // which is the direction the arrows were drawn in.
   for(const p of PANELS){
+    // The wind panel draws its own legend at the bottom (gusts/wind/dir stacked
+    // by the direction strip), so it is skipped here.
+    if(p.id==="wind") continue;
     const ly0=panelTop[p.id]+Math.round(p.h*p.at);
     let ly=ly0;
     for(const [txt,varName] of [...p.rows].reverse()){
@@ -1410,23 +1413,18 @@ function render(){
     const hi=Math.max(Math.ceil(Math.max(0,...vals,wgLim+2)/5)*5,10);
     const y=scaffold(p,0,hi,niceTicks(0,hi,4),DIR_H);
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(wgLim),y2:y(wgLim),stroke:css("--threshold"),"stroke-width":1.2,"stroke-dasharray":"6 4"},svg);
-    // Directly under the panel's own labels, so the control sits in the legend
-    // it belongs to rather than in a sidebar three columns away. The altitude
-    // goes above them: it says what the whole panel is about, so it reads
-    // before the traces rather than after the limit that applies to them.
-    placeLimitBox("wg", panelTop[p.id] + p.h*p.at + 20, totalH);
-    // Altitude sits by the direction strip: it is the height the wind — and,
-    // more to the point, its direction — is read at, and direction aloft often
-    // differs from the ground.
-    placeLimitBox("wz", panelTop[p.id] + p.h - DIR_H/2, totalH);
+    // Both selectors sit at the TOP of the panel, stacked: altitude first (the
+    // height the wind and its direction are read at — direction aloft often
+    // differs from the ground), then the gust limit under it.
+    placeLimitBox("wz", panelTop[p.id] + 14, totalH);
+    placeLimitBox("wg", panelTop[p.id] + 38, totalH);
     svgEl("path",{d:linePath(FUSED,"wsz",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
     for(const r of FUSED) if(r.wgz!=null)
       svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wgz),y2:y(r.wgz),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
-    // Station wind is measured at 10 m. It is shown whatever altitude the panel
-    // is set to (with a light halo so it reads over the traces); at 80 m+ it is
-    // ground truth for a different height, so read it as the 10 m anchor under
-    // the modelled profile rather than as the same quantity.
-    for(const o of (obsIdx.ws10m||[]))
+    // Station wind is measured at 10 m, so the observations only appear when
+    // the panel is set to 10 m — against an 80 m+ trace they would be a
+    // different quantity. Halo so they read over the wind line.
+    if(wz<=10) for(const o of (obsIdx.ws10m||[]))
       svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2,fill:css("--wind"),
         stroke:"#fffdf4","stroke-width":0.8},svg);
 
@@ -1436,9 +1434,15 @@ function render(){
     const stripTop=panelTop[p.id]+p.h-DIR_H;
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:stripTop,y2:stripTop,
       stroke:css("--gridday"),"stroke-width":1},svg);
-    const lbl=svgEl("text",{x:P.left-6,y:stripTop+DIR_H/2+4,"text-anchor":"end",
-      "font-size":"10","font-weight":"700",fill:css("--muted")},svg);
-    lbl.textContent="dir";
+    // Legend for the panel, stacked at the bottom: gusts, wind, dir — one under
+    // another, ending on the direction strip.
+    const dirY=stripTop+DIR_H/2+4;
+    svgEl("text",{x:6,y:dirY-28,"font-size":"11","font-weight":"700",
+                  fill:css("--gust")},svg).textContent="gusts";
+    svgEl("text",{x:6,y:dirY-14,"font-size":"11","font-weight":"700",
+                  fill:css("--wind")},svg).textContent="wind";
+    svgEl("text",{x:6,y:dirY,"font-size":"11","font-weight":"700",
+                  fill:css("--muted")},svg).textContent="dir";
     // One arrow every DIR_GAP px of chart, not every hour: at a week across
     // 1080 px the hours are 6 px apart and the arrowheads would overlap.
     const pxH=xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts);
@@ -2581,7 +2585,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v87",
+    "page v88",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
