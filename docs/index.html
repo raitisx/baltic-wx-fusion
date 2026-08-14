@@ -304,6 +304,7 @@ const fmtDM   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"2-digit",month
 const fmtDT   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtTime = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 const fmtWd   = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short"});
+const fmtDNM  = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,day:"numeric",month:"short"});
 const fmtNowTab = new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",
   day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
 function rigaHour(d){ return parseInt(fmtHour.format(d),10); }
@@ -1032,7 +1033,7 @@ P.left = P.gutter + P.axis;
 // like the rest.
 const PANELS = [
   {id:"temp",  h:130, at:0.733, rows:[["temp. °C","--temp"],["dew pt °C","--dew"]]},
-  {id:"prcp",  h:120, at:0.868, rows:[["precip mm/h","--precip"],["rel.humid. %","--humid"]]},
+  {id:"prcp",  h:120, at:0.868, rows:[["precip. mm/h","--precip"],["rel.humid. %","--humid"]]},
   // 138 rather than 120: the direction strip is added to the panel instead of
   // taken out of it, so the speed curves keep the height they were drawn at.
   // `at` moved with it so the legend text stays 86 px below the panel top,
@@ -1284,7 +1285,9 @@ function render(){
     const ts0=FUSED[0].ts + d*86400e3;
     const x0=xPos(ts0), x1=xPos(ts0+86400e3);
     const t=svgEl("text",{x:(x0+x1)/2,y:15,"text-anchor":"middle","font-size":"13","font-weight":"700",fill:css("--ink")},svg);
-    t.textContent = fmtDay.format(new Date(ts0+12*3600e3));
+    // "Mon 16. Aug." rather than "Mon 16/08".
+    const d0=new Date(ts0+12*3600e3);
+    t.textContent = `${fmtWd.format(d0)} ${fmtDNM.format(d0).replace(" ",". ")}.`;
     if(verdicts[d]!=="unknown"){
       const vc = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):css("--ok");
       svgEl("rect",{x:x0+3,y:22,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
@@ -2528,7 +2531,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v79",
+    "page v80",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
