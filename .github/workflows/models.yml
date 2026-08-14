@@ -48,6 +48,12 @@ jobs:
             echo "calibrate=1" >> "$GITHUB_OUTPUT"; else echo "calibrate=0" >> "$GITHUB_OUTPUT"; fi
 
       - name: Forecasts (hot tier + R2 archive + prune)
+        # Best-effort like every other step: the ingest hits Open-Meteo's free
+        # tier, which rate-limits, and the page fetches forecasts live in the
+        # browser while pairing reads the R2 archive — so a throttled pass must
+        # not redden the whole run. openmeteo.fetch paces requests to avoid the
+        # limit and only raises if it ingested nothing at all.
+        continue-on-error: true
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

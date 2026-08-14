@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import time
 
 from .. import config
 from ..http import session
@@ -97,35 +98,7 @@ def fetch(points: list[dict]) -> list[tuple]:
     fetched_at = dt.datetime.now(dt.timezone.utc)
     s = session()
     rows: list[tuple] = []
-    # Open-Meteo packs every location into the query string, so one request for
-    # all points eventually trips the server's URI length limit (a 414 as the
-    # point list grows: national stations, plus a virtual point per map click).
-    # Batch the points instead — the locations come back in request order, so
-    # accumulating them keeps them aligned with `points` for the zip below.
-    MAX_POINTS_PER_REQUEST = 100
-    locations: list = []
-    for start in range(0, len(points), MAX_POINTS_PER_REQUEST):
-        chunk = points[start:start + MAX_POINTS_PER_REQUEST]
-        lat = ",".join(f"{p['lat']:.4f}" for p in chunk)
-        lon = ",".join(f"{p['lon']:.4f}" for p in chunk)
-        r = s.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": lat,
-                "longitude": lon,
-                "hourly": ",".join(HOURLY_VARS),
-                "models": ",".join(config.OPENMETEO_MODELS.values()),
-                "forecast_days": config.FORECAST_DAYS,
-                "windspeed_unit": "ms",
-                "timezone": "UTC",
-            },
-            timeout=120,
-        )
-        r.raise_for_status()
-        payload = r.json()
-        locations += payload if isinstance(payload, list) else [payload]
-
-    for point, loc in zip(points, locations):
+    def _ingest(point, loc):
         hourly = loc.get("hourly", {})
         times = [
             dt.datetime.fromisoformat(t).replace(tzinfo=dt.timezone.utc)
@@ -177,6 +150,53 @@ def fetch(points: list[dict]) -> list[tuple]:
                         rows.append(
                             (our_model, run_time, valid, point["point_id"], "cb", lcl)
                         )
-    log.info("openmeteo: %d forecast rows (%d points, %d models)",
-             len(rows), len(points), len(config.OPENMETEO_MODELS))
+    # Open-Meteo's free tier rate-limits per minute, and one pass is ~338
+    # points x 5 models. Firing that as a few back-to-back requests bursts past
+    # the limit and the whole batch comes back 429 (which is what broke the
+    # ingest once national stations tripled the point count). Keep each request
+    # small and pace them — ~50 points a request with a pause between, well
+    # under the per-minute budget. Batching also keeps each URL short, so the
+    # old 414 stays gone. A chunk that still fails after the session's own 429
+    # backoff is skipped (its points get no forecast this pass) rather than
+    # sinking the whole models run; only a total wipeout — nothing ingested at
+    # all — re-raises, so a genuine outage still surfaces.
+    MAX_POINTS_PER_REQUEST = 50
+    PAUSE_S = 45
+    got = 0
+    last_err = None
+    for start in range(0, len(points), MAX_POINTS_PER_REQUEST):
+        chunk = points[start:start + MAX_POINTS_PER_REQUEST]
+        if start:
+            time.sleep(PAUSE_S)
+        lat = ",".join(f"{p['lat']:.4f}" for p in chunk)
+        lon = ",".join(f"{p['lon']:.4f}" for p in chunk)
+        try:
+            r = s.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": ",".join(HOURLY_VARS),
+                    "models": ",".join(config.OPENMETEO_MODELS.values()),
+                    "forecast_days": config.FORECAST_DAYS,
+                    "windspeed_unit": "ms",
+                    "timezone": "UTC",
+                },
+                timeout=120,
+            )
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as e:
+            last_err = e
+            log.warning("openmeteo: points %d-%d failed (%s) — skipping this chunk",
+                        start, start + len(chunk), type(e).__name__)
+            continue
+        locs = payload if isinstance(payload, list) else [payload]
+        for point, loc in zip(chunk, locs):
+            _ingest(point, loc)
+        got += len(chunk)
+    if got == 0 and last_err is not None:
+        raise last_err
+    log.info("openmeteo: %d forecast rows (%d/%d points, %d models)",
+             len(rows), got, len(points), len(config.OPENMETEO_MODELS))
     return rows
