@@ -1985,12 +1985,29 @@ const CITIES=[
 // border. Nemunas: in from the south past Kaunas, then west to the Curonian
 // Lagoon.
 const RIVERS=[
-  [[24.02,57.04],[24.10,56.95],[24.36,56.86],[24.72,56.74],[25.25,56.60],
-   [25.72,56.62],[25.86,56.50],[26.17,56.35],[26.54,55.87],[27.17,55.90],
-   [27.65,55.80]],
-  [[23.97,54.02],[24.16,54.16],[24.05,54.40],[23.95,54.63],[23.88,54.90],
-   [23.58,55.05],[22.77,55.08],[22.58,55.07],[22.10,55.08],[21.48,55.35],
-   [21.30,55.28]],
+  // Daugava: Gulf of Rīga up the valley past Jēkabpils and Daugavpils to the
+  // Belarus border.
+  [[24.10,57.06],[24.06,57.02],[24.09,56.99],[24.10,56.95],[24.19,56.93],
+   [24.28,56.90],[24.36,56.86],[24.45,56.85],[24.52,56.83],[24.62,56.79],
+   [24.72,56.74],[24.80,56.72],[24.90,56.68],[24.99,56.63],[25.08,56.61],
+   [25.17,56.60],[25.26,56.60],[25.36,56.63],[25.43,56.65],[25.52,56.64],
+   [25.62,56.63],[25.72,56.62],[25.79,56.57],[25.86,56.50],[25.95,56.45],
+   [26.05,56.40],[26.17,56.35],[26.22,56.28],[26.28,56.20],[26.35,56.12],
+   [26.42,56.02],[26.48,55.95],[26.54,55.87],[26.62,55.86],[26.75,55.85],
+   [26.90,55.87],[27.05,55.90],[27.17,55.90],[27.30,55.84],[27.42,55.80],
+   [27.50,55.77],[27.62,55.75],[27.72,55.72]],
+  // Nemunas: in from the south past Alytus and Kaunas, then the long westward
+  // reach along the Kaliningrad border to the Curonian Lagoon.
+  [[23.97,54.02],[24.00,54.05],[24.03,54.09],[24.06,54.13],[24.16,54.16],
+   [24.12,54.22],[24.10,54.28],[24.06,54.34],[24.05,54.40],[24.06,54.46],
+   [24.05,54.52],[23.96,54.53],[23.87,54.52],[23.90,54.57],[23.95,54.63],
+   [24.00,54.60],[24.03,54.58],[24.06,54.62],[24.04,54.68],[23.98,54.73],
+   [23.95,54.80],[23.90,54.85],[23.88,54.90],[23.78,54.94],[23.68,54.99],
+   [23.58,55.05],[23.48,55.06],[23.40,55.08],[23.32,55.10],[23.20,55.09],
+   [23.05,55.08],[22.90,55.06],[22.77,55.08],[22.68,55.08],[22.58,55.07],
+   [22.48,55.07],[22.40,55.08],[22.25,55.08],[22.10,55.08],[21.95,55.08],
+   [21.87,55.08],[21.75,55.12],[21.65,55.20],[21.55,55.28],[21.48,55.32],
+   [21.40,55.31],[21.32,55.30]],
 ];
 let smapMarker=null, smapCell=null, selectedCell=null;
 function metersToPx(x,y){ return [(x-GX0)/(GX1-GX0)*570, (GY1-y)/(GY1-GY0)*690]; }
@@ -2048,9 +2065,9 @@ function initStaticMap(){
       const left=c.d==="left";
       mk("circle",{cx:px,cy:py,r:2,fill:"#3a3524",stroke:"#fdf9ec",
         "stroke-width":0.6,"pointer-events":"none"});
-      mk("text",{x:left?px-3:px+3,y:py-2,"font-size":"9.2",fill:"#2a2617",
+      mk("text",{x:left?px-5:px+5,y:py-4,"font-size":"27.6",fill:"#2a2617",
         "text-anchor":left?"end":"start","pointer-events":"none",
-        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:2.2;stroke-linejoin:round"
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:6.5;stroke-linejoin:round"
       }).textContent=c.n;
     }
     for(const p of POINTS){
@@ -2449,7 +2466,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v74",
+    "page v75",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
