@@ -245,13 +245,20 @@ def verify(conn, pubkey: str, sample: int = 8, week_days: int = 7) -> dict:
 
     checked = 0
     for pid in points:
-        # forecasts: freshest run per (model, valid_time), settled window only
+        # forecasts: freshest run per (model, valid_time), settled window only.
+        # R2 is a SUPERSET here, not an equal: the hot tier the RPC reads is
+        # pruned to FORECAST_KEEP_DAYS (5), while the published file keeps the
+        # full KEEP_DAYS (21) window this verify samples (7 days). So forecasts
+        # 5-7 days old are in R2 but no longer in the RPC — expected, that is the
+        # archive outliving the hot tier. Require every key the RPC still serves
+        # to be present and equal in R2 (which catches R2 missing anything the
+        # page needs); allow R2 to carry the older ones the RPC has dropped.
         rpc_f = {(x["m"], x["t"][:19]): x for x in _rpc("wx_point_window", pid) if _in(x["t"])}
         r2_f = {(x["m"], x["t"][:19]): x for x in _r2("fcst", pid) if _in(x["t"])}
-        assert set(rpc_f) == set(r2_f), (
-            f"{pid} fcst keys differ: rpc={len(rpc_f)} r2={len(r2_f)} "
-            f"only_rpc={list(set(rpc_f)-set(r2_f))[:3]} "
-            f"only_r2={list(set(r2_f)-set(rpc_f))[:3]}")
+        assert set(rpc_f) <= set(r2_f), (
+            f"{pid} fcst: keys the RPC serves are missing from r2 "
+            f"(rpc={len(rpc_f)} r2={len(r2_f)}): "
+            f"{list(set(rpc_f) - set(r2_f))[:3]}")
         for k, rv in rpc_f.items():
             for p in _FCST_VALS:
                 a, b = rv.get(p), r2_f[k].get(p)
