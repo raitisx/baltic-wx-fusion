@@ -797,10 +797,12 @@ BEAM_START_KM = 150
 BEAM_HAIR_DEG = 3.0
 BEAM_HAIR_ELONG = 15.0
 BEAM_HAIR_LEN = 20
-# Smallest removal worth writing. Was BEAM_MIN_PX // 2 (75) inline; lowered
-# because an isolated beam's whole footprint can be smaller than that and still
-# be exactly what wants clearing.
-BEAM_MIN_REMOVE_PX = 30
+# Smallest removal worth writing. Was BEAM_MIN_PX // 2 (75) inline. An isolated
+# beam in a low-res source frame is tiny — the 11.08 Riga ray was 28 px all
+# told — so the floor has to sit below that. The shape gates (a 20 km ray, 3
+# deg wide, 15x+ elongated, from the antenna) are what vouch it is a beam; this
+# is only a speckle guard, and 15 px of that shape is not speckle.
+BEAM_MIN_REMOVE_PX = 15
 
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
