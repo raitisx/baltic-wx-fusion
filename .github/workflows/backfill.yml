@@ -33,6 +33,7 @@ on:
           - pair-stats
           - meteogram
           - pairing-r2
+          - radar-diag
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -102,6 +103,10 @@ on:
         description: "meteogram: rolling days published per point (empty = 21)"
         type: string
         default: ""
+      diag_ts:
+        description: "radar-diag: frame to examine, UTC (e.g. 2026-08-11T17:00)"
+        type: string
+        default: ""
 
 jobs:
   backfill:
@@ -137,6 +142,7 @@ jobs:
             pair-stats)       pip install pyarrow boto3 psycopg[binary] ;;
             meteogram)        : ;;   # psycopg + boto3 already in requirements.txt
             pairing-r2)       pip install duckdb pyarrow pytz ;;  # + psycopg/boto3 from requirements
+            radar-diag)       pip install pillow numpy pyproj scipy scikit-image boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -311,6 +317,16 @@ jobs:
           R2_BUCKET: baltic-wx
           PAIRS_PRUNE: ${{ inputs.pairs_prune && '1' || '0' }}
         run: python jobs/run_pairs_archive.py
+
+      # Read-only beam-detector diagnosis for one frame: fetch its source
+      # overlays and log why each feed's beam detector did or did not fire.
+      # Writes nothing; used to tune the beam thresholds against a known miss.
+      - name: Radar beam-detector diagnosis
+        if: inputs.target == 'radar-diag'
+        env:
+          RADAR_DIAG_TS: ${{ inputs.diag_ts }}
+          RADAR_BEAM_DEBUG: "1"
+        run: python jobs/run_radar_beam_diag.py
 
       # Read-only against R2, and it can only raise a daily total, never lower
       # one — so it is safe to run whenever the totals look thin.

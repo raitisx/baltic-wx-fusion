@@ -1485,6 +1485,23 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
         hot = ((pol - flank2d) >= RIDGE_LIFT_CLASSES * SUB) & (pol > 0) & (flank2d > 0)
         hotlen = hot.sum(axis=1)
         bad |= hotlen >= RIDGE_MIN_LEN_KM
+        # Read-only diagnosis (RADAR_BEAM_DEBUG=1): the strongest reach-lift and
+        # hot-run bearings for this site, flagged or not, so a beam that slipped
+        # under the thresholds shows up as a near-miss rather than as silence.
+        if os.environ.get("RADAR_BEAM_DEBUG"):
+            reach_lift = reach - fr
+            ro = np.argsort(-reach_lift)[:8]
+            ho = np.argsort(-hotlen)[:8]
+            log.info("beam_diag %s %s: %d bad bearings (thr reach>=%d flank>=%d, "
+                     "hot>=%d km)", feed, name, int(bad.sum()), REACH_LIFT_KM,
+                     REACH_MIN_FLANK_KM, RIDGE_MIN_LEN_KM)
+            log.info("  top reach-lift: %s", "; ".join(
+                f"{k*360.0/N_AZ:.0f}deg lift{reach_lift[k]:.0f} "
+                f"(reach{reach[k]:.0f}/flank{fr[k]:.0f}) hot{int(hotlen[k])}"
+                for k in ro))
+            log.info("  top hot-run:    %s", "; ".join(
+                f"{k*360.0/N_AZ:.0f}deg hot{int(hotlen[k])} lift{reach_lift[k]:.0f}"
+                for k in ho))
         if not bad.any():
             continue
 
@@ -1634,6 +1651,35 @@ def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
                     feed, wedges, 100 * gone / was, gone, was)
         return plain
     return lev
+
+
+def beam_diag(ts_iso: str) -> None:
+    """Read-only beam-detector diagnosis for the frame nearest `ts_iso`
+    (e.g. "2026-08-11T17:00"). Fetches the source overlays around that time and
+    runs the same source-space classify + beam repair each feed gets in the
+    live composite, with RADAR_BEAM_DEBUG logging on, but writes nothing. Use it
+    to see whether a beam was never flagged (near-miss on the thresholds) or
+    flagged and then vetoed by a removal cap, before touching any threshold."""
+    os.environ.setdefault("RADAR_BEAM_DEBUG", "1")
+    s = session()
+    target = dt.datetime.fromisoformat(ts_iso)
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=dt.timezone.utc)
+    overlays = fetch_overlays_window(target - dt.timedelta(minutes=40),
+                                     target + dt.timedelta(minutes=40))
+    log.info("beam_diag %s: %d overlays in +-40 min window", ts_iso, len(overlays))
+    for code in ("EE", "LT2", "LT", "LV"):
+        cands = [o for o in overlays if o["code"] == code]
+        if not cands:
+            log.info("beam_diag %s: no overlay in window", code)
+            continue
+        best = min(cands, key=lambda o: abs((o["time"] - target).total_seconds()))
+        log.info("beam_diag %s: nearest sweep %s (%+d min)", code,
+                 best["time"].strftime("%H:%M"),
+                 round((best["time"] - target).total_seconds() / 60))
+        # Runs _prepare_source -> _repair_beams_source, which logs the notes and
+        # (with the debug env) the per-bearing near-miss table. Nothing stored.
+        _load_and_classify(best["url"], s, code, best)
 
 
 def _load_and_classify(url: str, s, feed: str | None = None,
