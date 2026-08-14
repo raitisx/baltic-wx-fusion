@@ -208,6 +208,15 @@
     <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are measuring stations · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
     <div class="mapnote" id="mapDiag"></div>
     <span class="status" id="status"></span>
+    <div class="mapnote">One slider drives all three columns (EPSG:3059, identical extent) · radar shows the frame nearest the selected hour (past only) · hover the meteogram to scrub · MET Norway MEPS (CC-BY) · ICM UW meteo.pl UM (advisory) · LVĢMC + Keskkonnaagentuur + LHMT radar via meteolapa.lv / meteo.lt</div>
+    <div class="mapnote">
+      Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS + UK Met Office UM via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
+      &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise &middot; times Europe/Riga
+      &middot; past days show the freshest run that covered each hour.
+      Observations (dots): LVĢMC (data.gov.lv, CC0), Keskkonnaagentuur / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
+      <a href="https://www.meteo.lt/">LHMT meteo.lt</a> (CC BY-SA 4.0), METAR via Iowa State IEM.
+      Cloud base is model-derived (LCL), verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.
+    </div>
   </aside>
 
   <main class="main">
@@ -243,7 +252,6 @@
         <input type="range" id="mapSlider" min="0" max="0" value="0">
         <span class="mtime" id="mapTime"></span>
       </div>
-      <div class="mapnote">One slider drives all three columns (EPSG:3059, identical extent) · radar shows the frame nearest the selected hour (past only) · hover the meteogram to scrub · MET Norway MEPS (CC-BY) · ICM UW meteo.pl UM (advisory) · LVĢMC + Keskkonnaagentuur + LHMT radar via meteolapa.lv / meteo.lt</div>
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
 
@@ -264,14 +272,6 @@
       </div>
     </details>
 
-    <div class="foot">
-      Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS + UK Met Office UM via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
-      &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise &middot; times Europe/Riga
-      &middot; past days show the freshest run that covered each hour.
-      Observations (dots): LVĢMC (data.gov.lv, CC0), Keskkonnaagentuur / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
-      <a href="https://www.meteo.lt/">LHMT meteo.lt</a> (CC BY-SA 4.0), METAR via Iowa State IEM.
-      Cloud base is model-derived (LCL), verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.
-    </div>
   </main>
 </div>
 
@@ -1126,6 +1126,11 @@ function limitOf(k){
 const cbLimit = () => limitOf("cb");
 const wgLimit = () => limitOf("wg");
 const wzLevel = () => limitOf("wz");
+// Keep the user's chosen limits across reloads.
+function saveLimits(){
+  try{ localStorage.setItem("wxLimits",
+        JSON.stringify({cb:cbLimit(), wg:wgLimit(), wz:wzLevel()})); }catch(e){}
+}
 
 // The wind at the height the job is flown at, rather than at the height the
 // forecast happens to be published at. Ten metres is a convention from surface
@@ -1284,19 +1289,26 @@ function render(){
   // from. The last row's baseline lands on the mark and the rest stack above,
   // which is the direction the arrows were drawn in.
   for(const p of PANELS){
-    let ly=panelTop[p.id]+Math.round(p.h*p.at);
+    const ly0=panelTop[p.id]+Math.round(p.h*p.at);
+    let ly=ly0;
     for(const [txt,varName] of [...p.rows].reverse()){
       const t=svgEl("text",{x:6,y:ly,"font-size":"11","font-weight":"700",fill:css(varName)},svg);
       t.textContent=txt;
       ly-=14;
     }
+    // The black dots on the temperature trace are real observations; label them
+    // bold, just under the dew-pt line.
+    if(p.id==="temp"){
+      svgEl("text",{x:6,y:ly0+14,"font-size":"11","font-weight":"800",
+                    fill:css("--text")},svg).textContent="real meas.";
+    }
   }
-  // Thin black separators between the stacked meteograms and their legends, so
-  // each panel reads as its own row rather than one tall block.
+  // Black separators between the stacked meteograms and their legends, so each
+  // panel reads as its own row rather than one tall block.
   for(let k=1;k<PANELS.length;k++){
     const yb=panelTop[PANELS[k].id]-1.5;
     svgEl("line",{x1:0,x2:P.width-P.right,y1:yb,y2:yb,stroke:"#000",
-                  "stroke-width":0.5,"stroke-opacity":.5},svg);
+                  "stroke-width":1,"stroke-opacity":.65},svg);
   }
 
   // padBottom reserves a strip along the floor of a panel that the data scale
@@ -1451,12 +1463,9 @@ function render(){
     placeLimitBox("cb", top + p.h / 2, totalH);
     const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
-    // Legends for the two things sharing this top band: the grey cloud-cover
-    // strips and the black observation markers riding the 1 km+ line.
+    // Legend for the grey cloud-cover strips sharing this top band.
     svgEl("text",{x:6,y:top+10,"font-size":"9.5","font-weight":"700",
                   fill:css("--muted")},svg).textContent="cloudiness";
-    svgEl("text",{x:6,y:top+bandH-2,"font-size":"9.5","font-weight":"700",
-                  fill:css("--cloud")},svg).textContent="real meas";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
 
@@ -1591,7 +1600,7 @@ function render(){
 
   drawNowLine(svg, plotTop, plotBottom);
 
-  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:plotBottom,stroke:"#6b6552","stroke-width":1,visibility:"hidden"},svg);
+  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:plotBottom,stroke:"#000","stroke-width":1.3,visibility:"hidden"},svg);
   const tip=document.getElementById("tip");
   const hit=svgEl("rect",{x:P.left,y:plotTop,width:P.width-P.left-P.right,height:plotBottom-plotTop,fill:"transparent"},svg);
   hit.addEventListener("pointermove",ev=>{
@@ -2101,12 +2110,13 @@ function initStaticMap(){
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[c.lon,c.lat]);
       const [px,py]=metersToPx(mx,my);
       if(px<0||px>570||py<0||py>690) continue;
-      const left=c.d==="left";
       mk("circle",{cx:px,cy:py,r:2,fill:"#3a3524",stroke:"#fdf9ec",
         "stroke-width":0.6,"pointer-events":"none"});
-      mk("text",{x:left?px-4:px+4,y:py-3,"font-size":"13.8",fill:"#2a2617",
-        "text-anchor":left?"end":"start","pointer-events":"none",
-        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.25;stroke-linejoin:round"
+      // Every label snaps by its bottom-left corner to just right of the dot,
+      // so the name reads up and to the right from the point it marks.
+      mk("text",{x:px+4,y:py,"font-size":"16.6",fill:"#2a2617",
+        "text-anchor":"start","pointer-events":"none",
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.9;stroke-linejoin:round"
       }).textContent=c.n;
     }
     for(const p of POINTS){
@@ -2505,7 +2515,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v77",
+    "page v78",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
@@ -2615,15 +2625,21 @@ async function load(){
 }
 
 async function init(){
-  for(const [qv,selId,unit] of [[Q.cb,"selCb",""],[Q.wg,"selWg",""],[Q.wz,"selWz",""]]){
-    if(qv==null || !isFinite(qv)) continue;
+  // Limits persist across reloads: an explicit ?cb/?wg/?wz wins, otherwise the
+  // last values the user picked (localStorage), otherwise the select default.
+  let savedLimits={};
+  try{ savedLimits=JSON.parse(localStorage.getItem("wxLimits")||"{}"); }catch(e){}
+  for(const [qv,selId,unit,lk] of [[Q.cb,"selCb","","cb"],[Q.wg,"selWg","","wg"],[Q.wz,"selWz","","wz"]]){
+    let v = (qv!=null && isFinite(qv)) ? qv
+          : (isFinite(savedLimits[lk]) ? savedLimits[lk] : null);
+    if(v==null) continue;
     const sel=document.getElementById(selId);
-    if(![...sel.options].some(o=>+o.value===qv)){
+    if(![...sel.options].some(o=>+o.value===+v)){
       const o=document.createElement("option");
-      o.value=String(qv); o.textContent=qv+unit;
+      o.value=String(v); o.textContent=v+unit;
       sel.appendChild(o);
     }
-    sel.value=String(qv);
+    sel.value=String(v);
   }
   weekStart = clampWeek(Q.week ? weekMonday(new Date(Q.week+"T12:00:00Z"))
                                 : weekMonday(new Date()));
@@ -2640,7 +2656,7 @@ async function init(){
   if(startPt) setPoint(startPt.point_id,
     isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
                        : `▣ ${startPt.name ?? "map cell"} · 25 km`);
-  for(const k of ["cb","wg","wz"]) limSel(k).addEventListener("change",()=>{render();});
+  for(const k of ["cb","wg","wz"]) limSel(k).addEventListener("change",()=>{saveLimits();render();});
   opsInit();
   document.getElementById("wPrev").addEventListener("click",()=>goWeek(-1));
   document.getElementById("wNext").addEventListener("click",()=>goWeek(+1));
