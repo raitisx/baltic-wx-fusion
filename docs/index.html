@@ -205,7 +205,7 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are measuring stations · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
+    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are airports (METAR) · teal dots are national stations (rain + humidity) · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
     <div class="mapnote" id="mapDiag"></div>
     <span class="status" id="status"></span>
     <div class="mapnote">One slider drives all three columns (EPSG:3059, identical extent) · radar shows the frame nearest the selected hour (past only) · hover the meteogram to scrub · MET Norway MEPS (CC-BY) · ICM UW meteo.pl UM (advisory) · LVĢMC + Keskkonnaagentuur + LHMT radar via meteolapa.lv / meteo.lt</div>
@@ -1386,8 +1386,14 @@ function render(){
       svgEl("rect",{x:xPos(r.ts)+0.75,y:y(r.prcp_1h),width:bw,height:Math.max(h,2),
         fill:css("--precip"),"fill-opacity":op.toFixed(2)},svg);
     }
+    // Measured rain (only on hours it actually rained) and measured humidity,
+    // both with a light halo so they read against the bars and the orange line.
     for(const o of (obsIdx.prcp_1h||[])) if(o.v>0)
-      svgEl("circle",{cx:xPos(o.ts),cy:y(Math.min(o.v,maxP)),r:2,fill:css("--cloud")},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:y(Math.min(o.v,maxP)),r:2.4,
+        fill:css("--precip"),stroke:"#fffdf4","stroke-width":1},svg);
+    for(const o of (obsIdx.rh||[])) if(o.v!=null)
+      svgEl("circle",{cx:xPos(o.ts),cy:yH(Math.max(0,Math.min(o.v,100))),r:2,
+        fill:css("--humid"),stroke:"#fffdf4","stroke-width":0.8},svg);
   }
 
   // gusts / wind
@@ -1695,7 +1701,9 @@ function render(){
     }
     tip.appendChild(tb);
   });
-  hit.addEventListener("pointerleave",()=>{cross.setAttribute("visibility","hidden");tip.style.display="none";});
+  // Leave the crosshair where it was — only the tooltip goes away when the
+  // pointer leaves, so the line stays put on the hour last looked at.
+  hit.addEventListener("pointerleave",()=>{tip.style.display="none";});
 }
 
 // ---------- jobs drawer ----------
@@ -2042,6 +2050,8 @@ const CITIES=[
   {n:"Utena",lat:55.4986,lon:25.6031,d:"left"},
   {n:"Druskininkai",lat:54.0186,lon:23.9714},
   {n:"Ainaži",lat:57.8703,lon:24.3567},
+  {n:"Marijampolė",lat:54.5536,lon:23.3542},
+  {n:"Lielvārde",lat:56.7186,lon:24.8103},
 ];
 // The two big rivers, as plain blue lines (no label) — just enough to orient
 // the eye. [lon,lat] waypoints tracing the course; the SVG clips whatever runs
@@ -2139,20 +2149,24 @@ function initStaticMap(){
       if(p.lat==null || !isStation(p)) continue;
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
       const [px,py]=metersToPx(mx,my);
-      // Small dot, large invisible hit area: the earlier "3x larger" was about
-      // being able to hit the thing, not about the ink. Twenty 30 px blobs
-      // buried the map they were drawn on.
-      mk("circle",{cx:px,cy:py,r:4.5,fill:"#1c2c85","fill-opacity":0.85,stroke:"#fdf9ec","stroke-width":1.5});
-      const c=mk("circle",{cx:px,cy:py,r:15,fill:"#000","fill-opacity":0});
+      const metar = p.kind==="metar";
+      // METAR airports as the bigger blue dots (temp/wind/humidity, no rain);
+      // the denser national-network stations — LVĢMC, meteo.lt, Estonia, the
+      // ones that actually measure rain — as smaller teal dots with a tighter
+      // hit area, so ~250 of them stay pickable without swamping the map.
+      mk("circle",{cx:px,cy:py,r:metar?4.5:2.2,
+        fill:metar?"#1c2c85":"#0f7a55","fill-opacity":metar?0.85:0.85,
+        stroke:"#fdf9ec","stroke-width":metar?1.5:0.7});
+      const c=mk("circle",{cx:px,cy:py,r:metar?15:6,fill:"#000","fill-opacity":0});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
         ev.stopPropagation();
         clearSmapCell();
-        setPoint(p.point_id, `${p.point_id} — ${p.name??""}`);
+        setPoint(p.point_id, metar ? `${p.point_id} — ${p.name??""}` : (p.name||p.point_id));
         placeSmapMarker(p.lat,p.lon);
         load();
       });
-      const t=document.createElementNS(NS,"title"); t.textContent=`${p.point_id} ${p.name??""}`; c.appendChild(t);
+      const t=document.createElementNS(NS,"title"); t.textContent=`${p.name??p.point_id}`; c.appendChild(t);
     }
   }
   document.getElementById("smap").addEventListener("click",async ev=>{
@@ -2531,7 +2545,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v80",
+    "page v81",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
