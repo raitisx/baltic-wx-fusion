@@ -196,6 +196,27 @@ def rain_cmaps():
                      vmin=RAIN_STOPS[0], vmax=RAIN_STOPS[-1]))
 
 
+# Total cloud cover, drawn as a grey wash beneath everything else — the way
+# meteo.pl shows cloud — so the fused map is not blank when the only weather is
+# cloud. Light where thin, darker toward overcast; nothing below a few percent.
+CLOUD_COLORS = ["#d4cfc1", "#8f8b80", "#5f5b52"]
+
+
+def _cloud_cmap():
+    from matplotlib.colors import LinearSegmentedColormap
+    return LinearSegmentedColormap.from_list("cloud", CLOUD_COLORS)
+
+
+def _draw_clouds(ax, xw, yw, tcc, cmap, alpha=0.6):
+    """One hour of total cloud fraction (0..1) as a grey underlay. tcc None (an
+    older grid without the field, or a fetch that lacked it) draws nothing."""
+    if tcc is None:
+        return
+    cc = np.where(tcc >= 0.05, tcc, np.nan)
+    ax.pcolormesh(xw, yw, cc, cmap=cmap, vmin=0.0, vmax=1.0,
+                  alpha=alpha, shading="auto", zorder=0)
+
+
 def _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm, alpha=0.9):
     """Precipitation in two passes, split at freezing.
 
@@ -654,6 +675,10 @@ def render_run(max_hours: int = 66) -> None:
     acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     try:
+        tcc = np.array(ds.variables["cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+    except Exception:
+        tcc = None
+    try:
         fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     except Exception:
         fog = None
@@ -676,6 +701,7 @@ def render_run(max_hours: int = 66) -> None:
     greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
+    grey = _cloud_cmap()
 
     # project the MEPS cell coordinates once (curvilinear mesh in LKS-92)
     xw, yw = P.to_xy(lonw, latw)
@@ -731,6 +757,7 @@ def render_run(max_hours: int = 66) -> None:
         t2m = tair[i] if tair is not None else None
         for thr in THRESHOLDS:
             fig, ax = blank_fig()
+            _draw_clouds(ax, xw, yw, tcc[i] if tcc is not None else None, grey)
             fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
             below = np.where(np.isfinite(cb[i]) & (cb[i] < thr) & ~fg, 1.0, np.nan)
             ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,

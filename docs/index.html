@@ -247,7 +247,7 @@
       </div>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">TTAero fused <span class="mapsub" id="mepsTime">pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
+          <div class="mapcolhead">TTAero fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -2581,7 +2581,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v86",
+    "page v87",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
