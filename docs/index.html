@@ -23,6 +23,7 @@
   }
   html,body{margin:0;padding:0}
   body{
+    box-sizing:border-box;
     font-family:"Trebuchet MS",Verdana,-apple-system,"Segoe UI",sans-serif;
     background:var(--bg); color:var(--text);
     min-height:100vh; padding:14px;
@@ -1412,10 +1413,13 @@ function render(){
     svgEl("path",{d:linePath(FUSED,"wsz",y),fill:"none",stroke:css("--wind"),"stroke-width":2,"stroke-linejoin":"round"},svg);
     for(const r of FUSED) if(r.wgz!=null)
       svgEl("line",{x1:xPos(r.ts)-2,x2:xPos(r.ts)+2,y1:y(r.wgz),y2:y(r.wgz),stroke:css("--gust"),"stroke-width":2.6,"stroke-linecap":"round"},svg);
-    // Station wind is measured at 10 m and means nothing against a 120 m
-    // trace, so the observations only appear when the panel is showing 10 m.
-    if(wz<=10) for(const o of (obsIdx.ws10m||[]))
-      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2,fill:css("--cloud")},svg);
+    // Station wind is measured at 10 m. It is shown whatever altitude the panel
+    // is set to (with a light halo so it reads over the traces); at 80 m+ it is
+    // ground truth for a different height, so read it as the 10 m anchor under
+    // the modelled profile rather than as the same quantity.
+    for(const o of (obsIdx.ws10m||[]))
+      svgEl("circle",{cx:xPos(o.ts),cy:y(o.v),r:2,fill:css("--wind"),
+        stroke:"#fffdf4","stroke-width":0.8},svg);
 
     // Direction strip along the floor of the panel. Each arrow flies WITH the
     // wind — it points where the air is going, so a westerly (wind from 270°)
@@ -1640,13 +1644,21 @@ function render(){
   };
   if(MV.hours && MV.hours[MV.idx]) window.__seekTo(Date.parse(MV.hours[MV.idx]));
   const tip=document.getElementById("tip");
-  const hit=svgEl("rect",{x:P.left,y:plotTop,width:P.width-P.left-P.right,height:plotBottom-plotTop,fill:"transparent"},svg);
-  hit.addEventListener("pointermove",ev=>{
+  // The whole chart height is the scrub surface now, down to and including the
+  // seek handle at the bottom, so grabbing the line/handle and dragging moves
+  // the maps. A pressed pointer keeps scrubbing even if it wanders off the top.
+  const hit=svgEl("rect",{x:P.left,y:plotTop,width:P.width-P.left-P.right,height:seekBottom-plotTop,fill:"transparent"},svg);
+  hit.style.cursor="ew-resize";
+  const seekFromX=clientX=>{
     const rect=svg.getBoundingClientRect();
-    const fx=(ev.clientX-rect.left)/rect.width*P.width;
+    const fx=(clientX-rect.left)/rect.width*P.width;
     let h=Math.round((fx-P.left)/((P.width-P.left-P.right)/HOURS));
     h=Math.max(0,Math.min(HOURS-1,h));
-    const r=FUSED[h];
+    return FUSED[h];
+  };
+  hit.addEventListener("pointerdown",ev=>{ try{hit.setPointerCapture(ev.pointerId)}catch(e){} });
+  hit.addEventListener("pointermove",ev=>{
+    const r=seekFromX(ev.clientX);
     const x=xPos(r.ts);
     placeSeek(x);
     if(window.__setMapHour) window.__setMapHour(r.ts);
@@ -2560,7 +2572,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v84",
+    "page v85",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
