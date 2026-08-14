@@ -199,7 +199,7 @@ def rain_cmaps():
 # Total cloud cover, drawn as a grey wash beneath everything else — the way
 # meteo.pl shows cloud — so the fused map is not blank when the only weather is
 # cloud. Light where thin, darker toward overcast; nothing below a few percent.
-CLOUD_COLORS = ["#f5f1ea", "#c7c5bf", "#a8a6a1"]
+CLOUD_COLORS = ["#fefaf3", "#c7c5bf", "#a2a09b"]
 
 
 def _cloud_cmap():
@@ -551,6 +551,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
     greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
+    grey = _cloud_cmap()
     tmp = tempfile.mkdtemp()
 
     runs = datasets if datasets is not None else list_runs()[:-1][-max_runs:]
@@ -578,6 +579,12 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
             cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+            # low+medium cloud wash, high cirrus excluded — matches render_run
+            try:
+                mcc = np.array(ds.variables["medium_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
+                tcc = 1.0 - (1.0 - lcc) * (1.0 - mcc)
+            except Exception:
+                tcc = None
             try:
                 fog = np.array(ds.variables["fog_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
             except Exception:
@@ -623,6 +630,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 ax.set_facecolor("#fbf3de")
                 ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
                 ax.set_aspect("equal"); ax.axis("off")
+                _draw_clouds(ax, xw, yw, tcc[i] if tcc is not None else None, grey)
                 fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
                 below = np.where(np.isfinite(cb[i]) & (cb[i] < thr) & ~fg, 1.0, np.nan)
                 ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
