@@ -811,8 +811,9 @@ BEAM_MIN_REMOVE_PX = 15
 # appears near an antenna sitting under heavy rain). So a component is only
 # removed when a flank is substantially clear; an over-reach that pokes out past
 # the rain still has an empty flank and is still caught.
-BEAM_FLANK_ISO_BINS = 3      # azimuth bins tested on each side of a component
-BEAM_FLANK_ISO_FRAC = 0.5    # both flanks this occupied over the ray's range = embedded
+BEAM_FLANK_ISO_BINS = 6      # azimuth bins tested on each side (±3°); wide enough
+#                              to see past a beam's own narrow clearance margin
+BEAM_FLANK_ISO_FRAC = 0.4    # both flanks this occupied over a range = embedded there
 
 
 def _embedded_range_mask(closed, a0, a1) -> np.ndarray:
