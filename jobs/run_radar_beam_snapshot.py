@@ -53,8 +53,8 @@ def _compose(overlays, target, cold, clean):
             if cls is None:
                 continue
             grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
-            grid = sm._despeckle_intensity(
-                sm._remove_beam_lines(sm._remove_beams_polar(sm._despeckle(grid))))
+            grid = sm._close_radial_spokes(sm._despeckle_intensity(
+                sm._remove_beam_lines(sm._remove_beams_polar(sm._despeckle(grid)))))
         else:
             grid = _raw_grid(best["url"], s, code, best)
             if grid is None:
