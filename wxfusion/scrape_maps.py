@@ -815,16 +815,20 @@ BEAM_FLANK_ISO_BINS = 3      # azimuth bins tested on each side of a component
 BEAM_FLANK_ISO_FRAC = 0.5    # both flanks this occupied over the ray's range = embedded
 
 
-def _beam_embedded(closed, a0, a1, r0, r1) -> bool:
-    """True if the component at azimuth [a0,a1) range [r0,r1) has echo on BOTH
-    flanks along its range — i.e. it is buried in rain, not an isolated beam."""
-    if r1 <= r0:
-        return False
+def _embedded_range_mask(closed, a0, a1) -> np.ndarray:
+    """Per-range boolean over [0..R_MAX]: True where a component at azimuth
+    [a0,a1) has echo on BOTH flanks AT THAT RANGE — i.e. buried in rain there.
+
+    Per-range, not whole-component, because an over-reaching beam is in the rain
+    near the antenna and in clear air further out: averaging its flanks over the
+    whole length lands in the middle and the whole ray gets zeroed, gouging the
+    rain it started in. Sparing only the ranges that are actually embedded
+    removes the part poking out of the storm and leaves the part inside it."""
     la = [(a0 - 1 - k) % N_AZ for k in range(BEAM_FLANK_ISO_BINS)]
     ra = [(a1 + k) % N_AZ for k in range(BEAM_FLANK_ISO_BINS)]
-    lf = float(closed[la][:, r0:r1].mean())
-    rf = float(closed[ra][:, r0:r1].mean())
-    return min(lf, rf) >= BEAM_FLANK_ISO_FRAC
+    lf = closed[la].mean(0)          # fraction of left flank bins lit, per range
+    rf = closed[ra].mean(0)
+    return (lf >= BEAM_FLANK_ISO_FRAC) & (rf >= BEAM_FLANK_ISO_FRAC)
 
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
@@ -916,12 +920,17 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
                          r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
             if not (wedge or needle or hair):
                 continue
-            if _beam_embedded(closed, a0, a1, r0, r1):
+            # Zero the ray only where a flank is clear; spare the ranges where
+            # it is buried in rain, so an over-reach loses its cone without a
+            # white gash being punched through the storm it started in.
+            comp = (lab == i)
+            comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
+            if not comp.any():
                 if os.environ.get("RADAR_BEAM_DEBUG"):
-                    log.info("beam_diag polar %s: comp r%d-%d embedded in echo "
-                             "on both flanks — kept, not gouged", name, r0, r1)
+                    log.info("beam_diag polar %s: comp r%d-%d fully embedded — "
+                             "kept, not gouged", name, r0, r1)
                 continue
-            kill_bins[sl] |= (lab[sl] == i)
+            kill_bins |= comp
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
                            f"elong {elong:.1f}")
 
@@ -1413,12 +1422,14 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                          r1, r_span, a_span, elong, r0, wedge, needle, hair)
             if not (wedge or needle or hair):
                 continue
-            if _beam_embedded(closed, a0, a1, r0, r1):
+            comp = (lab == i)
+            comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
+            if not comp.any():
                 if os.environ.get("RADAR_BEAM_DEBUG"):
-                    log.info("beam_diag %s %s: comp r%d-%d embedded in echo on "
-                             "both flanks — kept, not gouged", feed, name, r0, r1)
+                    log.info("beam_diag %s %s: comp r%d-%d fully embedded — kept",
+                             feed, name, r0, r1)
                 continue
-            kill[sl] |= (lab[sl] == i)
+            kill |= comp
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
         if not kill.any():
             continue
