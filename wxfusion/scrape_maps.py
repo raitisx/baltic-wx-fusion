@@ -804,6 +804,28 @@ BEAM_HAIR_LEN = 20
 # is only a speckle guard, and 15 px of that shape is not speckle.
 BEAM_MIN_REMOVE_PX = 15
 
+# Isolation gate. A real interference beam has clear sky on at least one side.
+# A ray-shaped run of echo with rain on BOTH azimuthal flanks along its whole
+# range is either rain itself or a beam buried in rain — and zeroing it just
+# punches a white radial gash through the storm (the "star" of white lines that
+# appears near an antenna sitting under heavy rain). So a component is only
+# removed when a flank is substantially clear; an over-reach that pokes out past
+# the rain still has an empty flank and is still caught.
+BEAM_FLANK_ISO_BINS = 3      # azimuth bins tested on each side of a component
+BEAM_FLANK_ISO_FRAC = 0.5    # both flanks this occupied over the ray's range = embedded
+
+
+def _beam_embedded(closed, a0, a1, r0, r1) -> bool:
+    """True if the component at azimuth [a0,a1) range [r0,r1) has echo on BOTH
+    flanks along its range — i.e. it is buried in rain, not an isolated beam."""
+    if r1 <= r0:
+        return False
+    la = [(a0 - 1 - k) % N_AZ for k in range(BEAM_FLANK_ISO_BINS)]
+    ra = [(a1 + k) % N_AZ for k in range(BEAM_FLANK_ISO_BINS)]
+    lf = float(closed[la][:, r0:r1].mean())
+    rf = float(closed[ra][:, r0:r1].mean())
+    return min(lf, rf) >= BEAM_FLANK_ISO_FRAC
+
 
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
     """Remove interference cones by the shape that defines them.
@@ -893,6 +915,11 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
                          "elong%.1f start%d -> wedge=%s needle=%s hair=%s", name,
                          r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
             if not (wedge or needle or hair):
+                continue
+            if _beam_embedded(closed, a0, a1, r0, r1):
+                if os.environ.get("RADAR_BEAM_DEBUG"):
+                    log.info("beam_diag polar %s: comp r%d-%d embedded in echo "
+                             "on both flanks — kept, not gouged", name, r0, r1)
                 continue
             kill_bins[sl] |= (lab[sl] == i)
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
@@ -1385,6 +1412,11 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                          "start%d -> wedge=%s needle=%s hair=%s", feed, name, r0,
                          r1, r_span, a_span, elong, r0, wedge, needle, hair)
             if not (wedge or needle or hair):
+                continue
+            if _beam_embedded(closed, a0, a1, r0, r1):
+                if os.environ.get("RADAR_BEAM_DEBUG"):
+                    log.info("beam_diag %s %s: comp r%d-%d embedded in echo on "
+                             "both flanks — kept, not gouged", feed, name, r0, r1)
                 continue
             kill[sl] |= (lab[sl] == i)
             removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
