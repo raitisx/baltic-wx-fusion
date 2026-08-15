@@ -1088,7 +1088,7 @@ let nowTimer=null;
 function drawNowLine(svg, plotTop, plotBottom){
   const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const g=svgEl("g",{},svg);
-  const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--panel"),"stroke-width":4,"stroke-opacity":.75},g);
+  const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--bg"),"stroke-width":4,"stroke-opacity":.75},g);
   const line=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--now"),"stroke-width":1.8},g);
   const tabW=104, tabH=13;
   const tab=svgEl("rect",{y:plotTop-tabH,width:tabW,height:tabH,rx:2,fill:css("--now"),"fill-opacity":.92},g);
@@ -1285,7 +1285,7 @@ function render(){
   const plotTop = panelTop[PANELS[0].id];
 
   for(const p of PANELS)
-    svgEl("rect",{x:P.left,y:panelTop[p.id],width:P.width-P.left-P.right,height:p.h,fill:css("--panel")},svg);
+    svgEl("rect",{x:P.left,y:panelTop[p.id],width:P.width-P.left-P.right,height:p.h,fill:css("--bg")},svg);
 
   for(const r of FUSED){
     if(r.hourOfDay>=21 || r.hourOfDay<6){
@@ -2592,7 +2592,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v95",
+    "page v96",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

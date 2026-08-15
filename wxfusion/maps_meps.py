@@ -508,7 +508,7 @@ def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
                         solid_capstyle="round")
                 ax.plot(bx, by, color="#b9c2d6", lw=0.9, solid_capstyle="round")
         buf = io.BytesIO()
-        fig.savefig(buf, dpi=100, format="png")
+        fig.savefig(buf, dpi=100, format="png", facecolor="#2b3242")
         plt.close(fig)
         buf.seek(0)
         q = io.BytesIO()
@@ -649,7 +649,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                         ax.plot(bx, by, color="#232b3a", lw=2.2, zorder=9)
                         ax.plot(bx, by, color="#b9c2d6", lw=0.9, zorder=10)
                 fp = os.path.join(tmp, "f.png")
-                fig.savefig(fp, dpi=100)
+                fig.savefig(fp, dpi=100, facecolor="#2b3242")
                 plt.close(fig)
                 PILImage.open(fp).convert("RGB").quantize(
                     colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
@@ -761,7 +761,7 @@ def render_run(max_hours: int = 66) -> None:
     fig, ax = blank_fig()
     draw_borders(ax)
     bg = os.path.join(tmp, "bg.png")
-    fig.savefig(bg, dpi=100)
+    fig.savefig(bg, dpi=100, facecolor="#2b3242")
     plt.close(fig)
     s3.upload_file(bg, config.R2_BUCKET, "maps/bg_3059.png", ExtraArgs={
         "ContentType": "image/png", "CacheControl": "public, max-age=604800"})
@@ -793,7 +793,7 @@ def render_run(max_hours: int = 66) -> None:
             _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
-            fig.savefig(fp, dpi=100)
+            fig.savefig(fp, dpi=100, facecolor="#2b3242")
             plt.close(fig)
             # palette-quantize: ~60% smaller files, visually identical at
             # these soft fills — matters because r2.dev is rate-limited
