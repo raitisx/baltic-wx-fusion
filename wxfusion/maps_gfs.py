@@ -406,7 +406,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
                 _draw_rain(ax, xw, yw, prm, tair, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
-            fig.savefig(fp, dpi=100)
+            fig.savefig(fp, dpi=100, facecolor="#2b3242")
             plt.close(fig)
             PILImage.open(fp).convert("RGB").quantize(
                 colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
