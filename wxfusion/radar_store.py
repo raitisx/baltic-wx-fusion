@@ -38,7 +38,8 @@ from PIL import Image
 
 from . import config
 from .http import session
-from .scrape_maps import (_classify_intensity, _despeckle, _despeckle_intensity,
+from .scrape_maps import (_classify_intensity, _close_radial_spokes,
+                          _despeckle, _despeckle_intensity,
                           _prepare_source,
                           _fade_edges,
                           _freezing_mask, _recolor, _remove_beam_lines,
@@ -279,8 +280,8 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
                 log.exception("render: %s unreadable", f["key"])
                 continue
             grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
-            grid = _despeckle_intensity(
-                _remove_beam_lines(_remove_beams_polar(_despeckle(grid))))
+            grid = _close_radial_spokes(_despeckle_intensity(
+                _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
             canvas.alpha_composite(_recolor(grid, cold, code))
             used.append(t)
         if not used:

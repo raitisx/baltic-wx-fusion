@@ -1109,6 +1109,115 @@ def _remove_spikes(cls: np.ndarray) -> np.ndarray:
              ", ".join(f"{k} x{v}" for k, v in sorted(hits.items())))
     return out
 
+
+# De-spoking. A radar overlay carries its own no-data spokes: a single azimuth
+# ray the source dropped reads as a thin white line radiating straight from the
+# antenna, right through whatever rain surrounds it. It is not our beam remover
+# — the gap is in the raw frame — and despeckle cannot touch it, because every
+# pixel bordering the slot is lit. The white "star" of hairline gashes the eye
+# picks out around a radar sitting under heavy rain is these dropped rays, one
+# per direction.
+#
+# The cure is the one every operational radar product applies: azimuthal
+# interpolation across the gap. It is gated so it can only ever close a slot
+# that is BOTH narrow (a couple of tenths of a degree) AND long (a genuine
+# radial spoke, not the everyday gap between two rain cells), and only where
+# rain brackets it on both azimuthal sides. The fill takes the LIGHTER of the
+# two flanking rays, so it can round a hole shut but never invent a core.
+SPOKE_MAX_GAP_BINS = 4     # close an azimuth slot up to ~2 deg wide
+SPOKE_MIN_LEN_KM = 40      # ... only if the slot runs at least this far in range
+SPOKE_INNER_KM = 20        # ... skip the sub-pixel azimuth fan hugging the antenna
+SPOKE_MIN_FILL_PX = 12     # ... and yields at least this much fill (speckle guard)
+
+
+def _close_radial_spokes(cls: np.ndarray) -> np.ndarray:
+    """Fill narrow no-data rays that are buried in rain on both sides."""
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return cls
+    if (cls > 0).sum() < BEAM_MIN_PX:
+        return cls
+    h, w = cls.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    out = cls.copy()
+    filled = 0
+    az_close = np.ones((SPOKE_MAX_GAP_BINS + 1, 1), bool)   # bridges azimuth slots
+    rng_close = np.ones((1, BEAM_GAP_KM), bool)             # bridges range holes
+
+    for name, sx, sy in _site_pixels():
+        rng = np.hypot(xx - sx, yy - sy)
+        within = rng <= R_MAX_KM
+        lit = (out > 0) & within
+        if lit.sum() < BEAM_MIN_PX:
+            continue
+        az = ((np.arctan2(yy - sy, xx - sx) + np.pi)
+              / (2 * np.pi) * N_AZ).astype(int) % N_AZ
+        rb = np.clip(rng.astype(int), 0, R_MAX_KM)
+
+        occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
+        occ[az[lit], rb[lit]] = True
+        # A 0.5-deg azimuth bin does not hit every 1 km range ring on the pixel
+        # grid, so a solid ray still reads as a dotted column. Bridge those holes
+        # along range first (as the beam pass does for dashes), so the only
+        # columns still empty are genuinely dropped rays.
+        occ = ndimage.binary_closing(occ, structure=rng_close)
+
+        # Embedded slots: empty bins that an azimuthal close bridges — i.e. with
+        # a ray within a couple of bins on BOTH sides at that range.
+        emb = ndimage.binary_closing(occ, structure=az_close) & ~occ
+        if not emb.any():
+            continue
+
+        # A dropped ray is a single bearing empty for a long unbroken run of
+        # range; the fan of sub-pixel bins near the antenna is empty only close
+        # in, and every bearing through real rain is lit again further out. So
+        # score each bearing by how much of it beyond the inner zone is embedded
+        # gap, and keep the bearings that run at least a spoke's length.
+        col = emb[:, SPOKE_INNER_KM:].sum(1)
+        spoke_az = col >= SPOKE_MIN_LEN_KM
+        if not spoke_az.any():
+            continue
+        # ... and only where that band of bearings stays narrow. A wide contiguous
+        # run of dead bearings is a blanked sector, not a ray.
+        albl, _ = ndimage.label(spoke_az)
+        for j in range(1, albl.max() + 1):
+            if int((albl == j).sum()) > SPOKE_MAX_GAP_BINS:
+                spoke_az[albl == j] = False
+        if not spoke_az.any():
+            continue
+        spoke = emb & spoke_az[:, None]
+
+        # The empty pixels lying in a dropped ray. Fill them in Cartesian space
+        # from their lit neighbours — a couple of rounds close a 1-2 px slot,
+        # each pixel taking the LIGHTER neighbour so a hole is rounded shut but
+        # a core is never invented. Bounded to the spoke pixels, so it can only
+        # ever touch a dropped ray, never a real gap.
+        cand = within & (out == 0) & spoke[az, rb]
+        n0 = int(cand.sum())
+        if n0 < SPOKE_MIN_FILL_PX:
+            continue
+        for _ in range(SPOKE_MAX_GAP_BINS + 1):
+            if not cand.any():
+                break
+            best = np.zeros((h, w), np.int16)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    sh = np.roll(np.roll(out, dy, 0), dx, 1)
+                    take = cand & (sh > 0) & ((best == 0) | (sh < best))
+                    best[take] = sh[take]
+            done = cand & (best > 0)
+            out[done] = best[done]
+            cand &= ~done
+        filled += n0 - int(cand.sum())
+
+    if filled:
+        log.info("radial de-spoke: filled %d px", filled)
+    return out
+
+
 def _despeckle(cls: np.ndarray, min_neighbors: int = 2) -> np.ndarray:
     """Remove isolated pixels & thin spikes (cone-beam artifacts):
     keep an echo pixel only if enough of its 8 neighbours also have echo."""
@@ -2120,8 +2229,8 @@ def radar_composite(frames_back: int = 3) -> None:
         # overlay's own pixels those coordinates point at nothing, which is why
         # beams kept surviving however the test was tuned.
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
-        cur = _despeckle_intensity(
-            _remove_beam_lines(_remove_beams_polar(_despeckle(cur))))
+        cur = _close_radial_spokes(_despeckle_intensity(
+            _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))))
         canvas.alpha_composite(_recolor(cur, cold, code))
 
     if newest is None:
@@ -2340,8 +2449,8 @@ def radar_backfill(hours_back: int = 168) -> None:
                     continue
                 # Warp first, clean second — see the note in radar_composite.
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
-                grid = _despeckle_intensity(
-                    _remove_beam_lines(_remove_beams_polar(_despeckle(grid))))
+                grid = _close_radial_spokes(_despeckle_intensity(
+                    _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
                 canvas.alpha_composite(_recolor(grid, cold, code))
                 used.append(best["time"])
                 got = True
@@ -2431,8 +2540,8 @@ def radar_render_one(ts_iso: str) -> None:
         if cls is None:
             continue
         grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
-        grid = _despeckle_intensity(
-            _remove_beam_lines(_remove_beams_polar(_despeckle(grid))))
+        grid = _close_radial_spokes(_despeckle_intensity(
+            _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
         canvas.alpha_composite(_recolor(grid, cold, code))
         used.append(best["time"])
     if not used:
