@@ -405,8 +405,8 @@ def um_run(hours: list[int] | None = None) -> None:
                     px, py = P.to_px([la for _, la in line],
                                      [lo for lo, _ in line])
                     pts = list(zip(px.tolist(), py.tolist()))
-                    d.line(pts, fill=(247, 241, 226, 230), width=3)
-                    d.line(pts, fill=(85, 80, 63, 255), width=1)
+                    d.line(pts, fill=(35, 43, 58, 230), width=3)
+                    d.line(pts, fill=(185, 194, 214, 255), width=1)
             valid = run + dt.timedelta(hours=h - UM_LEAD_OFFSET)
             vtag = valid.strftime("%Y%m%dT%H")
             buf = io.BytesIO()
@@ -2159,8 +2159,8 @@ def draw_borders(canvas: Image.Image) -> None:
         for line in c["lines"]:
             px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
             pts = list(zip(px.tolist(), py.tolist()))
-            d.line(pts, fill=(247, 241, 226, 230), width=3)
-            d.line(pts, fill=(85, 80, 63, 255), width=1)
+            d.line(pts, fill=(35, 43, 58, 230), width=3)
+            d.line(pts, fill=(185, 194, 214, 255), width=1)
 
 
 def _fade_edges(canvas: Image.Image) -> Image.Image:
