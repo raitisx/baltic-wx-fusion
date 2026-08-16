@@ -36,8 +36,15 @@ ELEV_STEP = float(os.environ.get("STATIC_ELEV_STEP") or "0.1")
 # Preferred: a GeoTIFF in R2 at DEM_KEY (any CRS — rasterio reads it and we
 # reproject the grid into it). DEM_URL fetches one over https instead. With
 # neither, elevation falls back to the Open-Meteo elevation API.
+# DEM sources, in priority order: a file in the repo (DEM_PATH), an https URL
+# (DEM_URL), then an R2 object (DEM_KEY). The bundled Baltic DEM is 1 km in
+# LKS-92 — the render grid's own CRS and resolution — so it is sampled with no
+# reprojection at all.
+DEM_PATH = os.environ.get("DEM_PATH") or "assets/dem/BALTIC_DEM_1KM.tif"
 DEM_KEY = os.environ.get("DEM_KEY") or "assets/dem/baltic_dem.tif"
 DEM_URL = os.environ.get("DEM_URL") or ""
+# CRS to assume when the GeoTIFF has none embedded (national DEMs often don't).
+DEM_CRS = os.environ.get("DEM_CRS") or "EPSG:3059"
 
 
 def _domain_box():
@@ -70,49 +77,66 @@ def _load_clipped(url, box_geom):
     return geom
 
 
-def _dem_elevation(lat, lon):
-    """Elevation on the full 1 km grid, sampled from a provided DEM GeoTIFF.
+def _grid_xy_3059():
+    """The render grid's pixel-centre eastings/northings in LKS-92 metres."""
+    xs = P.X0 + (np.arange(P.W) + 0.5) / P.W * (P.X1 - P.X0)
+    ys = P.Y1 - (np.arange(P.H) + 0.5) / P.H * (P.Y1 - P.Y0)
+    return np.meshgrid(xs, ys)
 
-    Looks for the TIF in R2 (DEM_KEY) or over https (DEM_URL), downloads it to
-    the runner, and samples it at every grid pixel — reprojecting the grid's
-    lon/lat into the DEM's own CRS first, so any national or European grid
-    works without the caller stating it. Returns the (H, W) array, or None if
-    no DEM is configured/reachable (caller falls back to the elevation API)."""
+
+def _resolve_dem() -> str | None:
+    """Local repo file, else https URL, else R2 object -> a readable path."""
     import tempfile
-    dem_path = None
+    if DEM_PATH and os.path.exists(DEM_PATH):
+        log.info("DEM: %s (repo)", DEM_PATH)
+        return DEM_PATH
     try:
         if DEM_URL:
             log.info("DEM: fetching %s", DEM_URL)
-            r = session().get(DEM_URL, timeout=600)
-            r.raise_for_status()
+            r = session().get(DEM_URL, timeout=600); r.raise_for_status()
             fd = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
             fd.write(r.content); fd.close()
-            dem_path = fd.name
-        else:
-            from wxfusion import archive
-            fd = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
-            fd.close()
-            log.info("DEM: downloading r2://%s", DEM_KEY)
-            archive.r2_client().download_file(config.R2_BUCKET, DEM_KEY, fd.name)
-            dem_path = fd.name
+            return fd.name
+        from wxfusion import archive
+        fd = tempfile.NamedTemporaryFile(suffix=".tif", delete=False); fd.close()
+        log.info("DEM: downloading r2://%s", DEM_KEY)
+        archive.r2_client().download_file(config.R2_BUCKET, DEM_KEY, fd.name)
+        return fd.name
     except Exception as e:
         log.info("DEM: none available (%s) — using the elevation API", type(e).__name__)
         return None
 
+
+def _dem_elevation(lat, lon):
+    """Elevation on the full 1 km grid sampled from a DEM GeoTIFF, or None.
+
+    When the DEM is in LKS-92 (this grid's CRS) it is sampled at the grid's own
+    metres — no reprojection. Otherwise the grid's lon/lat is reprojected into
+    the DEM's CRS first, so any national/European grid works. Sea, voids, and
+    pixels outside the DEM's footprint come back 0."""
+    dem_path = _resolve_dem()
+    if dem_path is None:
+        return None
     import rasterio
     from rasterio.warp import transform as warp_transform
     h, w = lat.shape
     with rasterio.open(dem_path) as ds:
-        xs, ys = warp_transform("EPSG:4326", ds.crs,
-                                lon.ravel().tolist(), lat.ravel().tolist())
+        crs = ds.crs or DEM_CRS
+        if crs and rasterio.crs.CRS.from_user_input(crs).to_epsg() == 3059:
+            gx, gy = _grid_xy_3059()
+            xs, ys = gx.ravel().tolist(), gy.ravel().tolist()
+        else:
+            xs, ys = warp_transform("EPSG:4326", crs,
+                                    lon.ravel().tolist(), lat.ravel().tolist())
         elev = np.fromiter((s[0] for s in ds.sample(zip(xs, ys))),
                            dtype="float64", count=h * w).reshape(h, w)
         nod = ds.nodata
-        log.info("DEM: %s, CRS %s, nodata %s", dem_path.rsplit("/", 1)[-1], ds.crs, nod)
+        log.info("DEM: %s, CRS %s, nodata %s", dem_path.rsplit("/", 1)[-1], crs, nod)
     if nod is not None:
         elev[elev == nod] = np.nan
-    # sea/void -> 0; clamp the odd negative (below-datum polders) up to 0
-    elev = np.where(np.isfinite(elev), elev, 0.0)
+    cov = int(np.isfinite(elev).sum())
+    log.info("DEM: %d/%d grid px covered (%.0f%%)", cov, h * w, cov / (h * w) * 100)
+    elev = np.where(np.isfinite(elev), elev, 0.0)   # sea/void/outside -> datum
     return np.clip(elev, 0.0, None).astype(np.float32)
 
 
@@ -214,6 +238,8 @@ def main() -> int:
             log.exception("elevation failed — writing zeros; other layers stand")
             elev = np.zeros(land.shape, np.float32)
     tpi = sg.topographic_position(elev)
+    tpi[~land] = 0.0   # TPI is a land signal; zero it over water so the abrupt
+    #                    land->0 step at the coast does not read as a ridge
 
     # bake to one .npz in R2
     buf = io.BytesIO()
