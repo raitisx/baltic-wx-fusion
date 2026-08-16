@@ -26,6 +26,25 @@
     --lidarno:#e0574f; --lidarok:#6fbf6f;
     --rainshaft:#5075d8;
   }
+  /* The meteogram is a bright card sitting in the dark page: its panels, ink
+     and data ride a light ground, so this subtree keeps the original light
+     palette. The chart's colours are read off this element (getComputedStyle
+     on #chart), so redefining the tokens here re-lights the whole plot without
+     touching the dark chrome around it. The maps are bright the same way — as
+     light images on the dark page. */
+  #chart{
+    --bg:#fbf3de; --panel:#fdf9ec; --ink:#1c2c85; --text:#333127;
+    --muted:#8a8468; --grid:#e6dec6; --gridday:#c9c0a4;
+    --night:rgba(90,80,50,.13);
+    --temp:#d92f2f; --dew:#2b48d9; --humid:#e07b00; --precip:#1e9e1e;
+    --wind:#2b48d9; --gust:#d92f2f; --cloud:#2b2b28; --fog:#e0a300;
+    --threshold:#cc2222; --belowzone:rgba(217,47,47,.10);
+    --now:#0f9d3a;
+    --dewwet:#c62828; --dewdry:#63b063; --dewfrost:#5b6bc0;
+    --lidarno:#b3261e; --lidarok:#4f9d4f;
+    --rainshaft:#16357a;
+    background:#fdf9ec; border-radius:6px;
+  }
   html,body{margin:0;padding:0}
   body{
     box-sizing:border-box;
@@ -47,7 +66,7 @@
   .side select{width:100%}
   button{cursor:pointer}
   .smapwrap{position:relative;width:100%;aspect-ratio:570/690;margin-top:12px;
-    border:1px solid var(--gridday);border-radius:4px;overflow:hidden;background:var(--bg);cursor:crosshair}
+    border:1px solid var(--gridday);border-radius:4px;overflow:hidden;background:#fbf3de;cursor:crosshair}
   .smapwrap img{position:absolute;inset:0;width:100%;height:100%}
   .smapwrap svg{position:absolute;inset:0;width:100%;height:100%}
   .mapnote{font-size:10px;color:var(--muted);line-height:1.5;margin-top:6px}
@@ -136,7 +155,7 @@
   .mapcolhead{font-size:12px;font-weight:700;color:var(--ink);margin-bottom:4px;height:22px;display:flex;gap:6px;align-items:center}
   .mapcolhead select{font-size:11px;padding:1px 4px}
   .mapsub{font-weight:400;color:var(--muted);font-size:10px}
-  .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:var(--bg);overflow:hidden}
+  .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:#fbf3de;overflow:hidden}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
   /* the selected cell/station, in the same place on every map */
   .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
@@ -1086,9 +1105,9 @@ function svgEl(name,attrs,parent){
 // open for hours while planning.
 let nowTimer=null;
 function drawNowLine(svg, plotTop, plotBottom){
-  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const css=v=>getComputedStyle(document.getElementById("chart")).getPropertyValue(v).trim();
   const g=svgEl("g",{},svg);
-  const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--bg"),"stroke-width":4,"stroke-opacity":.75},g);
+  const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:"#fffdf4","stroke-width":4,"stroke-opacity":.75},g);
   const line=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--now"),"stroke-width":1.8},g);
   const tabW=104, tabH=13;
   const tab=svgEl("rect",{y:plotTop-tabH,width:tabW,height:tabH,rx:2,fill:css("--now"),"fill-opacity":.92},g);
@@ -1269,7 +1288,7 @@ function render(){
   // After the wind, because the gust limit is tested at the selected altitude.
   for(const r of FUSED) r.lidar = lidarWhy(r, cbLim, wgLim);
   const verdicts=dayVerdicts(cbLim,wgLim);
-  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const css=v=>getComputedStyle(document.getElementById("chart")).getPropertyValue(v).trim();
 
   const headerH=34;
   const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+3,0) + 30;
@@ -1285,7 +1304,7 @@ function render(){
   const plotTop = panelTop[PANELS[0].id];
 
   for(const p of PANELS)
-    svgEl("rect",{x:P.left,y:panelTop[p.id],width:P.width-P.left-P.right,height:p.h,fill:css("--bg")},svg);
+    svgEl("rect",{x:P.left,y:panelTop[p.id],width:P.width-P.left-P.right,height:p.h,fill:css("--panel")},svg);
 
   for(const r of FUSED){
     if(r.hourOfDay>=21 || r.hourOfDay<6){
@@ -1339,8 +1358,8 @@ function render(){
   // panel reads as its own row rather than one tall block.
   for(let k=1;k<PANELS.length;k++){
     const yb=panelTop[PANELS[k].id]-1.5;
-    svgEl("line",{x1:0,x2:P.width-P.right,y1:yb,y2:yb,stroke:css("--gridday"),
-                  "stroke-width":1,"stroke-opacity":.9},svg);
+    svgEl("line",{x1:0,x2:P.width-P.right,y1:yb,y2:yb,stroke:"#000",
+                  "stroke-width":1,"stroke-opacity":.65},svg);
   }
 
   // padBottom reserves a strip along the floor of a panel that the data scale
@@ -1649,8 +1668,8 @@ function render(){
   // and ends in a handle at the bottom, and the maps below follow whatever hour
   // it sits on. It stays put when the pointer leaves, and map playback moves it.
   const seekBottom=totalH-9;   // clear of the SVG edge so the handle is not clipped
-  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:seekBottom,stroke:css("--text"),"stroke-width":1.3,visibility:"hidden"},svg);
-  const seekDot=svgEl("circle",{cx:0,cy:seekBottom,r:4.5,fill:css("--text"),stroke:css("--bg"),"stroke-width":1,visibility:"hidden"},svg);
+  const cross=svgEl("line",{x1:0,x2:0,y1:plotTop,y2:seekBottom,stroke:"#000","stroke-width":1.3,visibility:"hidden"},svg);
+  const seekDot=svgEl("circle",{cx:0,cy:seekBottom,r:4.5,fill:"#000",stroke:"#fdf9ec","stroke-width":1,visibility:"hidden"},svg);
   const placeSeek=x=>{
     cross.setAttribute("x1",x); cross.setAttribute("x2",x);
     seekDot.setAttribute("cx",x);
@@ -2157,13 +2176,13 @@ function initStaticMap(){
   // appears in a cell's label.
   for(let i=0,x=GX0;x<=GX1;i++,x+=CELL){
     const [px]=metersToPx(x,0); const major=i%4===0;
-    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#727c92","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
-    if(major) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#98a1b7"}).textContent=Math.round(x/1000);
+    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
+    if(major) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(x/1000);
   }
   for(let j=0,y=GY0;y<=GY1;j++,y+=CELL){
     const [,py]=metersToPx(0,y); const major=j%4===0;
-    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#727c92","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
-    if(major) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#98a1b7"}).textContent=Math.round(y/1000);
+    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
+    if(major) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(y/1000);
   }
   const haveProj = typeof proj4!=="undefined";
   if(haveProj){
@@ -2184,13 +2203,13 @@ function initStaticMap(){
       if(px<0||px>570||py<0||py>690) continue;
       mk("path",{d:`M${(px-2.6).toFixed(1)} ${(py-2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py+2.6).toFixed(1)} `
                   +`M${(px-2.6).toFixed(1)} ${(py+2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py-2.6).toFixed(1)}`,
-        stroke:"#e3e5ec","stroke-width":1.1,"stroke-linecap":"round",
+        stroke:"#3a3524","stroke-width":1.1,"stroke-linecap":"round",
         style:"paint-order:stroke;stroke-linejoin:round","pointer-events":"none"});
       // Every label snaps by its bottom-left corner to just right of the mark,
       // so the name reads up and to the right from the point it marks.
-      mk("text",{x:px+4,y:py,"font-size":"16.6",fill:"#e3e5ec",
+      mk("text",{x:px+4,y:py,"font-size":"16.6",fill:"#2a2617",
         "text-anchor":"start","pointer-events":"none",
-        style:"paint-order:stroke;stroke:#2b3242;stroke-width:3.9;stroke-linejoin:round"
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.9;stroke-linejoin:round"
       }).textContent=c.n;
     }
     for(const p of POINTS){
@@ -2203,8 +2222,8 @@ function initStaticMap(){
       // ones that actually measure rain — as smaller teal dots with a tighter
       // hit area, so ~250 of them stay pickable without swamping the map.
       mk("circle",{cx:px,cy:py,r:metar?4.5:1.1,
-        fill:metar?"#5c8fe0":"#3fa85f","fill-opacity":metar?0.85:0.9,
-        stroke:"#cdd3e0","stroke-width":metar?1.5:0.4});
+        fill:metar?"#1c2c85":"#14532d","fill-opacity":metar?0.85:0.9,
+        stroke:"#fdf9ec","stroke-width":metar?1.5:0.4});
       const c=mk("circle",{cx:px,cy:py,r:metar?15:6,fill:"#000","fill-opacity":0});
       c.style.cursor="pointer";
       c.addEventListener("click",ev=>{
@@ -2592,7 +2611,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v96",
+    "page v97",
     "points: "+POINTS.length,
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),

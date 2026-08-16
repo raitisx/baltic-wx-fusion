@@ -491,7 +491,7 @@ def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
     for thr in THRESHOLDS:
         fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
         ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_facecolor("#2b3242")
+        ax.set_facecolor("#fbf3de")
         ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
         ax.set_aspect("equal"); ax.axis("off")
         fg = fogm if fogm is not None else np.zeros(cb.shape, bool)
@@ -504,11 +504,11 @@ def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
         for c in borders:
             for line in c["lines"]:
                 bx, by = P.to_xy([lo for lo, _ in line], [la for _, la in line])
-                ax.plot(bx, by, color="#232b3a", lw=2.4, alpha=0.9,
+                ax.plot(bx, by, color="#f7f1e2", lw=2.4, alpha=0.9,
                         solid_capstyle="round")
-                ax.plot(bx, by, color="#b9c2d6", lw=0.9, solid_capstyle="round")
+                ax.plot(bx, by, color="#55503f", lw=0.9, solid_capstyle="round")
         buf = io.BytesIO()
-        fig.savefig(buf, dpi=100, format="png", facecolor="#2b3242")
+        fig.savefig(buf, dpi=100, format="png", facecolor="#fbf3de")
         plt.close(fig)
         buf.seek(0)
         q = io.BytesIO()
@@ -632,7 +632,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
             for thr in THRESHOLDS:
                 fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
                 ax = fig.add_axes([0, 0, 1, 1])
-                ax.set_facecolor("#2b3242")
+                ax.set_facecolor("#fbf3de")
                 ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
                 ax.set_aspect("equal"); ax.axis("off")
                 _draw_clouds(ax, xw, yw, tcc[i] if tcc is not None else None, grey)
@@ -646,10 +646,10 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
                 for country in borders_xy:
                     for bx, by in country:
-                        ax.plot(bx, by, color="#232b3a", lw=2.2, zorder=9)
-                        ax.plot(bx, by, color="#b9c2d6", lw=0.9, zorder=10)
+                        ax.plot(bx, by, color="#f7f1e2", lw=2.2, zorder=9)
+                        ax.plot(bx, by, color="#55503f", lw=0.9, zorder=10)
                 fp = os.path.join(tmp, "f.png")
-                fig.savefig(fp, dpi=100, facecolor="#2b3242")
+                fig.savefig(fp, dpi=100, facecolor="#fbf3de")
                 plt.close(fig)
                 PILImage.open(fp).convert("RGB").quantize(
                     colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
@@ -739,7 +739,7 @@ def render_run(max_hours: int = 66) -> None:
         margins; timestamps live in the page UI, not in pixels."""
         fig = plt.figure(figsize=(P.W / 100, P.H / 100), dpi=100)
         ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_facecolor("#2b3242")
+        ax.set_facecolor("#fbf3de")
         ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
         ax.set_aspect("equal"); ax.axis("off")
         return fig, ax
@@ -748,9 +748,9 @@ def render_run(max_hours: int = 66) -> None:
         # cased line (light halo under dark core), forced above all data
         for country in borders_xy:
             for bx, by in country:
-                ax.plot(bx, by, color="#232b3a", lw=2.2, zorder=9,
+                ax.plot(bx, by, color="#f7f1e2", lw=2.2, zorder=9,
                         solid_capstyle="round")
-                ax.plot(bx, by, color="#b9c2d6", lw=0.9, zorder=10,
+                ax.plot(bx, by, color="#55503f", lw=0.9, zorder=10,
                         solid_capstyle="round")
 
     s3 = r2_client()
@@ -761,7 +761,7 @@ def render_run(max_hours: int = 66) -> None:
     fig, ax = blank_fig()
     draw_borders(ax)
     bg = os.path.join(tmp, "bg.png")
-    fig.savefig(bg, dpi=100, facecolor="#2b3242")
+    fig.savefig(bg, dpi=100, facecolor="#fbf3de")
     plt.close(fig)
     s3.upload_file(bg, config.R2_BUCKET, "maps/bg_3059.png", ExtraArgs={
         "ContentType": "image/png", "CacheControl": "public, max-age=604800"})
@@ -793,7 +793,7 @@ def render_run(max_hours: int = 66) -> None:
             _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
-            fig.savefig(fp, dpi=100, facecolor="#2b3242")
+            fig.savefig(fp, dpi=100, facecolor="#fbf3de")
             plt.close(fig)
             # palette-quantize: ~60% smaller files, visually identical at
             # these soft fills — matters because r2.dev is rate-limited

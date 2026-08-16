@@ -292,8 +292,8 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         for c in borders:
             for line in c["lines"]:
                 px, py = P.to_px([la for _, la in line], [lo for lo, _ in line])
-                ax.plot(px, py, color="#232b3a", lw=2.4, alpha=0.9, solid_capstyle="round")
-                ax.plot(px, py, color="#b9c2d6", lw=0.9, solid_capstyle="round")
+                ax.plot(px, py, color="#f7f1e2", lw=2.4, alpha=0.9, solid_capstyle="round")
+                ax.plot(px, py, color="#55503f", lw=0.9, solid_capstyle="round")
 
     hours_out = []
     # Previous rendered lead's raw accumulation, so the running 6-hour bucket
@@ -406,7 +406,7 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
                 _draw_rain(ax, xw, yw, prm, tair, greens, blues, rain_norm)
             draw_borders(ax)
             fp = os.path.join(tmp, f"{vtag}_alt{thr}.png")
-            fig.savefig(fp, dpi=100, facecolor="#2b3242")
+            fig.savefig(fp, dpi=100, facecolor="#fbf3de")
             plt.close(fig)
             PILImage.open(fp).convert("RGB").quantize(
                 colors=192, dither=PILImage.Dither.NONE).save(fp, optimize=True)
