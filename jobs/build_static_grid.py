@@ -134,21 +134,37 @@ def _dem_elevation(lat, lon):
         log.info("DEM: %s, CRS %s, nodata %s", dem_path.rsplit("/", 1)[-1], crs, nod)
     if nod is not None:
         elev[elev == nod] = np.nan
-    cov = int(np.isfinite(elev).sum())
-    log.info("DEM: %d/%d grid px covered (%.0f%%)", cov, h * w, cov / (h * w) * 100)
-    elev = np.where(np.isfinite(elev), elev, 0.0)   # sea/void/outside -> datum
-    return np.clip(elev, 0.0, None).astype(np.float32)
+    covered = np.isfinite(elev)
+    log.info("DEM: %d/%d grid px covered (%.0f%%)",
+             int(covered.sum()), h * w, covered.sum() / (h * w) * 100)
+    elev = np.where(covered, elev, 0.0)   # sea/void/outside -> datum for now
+    return np.clip(elev, 0.0, None).astype(np.float32), covered
 
 
-def _sample_elevation(lat, lon):
+def _sample_elevation(lat, lon, need=None):
     """Elevation on a coarse lon/lat lattice from Open-Meteo's free elevation
-    API (Copernicus GLO-90 under the hood). Returns coarse (lat, lon, elev)."""
+    API — Copernicus GLO-90 under the hood, which (unlike EU-DEM) covers the
+    whole domain including the Russia/Belarus margin. Returns coarse
+    (lat, lon, elev).
+
+    need: optional (H, W) boolean of the pixels that actually need filling; when
+    given, only lattice points whose nearest grid cell is needed are queried, so
+    filling a thin margin costs a handful of calls instead of the whole grid."""
     lo0, lo1 = float(lon.min()), float(lon.max())
     la0, la1 = float(lat.min()), float(lat.max())
     glon = np.arange(lo0, lo1 + 1e-9, ELEV_STEP)
     glat = np.arange(la0, la1 + 1e-9, ELEV_STEP)
     LO, LA = np.meshgrid(glon, glat)
     LO, LA = LO.ravel(), LA.ravel()
+    if need is not None:
+        # keep only lattice points sitting on (or one step from) a needed pixel
+        from scipy import ndimage
+        near = ndimage.binary_dilation(need, iterations=int(ELEV_STEP * 111) + 2)
+        gx, gy = P.to_px(LA, LO)
+        gx = np.clip(gx.astype(int), 0, P.W - 1)
+        gy = np.clip(gy.astype(int), 0, P.H - 1)
+        keep = near[gy, gx]
+        LA, LO = LA[keep], LO[keep]
     s = session()
     elev = np.full(LO.shape, np.nan)
     B = 100
@@ -162,7 +178,7 @@ def _sample_elevation(lat, lon):
             elev[i:i + B] = r.json().get("elevation", [np.nan] * (len(LA[i:i + B])))
         except Exception as e:
             log.warning("elevation chunk %d failed (%s)", i, type(e).__name__)
-        time.sleep(1.0)  # one-off build; stay gentle on the free tier
+        time.sleep(0.4)  # one-off build; stay gentle on the free tier
     ok = np.isfinite(elev)
     log.info("elevation: %d/%d coarse points at %.2f deg", int(ok.sum()), len(LO), ELEV_STEP)
     return LA[ok], LO[ok], elev[ok]
@@ -227,8 +243,22 @@ def main() -> int:
     water = sea | lake
     coast = sg.coast_distance_km(land, water)
 
-    elev = _dem_elevation(lat, lon)          # real DEM if one is provided
-    if elev is not None:
+    dem = _dem_elevation(lat, lon)           # (elev, covered) or None
+    if dem is not None:
+        elev, covered = dem
+        # The provided DEM stops at the Baltic states' border; the land beyond
+        # it (the Russia/Belarus margin) came back 0, which is a false sea-level.
+        # Fill exactly those pixels from Copernicus GLO-90 (via the elevation
+        # API), which does cover them, and leave the sharp DEM untouched.
+        gap = land & ~covered
+        if int(gap.sum()):
+            log.info("elevation: filling %d uncovered land px from GLO-90", int(gap.sum()))
+            try:
+                cla, clo, cel = _sample_elevation(lat, lon, need=gap)
+                fill = sg.interp_elevation(cla, clo, cel, lat, lon, sea)
+                elev[gap] = fill[gap]
+            except Exception:
+                log.exception("margin fill failed — that edge stays at datum")
         elev[sea] = 0.0                      # keep the water flat and at datum
     else:
         try:
