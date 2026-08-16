@@ -46,6 +46,15 @@ DEM_URL = os.environ.get("DEM_URL") or ""
 # CRS to assume when the GeoTIFF has none embedded (national DEMs often don't).
 DEM_CRS = os.environ.get("DEM_CRS") or "EPSG:3059"
 
+# FABDEM V1-2: Copernicus GLO-30 with forest and building height removed — a
+# global 30 m BARE-EARTH DTM (Hawker et al., Univ. of Bristol). Preferred so the
+# uplands aren't inflated by ~50% forest canopy, and it covers the whole domain
+# (Russia/Belarus included), which the provided Baltic DEM does not. Distributed
+# as 10x10 deg zip bundles of 1 deg GeoTIFF tiles, EPSG:4326.
+# LICENCE: CC BY-NC-SA 4.0 — non-commercial; commercial use via fabdem@fathom.global.
+USE_FABDEM = (os.environ.get("USE_FABDEM") or "1") not in ("0", "", "false")
+FABDEM_BASE = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
+
 
 def _domain_box():
     lat, lon = P.pixel_latlon()
@@ -75,6 +84,74 @@ def _load_clipped(url, box_geom):
              url.rsplit("/", 1)[-1], len(feats),
              len(getattr(geom, "geoms", [geom])))
     return geom
+
+
+def _fabdem_elevation(lat, lon):
+    """Elevation on the full grid from FABDEM (global 30 m bare-earth DTM).
+
+    Downloads the 10x10 deg bundles covering the domain from data.bris, then
+    samples each grid pixel from its 1 deg tile (FABDEM is EPSG:4326, so the
+    grid's own lon/lat sample it directly). Returns (elev, covered) or None if
+    the fetch fails — the caller then falls back to the provided DEM / API."""
+    import glob
+    import re as _re
+    import tempfile
+    import zipfile
+    try:
+        import rasterio
+    except Exception:
+        return None
+    la0, la1 = int(np.floor(lat.min())), int(np.floor(lat.max()))
+    lo0, lo1 = int(np.floor(lon.min())), int(np.floor(lon.max()))
+    bundles = {(a, b)
+               for a in range(la0 // 10 * 10, la1 + 1, 10)
+               for b in range(lo0 // 10 * 10, lo1 + 1, 10)}
+    tmp = tempfile.mkdtemp()
+    got = 0
+    for a, b in sorted(bundles):
+        name = f"N{a:02d}E{b:03d}-N{a + 10:02d}E{b + 10:03d}_FABDEM_V1-2.zip"
+        try:
+            log.info("FABDEM: fetching %s", name)
+            r = session().get(f"{FABDEM_BASE}/{name}", timeout=1800)
+            r.raise_for_status()
+            zp = os.path.join(tmp, name)
+            with open(zp, "wb") as fh:
+                fh.write(r.content)
+            with zipfile.ZipFile(zp) as z:
+                z.extractall(tmp)
+            os.remove(zp)
+            got += 1
+        except Exception as e:
+            log.warning("FABDEM: %s failed (%s)", name, type(e).__name__)
+    if not got:
+        log.info("FABDEM: no bundles fetched — falling back")
+        return None
+
+    tiles = {}
+    for f in glob.glob(os.path.join(tmp, "**", "*FABDEM*.tif"), recursive=True):
+        m = _re.search(r"N(\d+)E(\d+)", os.path.basename(f))
+        if m:
+            tiles[(int(m.group(1)), int(m.group(2)))] = f
+    latf = np.floor(lat).astype(int)
+    lonf = np.floor(lon).astype(int)
+    elev = np.full(lat.shape, np.nan)
+    for (a, b), f in tiles.items():
+        cell = (latf == a) & (lonf == b)
+        if not cell.any():
+            continue
+        with rasterio.open(f) as ds:
+            pts = list(zip(lon[cell].tolist(), lat[cell].tolist()))
+            vals = np.fromiter((s[0] for s in ds.sample(pts)),
+                               dtype="float64", count=int(cell.sum()))
+            nod = ds.nodata
+        if nod is not None:
+            vals[vals == nod] = np.nan
+        elev[cell] = vals
+    covered = np.isfinite(elev)
+    log.info("FABDEM: %d tiles, %d/%d grid px covered (%.0f%%)",
+             len(tiles), int(covered.sum()), lat.size, covered.mean() * 100)
+    elev = np.where(covered, elev, 0.0)
+    return np.clip(elev, 0.0, None).astype(np.float32), covered
 
 
 def _grid_xy_3059():
@@ -243,7 +320,9 @@ def main() -> int:
     water = sea | lake
     coast = sg.coast_distance_km(land, water)
 
-    dem = _dem_elevation(lat, lon)           # (elev, covered) or None
+    dem = _fabdem_elevation(lat, lon) if USE_FABDEM else None  # global bare-earth
+    if dem is None:
+        dem = _dem_elevation(lat, lon)       # provided Baltic DEM, else None
     if dem is not None:
         elev, covered = dem
         # The provided DEM stops at the Baltic states' border; the land beyond
