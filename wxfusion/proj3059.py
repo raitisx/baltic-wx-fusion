@@ -32,6 +32,11 @@ def to_xy(lon, lat):
     return _transformers()[0].transform(lon, lat)
 
 
+def to_lonlat(x, y):
+    """LKS-92 x/y meters (arrays ok) -> lon/lat degrees."""
+    return _transformers()[1].transform(x, y)
+
+
 def to_px(lat, lon):
     """lat/lon -> target image pixel (x_px, y_px)."""
     x, y = to_xy(lon, lat)

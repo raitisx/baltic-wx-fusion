@@ -41,6 +41,23 @@ HOURLY_VARS = {
     "visibility": "vis",
 }
 
+# The subset the FUSED MAP actually draws: cloud (all four layers), the moisture
+# that sets base and fog (t2m, td2m, rh), rain, and visibility. No wind, no
+# pressure — the map has no arrows — which drops the per-point Open-Meteo weight
+# from ~6.5 to ~4.5 and is what lets the background fill grid fit the free tier.
+# t2m/td2m/rh/cc_low must stay: the ceiling (cb) and LCL are derived from them.
+MAP_HOURLY_VARS = {
+    "temperature_2m": "t2m",
+    "dew_point_2m": "td2m",
+    "relative_humidity_2m": "rh",
+    "precipitation": "prcp_1h",
+    "cloud_cover": "cc_total",
+    "cloud_cover_low": "cc_low",
+    "cloud_cover_mid": "cc_mid",
+    "cloud_cover_high": "cc_high",
+    "visibility": "vis",
+}
+
 
 # Low-cloud fraction at or above which a ceiling is deemed to exist. 60% is
 # the BKN threshold aviation uses (5 oktas); below it cloud is scattered and
@@ -91,10 +108,17 @@ def lcl_height(t2m: float, td2m: float) -> float:
     return max(0.0, 125.0 * (t2m - td2m))
 
 
-def fetch(points: list[dict]) -> list[tuple]:
-    """points: dicts with point_id/lat/lon. Returns wx.forecasts rows."""
+def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
+    """points: dicts with point_id/lat/lon. Returns wx.forecasts rows.
+
+    hourly_vars selects which Open-Meteo fields to pull (defaults to the full
+    HOURLY_VARS station set). The map's background grid passes MAP_HOURLY_VARS
+    — the nine fields it draws — so its per-point weight, and thus its share of
+    the free-tier budget, is smaller than a station's.
+    """
     if not points:
         return []
+    hourly_vars = hourly_vars or HOURLY_VARS
     fetched_at = dt.datetime.now(dt.timezone.utc)
     s = session()
     rows: list[tuple] = []
@@ -110,7 +134,7 @@ def fetch(points: list[dict]) -> list[tuple]:
             run_time = model_cycle(our_model, fetched_at)
             # collect per-variable arrays for this model
             series: dict[str, list] = {}
-            for om_var, param in HOURLY_VARS.items():
+            for om_var, param in hourly_vars.items():
                 arr = hourly.get(f"{om_var}_{om_model}") or hourly.get(om_var)
                 if arr:
                     series[param] = arr
@@ -176,7 +200,7 @@ def fetch(points: list[dict]) -> list[tuple]:
                 params={
                     "latitude": lat,
                     "longitude": lon,
-                    "hourly": ",".join(HOURLY_VARS),
+                    "hourly": ",".join(hourly_vars),
                     "models": ",".join(config.OPENMETEO_MODELS.values()),
                     "forecast_days": config.FORECAST_DAYS,
                     "windspeed_unit": "ms",
