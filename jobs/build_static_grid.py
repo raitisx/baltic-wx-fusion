@@ -32,6 +32,12 @@ LAND_URL = f"{NE}/ne_10m_land.geojson"
 LAKES_URL = f"{NE}/ne_10m_lakes.geojson"
 NPZ_KEY = "maps/static/static_3059.npz"
 ELEV_STEP = float(os.environ.get("STATIC_ELEV_STEP") or "0.1")
+# A real DEM beats the coarse elevation API for the lapse-rate/TPI layers.
+# Preferred: a GeoTIFF in R2 at DEM_KEY (any CRS — rasterio reads it and we
+# reproject the grid into it). DEM_URL fetches one over https instead. With
+# neither, elevation falls back to the Open-Meteo elevation API.
+DEM_KEY = os.environ.get("DEM_KEY") or "assets/dem/baltic_dem.tif"
+DEM_URL = os.environ.get("DEM_URL") or ""
 
 
 def _domain_box():
@@ -62,6 +68,52 @@ def _load_clipped(url, box_geom):
              url.rsplit("/", 1)[-1], len(feats),
              len(getattr(geom, "geoms", [geom])))
     return geom
+
+
+def _dem_elevation(lat, lon):
+    """Elevation on the full 1 km grid, sampled from a provided DEM GeoTIFF.
+
+    Looks for the TIF in R2 (DEM_KEY) or over https (DEM_URL), downloads it to
+    the runner, and samples it at every grid pixel — reprojecting the grid's
+    lon/lat into the DEM's own CRS first, so any national or European grid
+    works without the caller stating it. Returns the (H, W) array, or None if
+    no DEM is configured/reachable (caller falls back to the elevation API)."""
+    import tempfile
+    dem_path = None
+    try:
+        if DEM_URL:
+            log.info("DEM: fetching %s", DEM_URL)
+            r = session().get(DEM_URL, timeout=600)
+            r.raise_for_status()
+            fd = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+            fd.write(r.content); fd.close()
+            dem_path = fd.name
+        else:
+            from wxfusion import archive
+            fd = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+            fd.close()
+            log.info("DEM: downloading r2://%s", DEM_KEY)
+            archive.r2_client().download_file(config.R2_BUCKET, DEM_KEY, fd.name)
+            dem_path = fd.name
+    except Exception as e:
+        log.info("DEM: none available (%s) — using the elevation API", type(e).__name__)
+        return None
+
+    import rasterio
+    from rasterio.warp import transform as warp_transform
+    h, w = lat.shape
+    with rasterio.open(dem_path) as ds:
+        xs, ys = warp_transform("EPSG:4326", ds.crs,
+                                lon.ravel().tolist(), lat.ravel().tolist())
+        elev = np.fromiter((s[0] for s in ds.sample(zip(xs, ys))),
+                           dtype="float64", count=h * w).reshape(h, w)
+        nod = ds.nodata
+        log.info("DEM: %s, CRS %s, nodata %s", dem_path.rsplit("/", 1)[-1], ds.crs, nod)
+    if nod is not None:
+        elev[elev == nod] = np.nan
+    # sea/void -> 0; clamp the odd negative (below-datum polders) up to 0
+    elev = np.where(np.isfinite(elev), elev, 0.0)
+    return np.clip(elev, 0.0, None).astype(np.float32)
 
 
 def _sample_elevation(lat, lon):
@@ -151,12 +203,16 @@ def main() -> int:
     water = sea | lake
     coast = sg.coast_distance_km(land, water)
 
-    try:
-        cla, clo, cel = _sample_elevation(lat, lon)
-        elev = sg.interp_elevation(cla, clo, cel, lat, lon, sea)
-    except Exception:
-        log.exception("elevation failed — writing zeros; other layers stand")
-        elev = np.zeros(land.shape, np.float32)
+    elev = _dem_elevation(lat, lon)          # real DEM if one is provided
+    if elev is not None:
+        elev[sea] = 0.0                      # keep the water flat and at datum
+    else:
+        try:
+            cla, clo, cel = _sample_elevation(lat, lon)
+            elev = sg.interp_elevation(cla, clo, cel, lat, lon, sea)
+        except Exception:
+            log.exception("elevation failed — writing zeros; other layers stand")
+            elev = np.zeros(land.shape, np.float32)
     tpi = sg.topographic_position(elev)
 
     # bake to one .npz in R2
