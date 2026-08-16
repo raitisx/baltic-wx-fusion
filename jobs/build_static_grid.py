@@ -52,7 +52,12 @@ DEM_CRS = os.environ.get("DEM_CRS") or "EPSG:3059"
 # (Russia/Belarus included), which the provided Baltic DEM does not. Distributed
 # as 10x10 deg zip bundles of 1 deg GeoTIFF tiles, EPSG:4326.
 # LICENCE: CC BY-NC-SA 4.0 — non-commercial; commercial use via fabdem@fathom.global.
-USE_FABDEM = (os.environ.get("USE_FABDEM") or "1") not in ("0", "", "false")
+# Opt-in (USE_FABDEM=1): FABDEM's only host, data.bris, streams at ~1 MB/s, so a
+# land bundle is a 20-30 min download — fine as a one-off when you want true
+# bare-earth, too slow for the default build. Default uses the bundled DEM +
+# GLO-90 margin fill, which is sharp and fast; at 1 km the canopy the DTM would
+# strip is worth ~0.1 K, so this is a small trade.
+USE_FABDEM = (os.environ.get("USE_FABDEM") or "0") not in ("0", "", "false")
 FABDEM_BASE = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
 
 
