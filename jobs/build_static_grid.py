@@ -86,13 +86,15 @@ def _load_clipped(url, box_geom):
     return geom
 
 
-def _fabdem_elevation(lat, lon):
+def _fabdem_elevation(lat, lon, land):
     """Elevation on the full grid from FABDEM (global 30 m bare-earth DTM).
 
-    Downloads the 10x10 deg bundles covering the domain from data.bris, then
-    samples each grid pixel from its 1 deg tile (FABDEM is EPSG:4326, so the
-    grid's own lon/lat sample it directly). Returns (elev, covered) or None if
-    the fetch fails — the caller then falls back to the provided DEM / API."""
+    Downloads the 10x10 deg bundles that actually contain land in the domain
+    from data.bris (a bundle covering only open sea is skipped — its pixels are
+    0 anyway), then samples each grid pixel from its 1 deg tile (FABDEM is
+    EPSG:4326, so the grid's own lon/lat sample it directly). Returns
+    (elev, covered) or None if the fetch fails — the caller then falls back to
+    the provided DEM / API."""
     import glob
     import re as _re
     import tempfile
@@ -101,22 +103,31 @@ def _fabdem_elevation(lat, lon):
         import rasterio
     except Exception:
         return None
-    la0, la1 = int(np.floor(lat.min())), int(np.floor(lat.max()))
-    lo0, lo1 = int(np.floor(lon.min())), int(np.floor(lon.max()))
-    bundles = {(a, b)
-               for a in range(la0 // 10 * 10, la1 + 1, 10)
-               for b in range(lo0 // 10 * 10, lo1 + 1, 10)}
+    latf = np.floor(lat).astype(int)
+    lonf = np.floor(lon).astype(int)
+    la0, la1 = int(latf.min()), int(latf.max())
+    lo0, lo1 = int(lonf.min()), int(lonf.max())
+    bundles = []
+    for a in range(la0 // 10 * 10, la1 + 1, 10):
+        for b in range(lo0 // 10 * 10, lo1 + 1, 10):
+            box = (latf >= a) & (latf < a + 10) & (lonf >= b) & (lonf < b + 10)
+            if (land & box).any():          # skip all-sea bundles
+                bundles.append((a, b))
     tmp = tempfile.mkdtemp()
     got = 0
-    for a, b in sorted(bundles):
+    for a, b in bundles:
         name = f"N{a:02d}E{b:03d}-N{a + 10:02d}E{b + 10:03d}_FABDEM_V1-2.zip"
         try:
             log.info("FABDEM: fetching %s", name)
-            r = session().get(f"{FABDEM_BASE}/{name}", timeout=1800)
-            r.raise_for_status()
             zp = os.path.join(tmp, name)
-            with open(zp, "wb") as fh:
-                fh.write(r.content)
+            with session().get(f"{FABDEM_BASE}/{name}", timeout=1800, stream=True) as r:
+                r.raise_for_status()
+                n = 0
+                with open(zp, "wb") as fh:
+                    for chunk in r.iter_content(1 << 20):   # stream, don't buffer in RAM
+                        fh.write(chunk)
+                        n += len(chunk)
+            log.info("FABDEM: %s = %.0f MB, extracting", name, n / 1e6)
             with zipfile.ZipFile(zp) as z:
                 z.extractall(tmp)
             os.remove(zp)
@@ -132,8 +143,6 @@ def _fabdem_elevation(lat, lon):
         m = _re.search(r"N(\d+)E(\d+)", os.path.basename(f))
         if m:
             tiles[(int(m.group(1)), int(m.group(2)))] = f
-    latf = np.floor(lat).astype(int)
-    lonf = np.floor(lon).astype(int)
     elev = np.full(lat.shape, np.nan)
     for (a, b), f in tiles.items():
         cell = (latf == a) & (lonf == b)
@@ -320,7 +329,7 @@ def main() -> int:
     water = sea | lake
     coast = sg.coast_distance_km(land, water)
 
-    dem = _fabdem_elevation(lat, lon) if USE_FABDEM else None  # global bare-earth
+    dem = _fabdem_elevation(lat, lon, land) if USE_FABDEM else None  # bare-earth
     if dem is None:
         dem = _dem_elevation(lat, lon)       # provided Baltic DEM, else None
     if dem is not None:
