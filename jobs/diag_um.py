@@ -124,6 +124,19 @@ def main() -> int:
     for layer in ("UM4_CLOUD", "um:UM4_CLOUD", "meteo:UM4_CLOUD"):
         globals()["LAYER"] = layer
         print(f"  layer={layer:20s} -> {probe_tile(run, 1)}", flush=True)
+
+    # Rule out "only the analysis hour is blank": sweep several leads on the two
+    # freshest cycles. If a later lead has data, the fix is to probe a mid-lead,
+    # not lead +1h; if every lead is empty, it's purely an upstream data outage.
+    globals()["LAYER"] = "um:UM4_CLOUD"
+    print("\n=== lead sweep on the two freshest cycles ===", flush=True)
+    for hoff in (0, 12):
+        c = (now - dt.timedelta(hours=hoff)).replace(minute=0, second=0,
+                                                     microsecond=0,
+                                                     hour=0 if (now - dt.timedelta(hours=hoff)).hour < 12 else 12)
+        for lead in (0, 1, 2, 3, 6, 12, 24, 48):
+            print(f"  TIME={c:%Y-%m-%dT%H}:00Z +{lead:>2}h -> {probe_tile(c, lead)}",
+                  flush=True)
     return 0
 
 
