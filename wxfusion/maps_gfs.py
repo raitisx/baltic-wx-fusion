@@ -169,6 +169,16 @@ def _fetch_field(run: dt.datetime, lead: int, recs, want, with_meta: bool = Fals
 # within half a percent. 0 disables it.
 SMOOTH_PX = float(os.environ.get("GFS_SMOOTH_PX", "3"))
 
+# The cloud-base pink is a hard cb<threshold mask. Bilinear+smoothstep smooths
+# the ceiling WITHIN each cloudy footprint, but the below-limit boundary sits at
+# the clear/cloud edge — and that edge is the raw 0.25° cell staircase, because
+# smoothstep carries no weight across the no-ceiling gaps. So the blobs come out
+# blocky no matter how the ceiling itself is interpolated. Blur the 0/1 mask and
+# draw it with per-pixel alpha instead of a flat fill: the footprint edge fades
+# over a few km into a natural blob rather than a rectangular step.
+CB_SOFT_PX = float(os.environ.get("GFS_CB_SOFT_PX", "5"))
+PINK_RGB = (0.953, 0.722, 0.706)          # #f3b8b4, as the flat ListedColormap was
+
 
 def _to_3059(vals: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
     """Interpolate onto the shared EPSG:3059 grid.
@@ -399,9 +409,16 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         vtag = valid.strftime("%Y%m%dT%H")
         for thr in GFS_THRESHOLDS:
             fig, ax = blank_fig()
-            below = np.where(np.isfinite(cb) & (cb < thr), 1.0, np.nan)
-            ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1,
-                          alpha=0.75, shading="auto")
+            below01 = (np.isfinite(cb) & (cb < thr)).astype(np.float32)
+            if CB_SOFT_PX > 0 and below01.any():
+                from scipy.ndimage import gaussian_filter
+                soft = gaussian_filter(below01, CB_SOFT_PX)
+            else:
+                soft = below01
+            rgba = np.zeros((*soft.shape, 4), np.float32)
+            rgba[..., 0], rgba[..., 1], rgba[..., 2] = PINK_RGB
+            rgba[..., 3] = np.clip(soft, 0.0, 1.0) * 0.8
+            ax.imshow(rgba, extent=[0, P.W - 1, P.H - 1, 0], interpolation="bilinear")
             if prm is not None:
                 _draw_rain(ax, xw, yw, prm, tair, greens, blues, rain_norm)
             draw_borders(ax)
