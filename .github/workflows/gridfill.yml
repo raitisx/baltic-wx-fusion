@@ -31,7 +31,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install pyproj scipy numpy pyarrow boto3
+        run: pip install -r requirements.txt && pip install pyproj scipy numpy pyarrow boto3 matplotlib pillow
       - name: Fill grid -> R2 Parquet
         # Best-effort, exactly like the station ingest: a throttled Open-Meteo
         # pass leaves yesterday's map data in place rather than reddening CI.
@@ -44,3 +44,14 @@ jobs:
           R2_BUCKET: baltic-wx
           GRID_FILL_MAX_POINTS: ${{ inputs.max_points }}
         run: python jobs/run_grid_fill.py
+      - name: Fused map -> R2
+        # The 1:1 fused map: the freshly filled blend, rendered on the grid.
+        # Best-effort so a slow render never reddens the daily pass.
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_fused_map.py
