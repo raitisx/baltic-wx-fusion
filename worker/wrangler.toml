@@ -1,0 +1,20 @@
+# Cloudflare Worker that serves the app at meteo.ttaero.lv, backed by the
+# baltic-wx R2 bucket. Deploy with:  wrangler deploy   (from this directory)
+#
+# The custom-domain route below auto-creates the proxied DNS record for
+# meteo.ttaero.lv on the ttaero.lv zone, so no separate DNS entry is needed.
+name = "meteo-ttaero"
+main = "meteo-worker.js"
+compatibility_date = "2024-11-01"
+
+# The bucket the Worker reads from, exposed to the code as `env.BUCKET`.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "baltic-wx"
+
+# Serve the Worker on the subdomain at the root path. `custom_domain = true`
+# makes Cloudflare provision the meteo.ttaero.lv hostname + certificate and
+# point it at this Worker.
+[[routes]]
+pattern = "meteo.ttaero.lv"
+custom_domain = true
