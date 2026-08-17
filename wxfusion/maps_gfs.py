@@ -177,7 +177,18 @@ SMOOTH_PX = float(os.environ.get("GFS_SMOOTH_PX", "3"))
 # draw it with per-pixel alpha instead of a flat fill: the footprint edge fades
 # over a few km into a natural blob rather than a rectangular step.
 CB_SOFT_PX = float(os.environ.get("GFS_CB_SOFT_PX", "5"))
+# Isolated "ceiling above the limit" cells inside a low deck leave cream holes in
+# the pink — GFS grid noise, not real clear eyes. Close thin gaps up to about
+# half a cell and fill enclosed holes before blurring, so the deck reads as one
+# body. A genuinely large clear area (many cells) is bigger than the close SE and
+# survives.
+CB_CLOSE_PX = int(os.environ.get("GFS_CB_CLOSE_PX", "10"))
 PINK_RGB = (0.953, 0.722, 0.706)          # #f3b8b4, as the flat ListedColormap was
+
+
+def _disk(r: int) -> np.ndarray:
+    y, x = np.ogrid[-r:r + 1, -r:r + 1]
+    return x * x + y * y <= r * r
 
 
 def _to_3059(vals: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
@@ -409,12 +420,15 @@ def render_run(start_lead: int = 36, end_lead: int = 168, step: int = 6) -> None
         vtag = valid.strftime("%Y%m%dT%H")
         for thr in GFS_THRESHOLDS:
             fig, ax = blank_fig()
-            below01 = (np.isfinite(cb) & (cb < thr)).astype(np.float32)
-            if CB_SOFT_PX > 0 and below01.any():
-                from scipy.ndimage import gaussian_filter
-                soft = gaussian_filter(below01, CB_SOFT_PX)
+            below = np.isfinite(cb) & (cb < thr)
+            if CB_SOFT_PX > 0 and below.any():
+                from scipy.ndimage import (gaussian_filter, binary_closing,
+                                           binary_fill_holes)
+                knit = binary_closing(below, structure=_disk(CB_CLOSE_PX))
+                knit = binary_fill_holes(knit)
+                soft = gaussian_filter(knit.astype(np.float32), CB_SOFT_PX)
             else:
-                soft = below01
+                soft = below.astype(np.float32)
             rgba = np.zeros((*soft.shape, 4), np.float32)
             rgba[..., 0], rgba[..., 1], rgba[..., 2] = PINK_RGB
             rgba[..., 3] = np.clip(soft, 0.0, 1.0) * 0.8
