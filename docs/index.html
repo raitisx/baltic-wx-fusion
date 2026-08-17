@@ -154,9 +154,11 @@
   .mapcol{flex:1;min-width:0}
   .mapcolhead{font-size:12px;font-weight:700;color:var(--ink);margin-bottom:4px;height:22px;display:flex;gap:6px;align-items:center}
   .mapcolhead select{font-size:11px;padding:1px 4px}
-  /* A stalled source (e.g. the meteo.pl UM scrape falling behind) turns its
-     column heading red so a stale picture is never read as a current one. */
-  .stale{color:var(--threshold)}
+  /* A stale run caption turns red so a current/future picture drawn from an
+     old run (e.g. the meteo.pl UM scrape falling behind) is never mistaken for
+     a fresh one. Historic hours keep the normal colour — an old run there is
+     expected, not a warning. */
+  .stale{color:var(--threshold)!important}
   .mapsub{font-weight:400;color:var(--muted);font-size:10px}
   .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:#fbf3de;overflow:hidden}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -277,7 +279,7 @@
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
-          <div class="mapcolhead"><span id="umHead">UM 4 km (meteo.pl)</span> <span class="mapsub" id="umTime">snapshot at this hour</span></div>
+          <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
         </div>
         <div class="mapcol">
@@ -1581,12 +1583,12 @@ function render(){
     // trace so the trace stays the thing you read first.
     for(let i=0;i<FUSED.length;i++){
       const r=FUSED[i];
-      // Match the green precip bars' gate (>0.01), not the old 0.1: light rain
-      // painted a bar but no shaft, so the ceiling panel looked dry when it was
-      // not. Opacity tracks agreement so a trace/uncertain hour is faint and a
-      // wet, agreed one is bold — same idea as the bars.
+      // Gate at the lidar rain limit (0.1 mm/h), not a trace: a shaft is a
+      // "you'd be flying through rain" mark, so it should agree with the lidar
+      // bar — no shaft on an hour the bar calls green. Opacity tracks agreement
+      // so an uncertain hour is faint and a wet, agreed one is bold.
       const pr=r.prcp_1h ?? 0;
-      if(pr<=0.01) continue;
+      if(pr<LIDAR_RAIN_MMH) continue;
       const base=rows[i].cb;
       if(base==null) continue;
       const yTop=base>1000 ? top+bandH : y(base);
@@ -2426,22 +2428,16 @@ const UM_STALE_H=28;
 function umRunMs(tag){
   return Date.UTC(+tag.slice(0,4), +tag.slice(4,6)-1, +tag.slice(6,8), +tag.slice(9,11));
 }
-// Colour the UM heading by freshness: red, with the run and its age spelled
-// out, whenever the newest UM run is stale (or missing). Called once the
-// manifests are in.
-function markUmFreshness(){
-  const head=document.getElementById("umHead");
-  if(!head) return;
+// Is the UM frame for this hour a stale *current* forecast? True only when the
+// latest run is old (scrape stalled) AND this hour is now or later — so the run
+// caption reddens on a stale live/near-term picture, but a historic hour (which
+// is meant to show whatever run covered it back then) keeps its normal colour.
+function umStaleNow(iso){
   const run=MV.loaded.um4?.run;
-  const ageH=run ? (Date.now()-umRunMs(run))/3600e3 : null;
-  const stale=ageH==null || ageH>UM_STALE_H;
-  head.classList.toggle("stale", stale);
-  head.textContent = !stale ? "UM 4 km (meteo.pl)"
-    : ageH==null ? "UM 4 km — no data"
-    : `UM 4 km — STALE: ${runLabel(run)} run, ${ageH>=48?Math.round(ageH/24)+" d":Math.round(ageH)+" h"} old`;
-  head.title = stale
-    ? "meteo.pl scrape stalled — showing the last run that returned frames"
-    : "";
+  if(!run) return true;                                  // no data at all
+  if((Date.now()-umRunMs(run))/3600e3 <= UM_STALE_H) return false;  // fresh run
+  const nowHour=Math.floor(Date.now()/3600e3)*3600e3;
+  return Date.parse(iso) >= nowHour;                     // only now/future
 }
 // "20260729T12" -> "29.07 12Z". Which run a frame came from is the single
 // most useful thing to say about a UM picture: the seam where the map jumps
@@ -2465,7 +2461,7 @@ function umSrc(iso){
   // detail was thrown away.
   if(um.hours.includes(iso))
     return {url:`${MAPS_BASE}/${um.path}/${vtagOf(iso)}.png${vq(um)}`,
-            cap:runLabel(um.run)+" run"};
+            cap:runLabel(um.run)+" run", stale:umStaleNow(iso)};
   // Stay inside the newest run for as long as it can reach, even if that means
   // carrying a frame forward an hour or two. Preferring an exact hour from
   // wherever it lived was worse: on 31 July the newest run had 14, 17, 20, 23
@@ -2481,7 +2477,8 @@ function umSrc(iso){
   if(best){
     const age=Math.round((ts-Date.parse(best))/3600e3);
     return {url:`${MAPS_BASE}/${um.path}/${vtagOf(best)}.png${vq(um)}`,
-            cap: (age ? `+${age} h old · ` : "")+runLabel(um.run)+" run"};
+            cap: (age ? `+${age} h old · ` : "")+runLabel(um.run)+" run",
+            stale:umStaleNow(iso)};
   }
   // Past hours: the current run does not reach back, but earlier runs' frames
   // are still in the bucket — the archive index says which run owns each hour.
@@ -2615,6 +2612,8 @@ function mapShow(i){
   const u=umSrc(iso);
   showFrame(document.getElementById("imgUm"), document.getElementById("umTime"),
             u&&u.url, (u&&u.cap)||"", "0.12");
+  // Red the run caption only for a stale current/future frame; not in history.
+  document.getElementById("umTime").classList.toggle("stale", !!(u&&u.stale));
   const rd=radarSrc(iso);
   // The sweep time, not the hour it is filed under. Sources run on a ~10 min
   // cadence of their own, so the nearest frame to a given hour can be most
@@ -2669,7 +2668,6 @@ async function initMapsViewer(){
   }));
   if(!Object.keys(MV.loaded).length){ miss.hidden=false; return; }
   view.hidden=false;
-  markUmFreshness();
   document.getElementById("mapPrev").addEventListener("click",()=>mapShow(MV.idx-1));
   document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
   document.getElementById("mapPlay").addEventListener("click",()=>{
@@ -2686,7 +2684,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v102",
+    "page v103",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
