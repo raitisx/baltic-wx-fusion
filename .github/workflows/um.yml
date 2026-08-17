@@ -1,0 +1,41 @@
+name: um-maps
+# UM (meteo.pl / ICM) cloud + precip map scrape, on its own schedule.
+#
+# Its own workflow on purpose. meteo.pl's GeoWebCache generates uncached tiles
+# on demand and slowly — up to ~30 s each — so a full scrape of the ~100 lead
+# hours (nine tiles apiece) takes 8-15 min. Sharing the 45-min models.yml job
+# meant the slow scrape either got truncated (missing the far forecast hours) or
+# pushed later steps over the timeout. Alone, with room to breathe, it fetches
+# every hour.
+#
+# Twice a day, offset from everything else: 11:20 catches the 00Z run (ICM
+# publishes it mid/late morning) and 23:20 the 12Z run. Clear of models.yml
+# (04:20 / 16:20) and grid-fill (08:20).
+on:
+  schedule:
+    - cron: "20 11,23 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: um-maps
+  cancel-in-progress: false
+
+jobs:
+  um-maps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dependencies
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj boto3
+      - name: UM (meteo.pl) map scrape -> R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_um_maps.py
