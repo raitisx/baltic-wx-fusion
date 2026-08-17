@@ -1017,9 +1017,18 @@ function dayVerdicts(cbLim, wgLim){
 // if the hour has no data to judge.
 const LIDAR_RAIN_MMH  = 0.1;   // the same "wet" threshold the maps are drawn at
 const LIDAR_RAIN_PROB = 0.5;   // ...or half the models calling for rain anyway
-function lidarWhy(r, cbLim, wgLim){
+function lidarWhy(r, cbLim, wgLim, ll){
   if(r.t2m==null) return null;
   const why=[];
+  // VFR needs daylight, so the bar goes red from 30 min after sunset to 30 min
+  // before sunrise. Centre the probe on the hour and look 30 min either side:
+  // the sun cannot rise and set within an hour at this latitude, so if it is
+  // below the horizon at both edges the hour lies inside that night window.
+  // First in the list — a night hour is out no matter what the weather does.
+  const HALF_H=1800e3, mid=r.ts+HALF_H;
+  if(ll && solarElev(mid-HALF_H, ll.lat, ll.lon) <= 0
+        && solarElev(mid+HALF_H, ll.lat, ll.lon) <= 0)
+    why.push("night · VFR only (30 min after sunset to 30 min before sunrise)");
   const pr=r.prcp_1h??0, pp=r.prcp_prob??0;
   if(pr>=LIDAR_RAIN_MMH || pp>=LIDAR_RAIN_PROB)
     why.push(`rain ${pr.toFixed(2)} mm/h · ${Math.round(pp*100)}% agree`);
@@ -1080,7 +1089,7 @@ const PANELS = [
   {id:"wind",  h:138, at:0.620, rows:[["gusts","--gust"],["wind m/s","--wind"]]},
   {id:"cloud", h:200, at:0.985, rows:[["ceiling m","--cloud"],["fog","--fog"]]},
   {id:"dew",   h:26,  at:0.800, rows:[["dew","--dewwet"]]},
-  {id:"lidar", h:26,  at:0.800, rows:[["lidar","--lidarno"]]},
+  {id:"lidar", h:26,  at:0.800, rows:[["lidar VFR","--lidarno"]]},
 ];
 // By id, because the strips below index into this list and adding a panel in
 // the middle should not silently repaint the wrong one.
@@ -1293,7 +1302,8 @@ function render(){
     r.wsz=w.ws; r.wgz=w.wg; r.wdirz=w.wdir; r.wsrc=w.src;
   }
   // After the wind, because the gust limit is tested at the selected altitude.
-  for(const r of FUSED) r.lidar = lidarWhy(r, cbLim, wgLim);
+  const lidarLL=activeLatLon();
+  for(const r of FUSED) r.lidar = lidarWhy(r, cbLim, wgLim, lidarLL);
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.getElementById("chart")).getPropertyValue(v).trim();
 
@@ -1756,7 +1766,7 @@ function render(){
       // Each blocking reason on its own line (an array value renders stacked),
       // so "gusts AND a 200 m ceiling" reads as two lines, not one run-on.
       ...(r.lidar
-          ? [[r.lidar.length?"--lidarno":"--lidarok", "lidar",
+          ? [[r.lidar.length?"--lidarno":"--lidarok", "lidar VFR",
               r.lidar.length ? r.lidar : "go — every limit clear"]]
           : []),
     ];
@@ -2057,7 +2067,7 @@ function renderTable(){
   const wzc=wzLevel();
   for(const h of ["time","t2m °C","dew °C","humid %","precip mm (next h)","agree %",
                   `wind m/s @${wzc} m`,`gust m/s @${wzc} m`,"dir °","cb m","L %","M %","H %",
-                  "lidar"]){
+                  "lidar VFR"]){
     const th=document.createElement("th"); th.textContent=h; hd.appendChild(th);
   }
   tb.appendChild(hd);
@@ -2647,7 +2657,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v100",
+    "page v101",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
