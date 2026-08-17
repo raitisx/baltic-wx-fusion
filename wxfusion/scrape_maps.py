@@ -356,15 +356,26 @@ def um_run(hours: list[int] | None = None) -> None:
         #     12Z run covering them hourly existed.
         #
         # So walk back through the 12-hourly cycles until one answers with
-        # actual pixels. The probe is the first lead we want anyway, so a
-        # published run costs nothing extra.
-        run = first = None
+        # actual pixels.
+        #
+        # Probe a lead that is reliably populated, NOT +1h. Since mid-Aug 2026
+        # ICM leaves the first ~2 forecast hours of UM4_CLOUD blank — the
+        # analysis and +1h come back fully transparent while +2h onward is full
+        # — so probing +1h made the scraper judge every published run "not
+        # published" and abandon it. Try a few mid leads and take the run if any
+        # has data.
+        run = None
         cand = now.replace(minute=0, second=0, microsecond=0,
                            hour=0 if now.hour < 12 else 12)
         for _ in range(4):
-            probe = fetch_um_frame(layer, cand, hours[0])
-            if probe is not None and np.array(probe)[..., 3].any():
-                run, first = cand, probe
+            published = False
+            for pl in (6, 3, 12):
+                p = fetch_um_frame(layer, cand, pl)
+                if p is not None and np.array(p)[..., 3].any():
+                    published = True
+                    break
+            if published:
+                run = cand
                 break
             log.info("%s: run %s not published yet", name,
                      cand.strftime("%Y%m%dT%H"))
@@ -385,18 +396,25 @@ def um_run(hours: list[int] | None = None) -> None:
         done = []
         from . import proj3059 as P
         sw, ne = _tilegrid_bounds_latlon()
-        for i, h in enumerate(hours):
-            img = first if i == 0 else fetch_um_frame(layer, run, h)
+        seen = False           # stored any real frame in this run yet?
+        for h in hours:
+            img = fetch_um_frame(layer, run, h)
             if img is None:
                 log.warning("%s: no tiles for +%dh", name, h)
                 continue
-            # Past the model horizon the tile server keeps answering, just with
-            # fully transparent tiles. Storing those would index blank frames
-            # that look like a broken viewer, so stop at the first empty one.
+            # A blank frame means two different things depending on where it is.
+            # ICM leaves the first ~2 forecast hours empty, so a blank BEFORE any
+            # data is a leading gap to skip. Past the model horizon the tile
+            # server also answers with transparent tiles, so a blank AFTER data
+            # is the horizon — stop there rather than indexing empty frames.
             probe = np.array(img)
             if probe.shape[-1] == 4 and not probe[..., 3].any():
-                log.info("%s: +%dh is empty — horizon reached", name, h)
-                break
+                if seen:
+                    log.info("%s: +%dh is empty — horizon reached", name, h)
+                    break
+                log.info("%s: +%dh is empty — leading blank, skipping", name, h)
+                continue
+            seen = True
             # reproject the mercator-stitched canvas onto the common
             # EPSG:3059 grid (transparent overlay; client stacks it on
             # maps/bg_3059.png) and bake borders ON TOP — the UM cloud
