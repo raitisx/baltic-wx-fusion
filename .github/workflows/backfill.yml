@@ -37,6 +37,7 @@ on:
           - radar-render-one
           - radar-snapshot
           - static-grid
+          - fused-map
         default: radar-maps
       hours:
         description: "radar-maps: how many hours back (meteolapa archive reaches back months)"
@@ -153,6 +154,7 @@ jobs:
             radar-render-one) pip install pillow numpy pyproj scipy scikit-image boto3 ;;
             radar-snapshot)   pip install pillow numpy pyproj scipy scikit-image boto3 ;;
             static-grid)      pip install shapely scipy matplotlib numpy pyproj boto3 rasterio ;;
+            fused-map)        pip install psycopg[binary] pyarrow numpy scipy matplotlib pillow pyproj boto3 ;;
           esac
 
       - name: Radar map backfill -> R2
@@ -359,6 +361,18 @@ jobs:
         env:
           RADAR_SNAP_TS: ${{ inputs.diag_ts }}
         run: python jobs/run_radar_beam_snapshot.py
+
+      # Render the 1:1 fused map from the existing fill grid + station
+      # forecasts (no Open-Meteo pass) — for iterating on the render.
+      - name: Fused map -> R2
+        if: inputs.target == 'fused-map'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+        run: python jobs/run_fused_map.py
 
       # Build the downscaler's static geography grid (land/sea/lake, coast
       # distance, elevation, TPI) and print each layer as base64 for review.
