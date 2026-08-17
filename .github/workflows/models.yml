@@ -176,15 +176,10 @@ jobs:
           R2_BUCKET: baltic-wx
         run: python jobs/run_gfs_maps.py
 
-      - name: UM (meteo.pl) maps
-        if: always()
-        continue-on-error: true
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: baltic-wx
-        run: python jobs/run_um_maps.py
+      # UM (meteo.pl) now lives in its own workflow (um.yml). meteo.pl's GWC
+      # generates uncached tiles slowly — a full scrape is ~8-15 min — which
+      # would blow this job's 45-min budget and truncate the far forecast hours.
+      # A dedicated workflow with room to breathe keeps the coverage complete.
 
       # Deeper radar sweep than the hourly top-up, so any hour the hourly tick
       # missed (throttled cron, upstream lag) still gets an aligned frame.

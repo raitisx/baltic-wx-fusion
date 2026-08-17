@@ -195,7 +195,7 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
     for yi in range(y0, y1 + 1):
         for xi in range(x0, x1 + 1):
             bb = _tile_bbox_900913(ZOOM, xi, yi)
-            r = s.get(GWC, params={
+            params = {
                 "service": "WMS", "version": "1.1.1", "request": "GetMap",
                 "layers": layer, "styles": "",
                 "bbox": ",".join(f"{v:.9f}" for v in bb),
@@ -203,9 +203,24 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
                 "format": "image/png", "transparent": "true", "tiled": "true",
                 "TIME": run_midnight.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "DIM_FORECAST": lead_h,
-            }, timeout=60)
+            }
+            # meteo.pl's GWC renders uncached tiles on demand, so a busy tile can
+            # come back non-200 (or an error page) and then succeed moments later
+            # — "loads eventually". Retry a few times with a short backoff rather
+            # than dropping the tile, which would punch a hole in the frame.
+            r = None
+            for attempt in range(3):
+                try:
+                    resp = s.get(GWC, params=params, timeout=60)
+                except Exception:
+                    resp = None
+                if resp is not None and resp.status_code == 200 \
+                        and resp.headers.get("content-type", "").startswith("image"):
+                    r = resp
+                    break
+                time.sleep(1.0 * (attempt + 1))     # 1s, 2s: let GWC finish rendering
             time.sleep(TILE_SLEEP)
-            if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image"):
+            if r is None:
                 continue
             out.paste(Image.open(io.BytesIO(r.content)).convert("RGBA"),
                       ((xi - x0) * 256, (yi - y0) * 256))
@@ -221,14 +236,18 @@ def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.
 # distinct non-empty frames. That self-imposed coarseness is what left the
 # afternoon with two empty hours after every frame.
 #
-# Hourly to +48 h, which is the window you actually plan in, then 3-hourly to
-# the +120 h horizon. Each lead is nine tile requests against someone else's
-# cache and this is a courtesy-scraped advisory layer, so 72 leads rather than
-# the 120 that are available.
-UM_LEADS = list(range(1, 49)) + list(range(51, 121, 3))
+# Hourly to +96 h, then 3-hourly to the +120 h horizon. meteo.pl publishes
+# every hour across the whole range; +96 h covers the four-day planning window
+# hour-by-hour (past the old +48 h cutoff the afternoons showed 3-hourly gaps
+# the viewer had to carry across), and it fits comfortably now that the scrape
+# has its own workflow (um.yml) instead of the shared 45-min models job. Each
+# lead is nine tile requests against someone else's cache, so the far tail stays
+# 3-hourly.
+UM_LEADS = list(range(1, 97)) + list(range(99, 121, 3))
 # What earlier runs were fetched at. The purge below has to treat frames from
 # those runs as legitimate too, or changing this list would delete them.
-UM_LEADS_LEGACY = (list(range(1, 25)) + list(range(27, 73, 3))
+UM_LEADS_LEGACY = (list(range(1, 49)) + list(range(51, 121, 3))
+                   + list(range(1, 25)) + list(range(27, 73, 3))
                    + list(range(78, 121, 6)) + list(range(1, 98)))
 # Runs scraped before this one were labelled with the old 1-based reading, so
 # every frame in them is an hour early. There is no way to tell a mislabelled
