@@ -1,0 +1,20 @@
+name: um-diag
+# One-off diagnostic for the stalled meteo.pl UM scrape. Manual only. Reaches
+# meteo.pl from the Actions runner (open egress) and dumps GetCapabilities +
+# the scraper's exact tile request for the last few cycles to the job log.
+# Delete once the scrape is fixed.
+on:
+  workflow_dispatch:
+
+jobs:
+  um-diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests numpy pillow
+      - name: Probe meteo.pl UM
+        run: python jobs/diag_um.py
