@@ -39,9 +39,15 @@ MAP_PARAMS = ["t2m", "td2m", "rh", "prcp_1h", "cc_low", "cc_mid", "cc_total",
 GRID_PARQUET = "maps/grid_forecast/latest.parquet"
 STATIC_NPZ = "maps/static/static_3059.npz"
 
-# Fog, same rule as the ingest: saturated at the surface.
-FOG_RH = 97.0
-FOG_DEP = 0.3
+# Fog: genuine surface fog, not merely near-saturated air. Both moisture
+# estimates must agree on saturation (RH high AND dew-point depression tiny),
+# a low deck must actually be present (fog is surface stratus), and it must not
+# be raining (saturated air under rain is wet, not fog). Tighter than the raw
+# ingest rule on purpose — the loose OR painted whole regions orange.
+FOG_RH = 98.0            # %, near-total saturation
+FOG_DEP = 0.2            # K, temperature - dew point at the surface
+FOG_CC_LOW = 60.0        # %, low cloud must corroborate a surface deck
+FOG_MAX_PRCP = 0.2       # mm/h, above this it's rain, not fog
 
 
 def lead_bin(h: int) -> str:
@@ -179,12 +185,16 @@ def fuse(rows, weights):
                 row["cb"] = sum(c * w for c, w in withc) / sum(w for _, w in withc)
             else:
                 row["cb"] = None
-            # fog from surface saturation of the blended moisture
+            # fog: both moisture estimates saturated, a low deck present, no rain
             t = row.get("t2m")
             td = row.get("td2m")
             rh = row.get("rh")
-            row["fog"] = bool((rh is not None and rh >= FOG_RH)
-                              or (t is not None and td is not None and (t - td) <= FOG_DEP))
+            lo = row.get("cc_low")
+            prc = row.get("prcp_1h") or 0.0
+            sat = (rh is not None and rh >= FOG_RH
+                   and t is not None and td is not None and (t - td) <= FOG_DEP)
+            row["fog"] = bool(sat and lo is not None and lo >= FOG_CC_LOW
+                              and prc < FOG_MAX_PRCP)
             per_point[pid] = row
         out[valid] = per_point
     log.info("fused %d hours", len(out))
@@ -245,6 +255,7 @@ def interp_fields(fused, points):
             "td2m": grid_of("td2m", 0.0),
             "prcp": grid_of("prcp_1h", 0.0),
             "tcc": grid_of("cc_total", 0.0),
+            "cc_low": grid_of("cc_low", 0.0),
             "cb": cbg,
             "fog": grid_of("fog", 0.0) >= 0.5,
         }
@@ -284,8 +295,11 @@ def downscale(fields, static):
         td = f["td2m"] + np.where(land, dt2, 0.0)
         f["t2m"] = t
         f["td2m"] = td
-        # fog line follows the sharpened saturation
-        f["fog"] = f["fog"] | (land & ((f["t2m"] - f["td2m"]) <= FOG_DEP))
+        # fog line follows the sharpened saturation, but only in fog-prone air:
+        # cooling a hollow can tip it over the edge, yet only where a low deck is
+        # present and it isn't raining — same gate as the per-point rule.
+        fogprone = land & (f["cc_low"] >= FOG_CC_LOW) & (f["prcp"] < FOG_MAX_PRCP)
+        f["fog"] = f["fog"] | (fogprone & ((f["t2m"] - f["td2m"]) <= FOG_DEP))
     return fields
 
 
