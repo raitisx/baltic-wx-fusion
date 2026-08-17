@@ -2300,6 +2300,7 @@ const MAP_MANIFESTS={
   radarArchive:"maps/radar/archive.json", mepsArchive:"maps/meps/archive.json",
   um4Archive:"maps/um4/archive.json",
   gfs:"maps/gfs/latest.json", gfsArchive:"maps/gfs/archive.json",
+  fused:"maps/fused/latest.json", fusedArchive:"maps/fused/archive.json",
   fogCells:"maps/meps/fog_cells.json",
   fogCellsArchive:"maps/meps/fog_cells_archive.json",
 };
@@ -2311,9 +2312,27 @@ function frameTime(f){
 }
 function vtagOf(iso){ return iso.replace(/[-:]/g,"").slice(0,11); }
 function mepsThr(){
-  const thrs=MV.loaded.meps?.thresholds || MV.loaded.gfs?.thresholds;
+  const thrs=MV.loaded.fused?.thresholds || MV.loaded.meps?.thresholds || MV.loaded.gfs?.thresholds;
   const want=cbLimit();
   return thrs ? thrs.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a) : want;
+}
+// The fused column: the meteogram's own multi-model blend, rendered on the grid
+// (maps/fused). One continuous product across the whole horizon — no MEPS->GFS
+// seam — and consistent with the meteogram by construction. Falls back to the
+// old MEPS/GFS source where a fused frame is missing (during rollout, or past
+// the frame window).
+function fusedSrc(iso){
+  const fu=MV.loaded.fused, thr=mepsThr();
+  if(fu){
+    if(fu.hours.includes(iso))
+      return {url:`${MAPS_BASE}/${fu.path}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
+              cap:"fused blend (ICON+MEPS+IFS+GFS+UKMO) · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
+    const ar=MV.loaded.fusedArchive?.hours?.[vtagOf(iso)];
+    if(ar)
+      return {url:`${MAPS_BASE}/maps/fused/${ar}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
+              cap:"fused blend · "+runLabel(ar)+" run"};
+  }
+  return mepsSrc(iso);
 }
 function mepsSrc(iso){
   const meps=MV.loaded.meps;
@@ -2535,7 +2554,7 @@ function mapShow(i){
   const label=`${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;  // 01.Aug. 11:00
   document.getElementById("mapTime").textContent=label;
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
-  const m=mepsSrc(iso), mImg=document.getElementById("imgMeps");
+  const m=fusedSrc(iso), mImg=document.getElementById("imgMeps");
   if(m && m.request) requestMapHour(m.request, mImg);
   showFrame(mImg, document.getElementById("mepsTime"), m&&m.url, m&&m.cap, "0.15");
   const u=umSrc(iso);
@@ -2559,7 +2578,7 @@ function prefetchWeek(){
   const token=++prefetchToken;
   const urls=[];
   for(const iso of MV.hours){
-    for(const s of [mepsSrc(iso), umSrc(iso), radarSrc(iso)])
+    for(const s of [fusedSrc(iso), umSrc(iso), radarSrc(iso)])
       if(s && !PRELOADED.has(s.url)) urls.push(s.url);
   }
   const uniq=[...new Set(urls)];
@@ -2611,8 +2630,9 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v97",
+    "page v98",
     "points: "+POINTS.length,
+    "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
     "meps arch: "+(MV.loaded.mepsArchive?Object.keys(MV.loaded.mepsArchive.hours||{}).length+"h":"—"),
     "gfs: "+(MV.loaded.gfs?`${MV.loaded.gfs.hours.length}h (run ${MV.loaded.gfs.run})`:"—"),
