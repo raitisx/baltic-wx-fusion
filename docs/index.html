@@ -456,14 +456,21 @@ const Q = {
   week: QS.get("week"),
 };
 // Where the maps, meteogram JSON and radar frames are read from. Explicit
-// ?maps= wins. Otherwise: when the page is served under a /meteo path (the
-// Cloudflare Worker on ttaero.lv/meteo, which proxies the baltic-wx bucket at
-// that same prefix), read everything same-origin from there — no cross-origin
-// CORS on the meteogram fetch. Served straight off the r2.dev bucket URL, fall
-// back to that bucket. Both resolve to the same objects.
+// ?maps= wins. Otherwise read same-origin wherever a Worker proxies the
+// baltic-wx bucket for us — under the /meteo path on ttaero.lv, or at the root
+// on the meteo.ttaero.lv subdomain (see worker/) — so the meteogram fetch never
+// crosses an origin. Everywhere else, straight off the public r2.dev bucket URL
+// (CORS: *). All three resolve to the same objects.
 const MAPS_BASE = QS.get("maps") || (() => {
   const p = location.pathname.replace(/\/+$/, "");
+  // ttaero.lv/meteo: the Worker proxies the baltic-wx bucket under this prefix.
   if (p.endsWith("/meteo")) return location.origin + p;
+  // meteo.ttaero.lv (any meteo.* host): a Worker serves the page at / and
+  // proxies the bucket same-origin at the root, so read everything from here —
+  // no cross-origin CORS on the meteogram fetch.
+  if (/^meteo\./i.test(location.hostname)) return location.origin;
+  // Anywhere else (opened straight off GitHub Pages, a preview host, a file):
+  // the public r2.dev bucket URL, which serves the same objects with CORS: *.
   return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
 })();
 
@@ -2640,7 +2647,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v99",
+    "page v100",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
