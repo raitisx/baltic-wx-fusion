@@ -241,17 +241,20 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote">LKS-92 (EPSG:3059) · 25 km grid · blue dots are airports (METAR) · teal dots are national stations (rain + humidity) · named dots are cities · click anywhere else to select that 25 km cell — it joins the verification pipeline.</div>
+    <div class="mapnote">
+      <b>5-model skill-weighted forecast</b> — DWD ICON &middot; MET Norway MEPS &middot; ECMWF IFS &middot; NOAA GFS &middot; UK Met Office UM,
+      blended by 30-day local skill (station + METAR verification; equal weights until &ge;20 samples).
+      Meteogram is live; the fused map refreshes each morning; radar is observed (past only). Times in Europe/Riga.
+    </div>
+    <div class="mapnote"><b>Cloud base is model-derived (LCL)</b>, verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.</div>
+    <div class="mapnote">One slider moves all three columns (identical extent) &middot; hover the meteogram to scrub &middot; click any 25 km cell to add it. Dots: blue = airports (METAR), teal = national stations (rain + humidity), named = cities.</div>
     <div class="mapnote" id="mapDiag"></div>
     <span class="status" id="status"></span>
-    <div class="mapnote">One slider drives all three columns (EPSG:3059, identical extent) · radar shows the frame nearest the selected hour (past only) · hover the meteogram to scrub · MET Norway MEPS (CC-BY) · ICM UW meteo.pl UM (advisory) · LVĢMC + Keskkonnaagentuur + LHMT radar via meteolapa.lv / meteo.lt</div>
     <div class="mapnote">
-      Fused DWD ICON + MET Norway MEPS + ECMWF IFS + NOAA GFS + UK Met Office UM via <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0)
-      &middot; skill-weighted when 30-day verification has &ge;20 samples, equal weights otherwise &middot; times Europe/Riga
-      &middot; past days show the freshest run that covered each hour.
-      Observations (dots): LVĢMC (data.gov.lv, CC0), Keskkonnaagentuur / <a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>,
-      <a href="https://www.meteo.lt/">LHMT meteo.lt</a> (CC BY-SA 4.0), METAR via Iowa State IEM.
-      Cloud base is model-derived (LCL), verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.
+      Sources: <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0) &middot; MET Norway MEPS (CC-BY) &middot; ICM UW meteo.pl UM (advisory)
+      &middot; radar LVĢMC / Keskkonnaagentuur (<a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>) / LHMT
+      (<a href="https://www.meteo.lt/">meteo.lt</a>, CC BY-SA 4.0) via meteolapa.lv
+      &middot; observations LVĢMC (data.gov.lv, CC0), METAR via Iowa State IEM.
     </div>
   </aside>
 
@@ -271,7 +274,6 @@
         <button id="mapPrev">&lt;</button>
         <button id="mapPlay">▶</button>
         <button id="mapNext">&gt;</button>
-        <span class="mtime" id="mapTime" style="margin-left:auto"></span>
       </div>
       <div class="mapcols">
         <div class="mapcol">
@@ -2604,7 +2606,6 @@ function mapShow(i){
   if(window.__seekTo) window.__seekTo(Date.parse(iso));   // move the seek line
   const d=new Date(iso);
   const label=`${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;  // 01.Aug. 11:00
-  document.getElementById("mapTime").textContent=label;
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
   const m=fusedSrc(iso), mImg=document.getElementById("imgMeps");
   if(m && m.request) requestMapHour(m.request, mImg);
@@ -2684,7 +2685,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v103",
+    "page v104",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2694,7 +2695,15 @@ async function initMapsViewer(){
     "radar: "+(MV.loaded.radar?(MV.loaded.radar.frames||[]).length+" live":"—"),
     "radar arch: "+(MV.loaded.radarArchive?Object.keys(MV.loaded.radarArchive.hours||{}).length+"h":"—"),
   ];
-  document.getElementById("mapDiag").textContent=diag.join(" · ");
+  // Public page shows only the version; ?debug=1 reveals the full telemetry,
+  // one entry per line.
+  const dEl=document.getElementById("mapDiag");
+  if(QS.has("debug")){
+    dEl.style.whiteSpace="pre-line";
+    dEl.textContent=diag.join("\n");
+  }else{
+    dEl.textContent=diag[0];
+  }
 }
 function setMapAxis(){
   if(document.getElementById("mapView").hidden) return;
