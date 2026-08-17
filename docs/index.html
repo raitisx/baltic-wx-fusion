@@ -2312,38 +2312,48 @@ function frameTime(f){
 }
 function vtagOf(iso){ return iso.replace(/[-:]/g,"").slice(0,11); }
 function mepsThr(){
-  const thrs=MV.loaded.fused?.thresholds || MV.loaded.meps?.thresholds || MV.loaded.gfs?.thresholds;
+  const thrs=MV.loaded.meps?.thresholds || MV.loaded.fused?.thresholds || MV.loaded.gfs?.thresholds;
   const want=cbLimit();
   return thrs ? thrs.reduce((a,b)=>Math.abs(b-want)<Math.abs(a-want)?b:a) : want;
 }
-// The fused column: the meteogram's own multi-model blend, rendered on the grid
-// (maps/fused). One continuous product across the whole horizon — no MEPS->GFS
-// seam — and consistent with the meteogram by construction. Falls back to the
-// old MEPS/GFS source where a fused frame is missing (during rollout, or past
-// the frame window).
+// The map column. Native MEPS is a true 2.5 km model — crisp cloud/ceiling/rain
+// fields for its whole +66 h horizon, and it agrees with the other models. The
+// fused blend, by contrast, is interpolated from ~1,200 point forecasts, so it
+// is smoother/blockier than native MEPS and can drift from what the gridded
+// models show; it only earns its place past +66 h, where MEPS stops and the
+// only alternative is the coarse GFS tail. So: MEPS while it lasts, then the
+// fused blend for the tail (consistent with the meteogram, and softer than the
+// old MEPS->GFS jump), with GFS as the final fallback.
 function fusedSrc(iso){
-  const fu=MV.loaded.fused, thr=mepsThr();
+  return mepsSrc(iso, fusedTail);
+}
+// The +66 h-and-beyond tail: the fused blend if a frame exists, else GFS.
+function fusedTail(iso, thr){
+  const fu=MV.loaded.fused;
   if(fu){
     if(fu.hours.includes(iso))
       return {url:`${MAPS_BASE}/${fu.path}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
-              cap:"fused blend (ICON+MEPS+IFS+GFS+UKMO) · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
+              cap:"fused blend (ICON+MEPS+IFS+GFS+UKMO), beyond MEPS · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
     const ar=MV.loaded.fusedArchive?.hours?.[vtagOf(iso)];
     if(ar)
       return {url:`${MAPS_BASE}/maps/fused/${ar}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
               cap:"fused blend · "+runLabel(ar)+" run"};
   }
-  return mepsSrc(iso);
+  return gfsSrc(iso, thr);
 }
-function mepsSrc(iso){
+// MEPS for its +66 h horizon; past it, hand off to `tail` (the fused blend for
+// the map column, plain GFS elsewhere).
+function mepsSrc(iso, tail){
   const meps=MV.loaded.meps;
   const thr=mepsThr();
-  if(!meps) return gfsSrc(iso, thr);
+  const beyond=tail || gfsSrc;
+  if(!meps) return beyond(iso, thr);
   if(meps.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"pink: base<limit · orange: fog · rain green→orange, hour starting here"};
+    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"MEPS 2.5 km · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
-            cap:"archived · "+runLabel(archRun)+" run"};
+            cap:"MEPS · archived · "+runLabel(archRun)+" run"};
   // Frames are kept for a fortnight; the model fields behind them for a year.
   // Past the frame window the picture is drawn on the spot by the wx-map edge
   // function, straight from the stored grid — a few tens of milliseconds, no
@@ -2351,8 +2361,8 @@ function mepsSrc(iso){
   // because those need an OPeNDAP read that Deno cannot do.
   if(Date.parse(iso) < Date.now() - FRAME_DAYS*86400e3)
     return {url:`${SUPABASE_URL}/functions/v1/wx-map?hour=${vtagOf(iso)}&thr=${thr}`,
-            cap:"drawn from the stored grid", request:iso};
-  return gfsSrc(iso, thr);
+            cap:"MEPS · drawn from the stored grid", request:iso};
+  return beyond(iso, thr);
 }
 // Days 3-7: MEPS stops at +66 h. GFS carries a gridded cloud ceiling — the
 // same quantity — much further, at 0.25 deg and every 6 h, so it fills the
@@ -2630,7 +2640,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v98",
+    "page v99",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
