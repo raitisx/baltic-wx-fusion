@@ -371,6 +371,13 @@ def um_run(hours: list[int] | None = None) -> None:
             cand -= dt.timedelta(hours=12)
         if run is None:
             log.warning("%s: no published run found in the last 4 cycles", name)
+            # Loud on purpose: the step is continue-on-error so the job stays
+            # green, but a stalled scrape (meteo.pl changed something, or is
+            # refusing us) must not pass unseen — surface it as a GitHub Actions
+            # warning annotation on the run summary.
+            print(f"::warning title=UM scrape stalled::{name}: no published "
+                  "meteo.pl run in the last 4 cycles (48 h) — the page is "
+                  "serving the last run that returned frames", flush=True)
             continue
         log.info("%s: run %s", name, run.strftime("%Y%m%dT%H"))
 

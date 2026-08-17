@@ -154,6 +154,9 @@
   .mapcol{flex:1;min-width:0}
   .mapcolhead{font-size:12px;font-weight:700;color:var(--ink);margin-bottom:4px;height:22px;display:flex;gap:6px;align-items:center}
   .mapcolhead select{font-size:11px;padding:1px 4px}
+  /* A stalled source (e.g. the meteo.pl UM scrape falling behind) turns its
+     column heading red so a stale picture is never read as a current one. */
+  .stale{color:var(--threshold)}
   .mapsub{font-weight:400;color:var(--muted);font-size:10px}
   .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:#fbf3de;overflow:hidden}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -274,7 +277,7 @@
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
-          <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
+          <div class="mapcolhead"><span id="umHead">UM 4 km (meteo.pl)</span> <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
         </div>
         <div class="mapcol">
@@ -2415,6 +2418,31 @@ function gfsSrc(iso, _thr){
 // transparent over the Baltic bbox — so 4 km is the only useful resolution.
 const UM_RES="um4";
 const UM_CARRY_H=6;
+// meteo.pl (ICM) runs the UM twice a day, 00Z and 12Z, so a healthy latest run
+// is under ~24 h old. Past this the scrape has stalled — meteo.pl changed
+// something or is refusing us — and the page is serving the last run that
+// returned frames, carried forward. Guard against showing that silently.
+const UM_STALE_H=28;
+function umRunMs(tag){
+  return Date.UTC(+tag.slice(0,4), +tag.slice(4,6)-1, +tag.slice(6,8), +tag.slice(9,11));
+}
+// Colour the UM heading by freshness: red, with the run and its age spelled
+// out, whenever the newest UM run is stale (or missing). Called once the
+// manifests are in.
+function markUmFreshness(){
+  const head=document.getElementById("umHead");
+  if(!head) return;
+  const run=MV.loaded.um4?.run;
+  const ageH=run ? (Date.now()-umRunMs(run))/3600e3 : null;
+  const stale=ageH==null || ageH>UM_STALE_H;
+  head.classList.toggle("stale", stale);
+  head.textContent = !stale ? "UM 4 km (meteo.pl)"
+    : ageH==null ? "UM 4 km — no data"
+    : `UM 4 km — STALE: ${runLabel(run)} run, ${ageH>=48?Math.round(ageH/24)+" d":Math.round(ageH)+" h"} old`;
+  head.title = stale
+    ? "meteo.pl scrape stalled — showing the last run that returned frames"
+    : "";
+}
 // "20260729T12" -> "29.07 12Z". Which run a frame came from is the single
 // most useful thing to say about a UM picture: the seam where the map jumps
 // is almost always the hour the source run changes, and a +23 h forecast
@@ -2641,6 +2669,7 @@ async function initMapsViewer(){
   }));
   if(!Object.keys(MV.loaded).length){ miss.hidden=false; return; }
   view.hidden=false;
+  markUmFreshness();
   document.getElementById("mapPrev").addEventListener("click",()=>mapShow(MV.idx-1));
   document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
   document.getElementById("mapPlay").addEventListener("click",()=>{
@@ -2657,7 +2686,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v101",
+    "page v102",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
