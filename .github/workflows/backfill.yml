@@ -372,6 +372,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
+          # force = preview one frame as base64 instead of the full render.
+          FUSED_PREVIEW: ${{ inputs.force && '1' || '' }}
         run: python jobs/run_fused_map.py
 
       # Build the downscaler's static geography grid (land/sea/lake, coast

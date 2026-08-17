@@ -338,6 +338,36 @@ def render_run() -> None:
         ax.set_aspect("equal"); ax.axis("off")
         return fig, ax
 
+    def render_frame(f, thr):
+        fig, ax = blank()
+        _draw_clouds(ax, gx, gy, f["tcc"] / 100.0, grey)
+        below = np.where((f["cb"] < thr) & ~f["fog"], 1.0, np.nan)
+        ax.pcolormesh(gx, gy, below, cmap=pink, vmin=0, vmax=1, alpha=0.75, shading="auto")
+        ax.pcolormesh(gx, gy, np.where(f["fog"], 1.0, np.nan), cmap=orange,
+                      vmin=0, vmax=1, alpha=0.8, shading="auto")
+        prm = np.where(f["prcp"] >= 0.1, f["prcp"], np.nan)
+        _draw_rain(ax, gx, gy, prm, f["t2m"], greens, blues, rain_norm)
+        _draw_borders(ax)
+        return fig
+
+    # Fast path for eyeballing: render one representative frame, print it as
+    # base64, and stop — no 400-frame render, no upload.
+    if os.environ.get("FUSED_PREVIEW"):
+        import base64
+        keys = sorted(fields.keys())
+        valid = keys[len(keys) // 4]                  # a near-term hour
+        fig = render_frame(fields[valid], 700)
+        fp = os.path.join(tempfile.mkdtemp(), "preview.png")
+        fig.savefig(fp, dpi=100, facecolor="#fbf3de")
+        import matplotlib.pyplot as _plt
+        _plt.close(fig)
+        b = base64.b64encode(open(fp, "rb").read()).decode()
+        print(f"@@SNAP_BEGIN FUSED {len(b)}")
+        print(b)
+        print("@@SNAP_END FUSED")
+        log.info("fused preview: %s", valid.isoformat())
+        return
+
     tmp = tempfile.mkdtemp()
     hours_out = []
     for valid in sorted(fields.keys()):
