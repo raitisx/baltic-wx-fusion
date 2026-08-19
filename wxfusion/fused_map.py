@@ -327,11 +327,14 @@ def render_run() -> None:
     run_tag = max(r[1] for r in rows).astimezone(dt.timezone.utc).strftime("%Y%m%dT%H")
     fused = fuse(rows, weights)
     fields = interp_fields(fused, points)
-    fields = downscale(fields, load_static(s3))
+    static = load_static(s3)
+    fields = downscale(fields, static)
+    land = static["land"] if static else None
 
     greens, blues, rain_norm = rain_cmaps()
     pink = LinearSegmentedColormap.from_list("p", ["#f3b8b4", "#f3b8b4"])
     orange = LinearSegmentedColormap.from_list("o", ["#e8a33d", "#e8a33d"])
+    sea = LinearSegmentedColormap.from_list("sea", ["#cfe4f2", "#cfe4f2"])
     grey = _cloud_cmap()
     gx, gy = _grid_xy()
     borders_xy = [[P.to_xy([px for px, _ in line], [py for _, py in line])
@@ -350,6 +353,11 @@ def render_run() -> None:
         ax.set_facecolor("#fbf3de")
         ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
         ax.set_aspect("equal"); ax.axis("off")
+        # Light-blue sea under everything (cream land stays the facecolor); the
+        # weather layers and borders draw on top.
+        if land is not None:
+            ax.pcolormesh(gx, gy, np.where(~land, 1.0, np.nan), cmap=sea,
+                          vmin=0, vmax=1, shading="auto", zorder=0)
         return fig, ax
 
     def render_frame(f, thr):
