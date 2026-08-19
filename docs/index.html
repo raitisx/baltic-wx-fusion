@@ -177,6 +177,8 @@
   .stale{color:var(--threshold)!important}
   .mapsub{font-weight:400;color:var(--muted);font-size:10px}
   .stack{position:relative;width:100%;aspect-ratio:570/690;border:1px solid var(--gridday);border-radius:4px;background:#fbf3de;overflow:hidden}
+  .mapov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  #fusedMap{cursor:crosshair}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
   /* the selected cell/station, in the same place on every map */
   .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
@@ -253,10 +255,6 @@
       <option value="800">800</option>
       <option value="1000">1000</option>
     </select>
-    <div class="smapwrap" id="smap">
-      <img id="smapBg" alt="">
-      <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
-    </div>
     <div class="status" id="status"></div>
   </aside>
 
@@ -279,8 +277,8 @@
       </div>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">Baltic fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°</span></div>
-          <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
+          <div class="mapcolhead">Baltic fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0° · click to pick a cell</span></div>
+          <div class="stack" id="fusedMap"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"><svg id="smapOv" class="mapov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
@@ -2230,82 +2228,32 @@ function cellAt(mx,my){
 }
 function cellLabel(c){ return `cell ${Math.round(c.x0/1000)}/${Math.round(c.y0/1000)}`; }
 function initStaticMap(){
-  document.getElementById("smapBg").src=`${MAPS_BASE}/maps/bg_3059.png`;
   const ov=document.getElementById("smapOv");
+  if(!ov) return;
   const NS="http://www.w3.org/2000/svg";
   const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);ov.appendChild(e);return e;};
-  // 25 km LKS-92 grid — drawn on the SAME lattice as the selectable cells
-  // (origin GX0/GY0, stepping by CELL), so every line is a real cell boundary.
-  // The old loop stepped absolute multiples of 25 km (250, 275, …); because
-  // GX0=235000 is not a multiple of 25 km the drawn grid sat a constant 10 km
-  // off the cells you actually click. Every fourth line (100 km) is emphasised
-  // and labelled with its LKS-92 easting/northing in km — the same number that
-  // appears in a cell's label.
-  for(let i=0,x=GX0;x<=GX1;i++,x+=CELL){
-    const [px]=metersToPx(x,0); const major=i%4===0;
-    mk("line",{x1:px,x2:px,y1:0,y2:690,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
-    if(major) mk("text",{x:px+2,y:686,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(x/1000);
-  }
-  for(let j=0,y=GY0;y<=GY1;j++,y+=CELL){
-    const [,py]=metersToPx(0,y); const major=j%4===0;
-    mk("line",{x1:0,x2:570,y1:py,y2:py,stroke:"#b9b092","stroke-width":major?0.8:0.35,opacity:major?1:0.75});
-    if(major) mk("text",{x:2,y:py-2,"font-size":"11",fill:"#8a8468"}).textContent=Math.round(y/1000);
-  }
-  const haveProj = typeof proj4!=="undefined";
-  if(haveProj){
-    // Rivers first (under the dots), then cities, then the station dots on top.
-    for(const riv of RIVERS){
-      const pts=riv.map(([lo,la])=>{
-        const [mx,my]=proj4("EPSG:4326","EPSG:3059",[lo,la]);
-        const [px,py]=metersToPx(mx,my);
-        return px.toFixed(1)+","+py.toFixed(1);
-      }).join(" ");
-      mk("polyline",{points:pts,fill:"none",stroke:"#5a93c8","stroke-width":1.6,
-        "stroke-opacity":0.8,"stroke-linejoin":"round","stroke-linecap":"round",
-        "pointer-events":"none"});
-    }
+  // The fused weather map IS the picker now: cities for orientation, click
+  // anywhere to select the 25 km cell under the pointer. The selected point
+  // rides on the .mmark div every column already gets, so no marker is drawn
+  // here. Grid, rivers and the ~250 station dots are dropped so the weather
+  // stays readable on a third-width map.
+  if(typeof proj4!=="undefined"){
     for(const c of CITIES){
       const [mx,my]=proj4("EPSG:4326","EPSG:3059",[c.lon,c.lat]);
       const [px,py]=metersToPx(mx,my);
       if(px<0||px>570||py<0||py>690) continue;
-      mk("path",{d:`M${(px-2.6).toFixed(1)} ${(py-2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py+2.6).toFixed(1)} `
-                  +`M${(px-2.6).toFixed(1)} ${(py+2.6).toFixed(1)} L${(px+2.6).toFixed(1)} ${(py-2.6).toFixed(1)}`,
-        stroke:"#3a3524","stroke-width":1.1,"stroke-linecap":"round",
-        style:"paint-order:stroke;stroke-linejoin:round","pointer-events":"none"});
-      // Every label snaps by its bottom-left corner to just right of the mark,
-      // so the name reads up and to the right from the point it marks.
-      mk("text",{x:px+4,y:py,"font-size":"16.6",fill:"#2a2617",
-        "text-anchor":"start","pointer-events":"none",
-        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.9;stroke-linejoin:round"
-      }).textContent=c.n;
-    }
-    for(const p of POINTS){
-      if(p.lat==null || !isStation(p)) continue;
-      const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
-      const [px,py]=metersToPx(mx,my);
-      const metar = p.kind==="metar";
-      // METAR airports as the bigger blue dots (temp/wind/humidity, no rain);
-      // the denser national-network stations — LVĢMC, meteo.lt, Estonia, the
-      // ones that actually measure rain — as smaller teal dots with a tighter
-      // hit area, so ~250 of them stay pickable without swamping the map.
-      mk("circle",{cx:px,cy:py,r:metar?4.5:1.1,
-        fill:metar?"#1c2c85":"#14532d","fill-opacity":metar?0.85:0.9,
-        stroke:"#fdf9ec","stroke-width":metar?1.5:0.4});
-      const c=mk("circle",{cx:px,cy:py,r:metar?15:6,fill:"#000","fill-opacity":0});
-      c.style.cursor="pointer";
-      c.addEventListener("click",ev=>{
-        ev.stopPropagation();
-        clearSmapCell();
-        setPoint(p.point_id, metar ? `${p.point_id} — ${p.name??""}` : (p.name||p.point_id));
-        placeSmapMarker(p.lat,p.lon);
-        load();
-      });
-      const t=document.createElementNS(NS,"title"); t.textContent=`${p.name??p.point_id}`; c.appendChild(t);
+      mk("path",{d:`M${(px-2.4).toFixed(1)} ${(py-2.4).toFixed(1)} L${(px+2.4).toFixed(1)} ${(py+2.4).toFixed(1)} `
+                  +`M${(px-2.4).toFixed(1)} ${(py+2.4).toFixed(1)} L${(px+2.4).toFixed(1)} ${(py-2.4).toFixed(1)}`,
+        stroke:"#2a2617","stroke-width":1.1,"stroke-linecap":"round",
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:2.6;stroke-linejoin:round","pointer-events":"none"});
+      mk("text",{x:px+4,y:py,"font-size":"15",fill:"#1c1a12","text-anchor":"start","pointer-events":"none",
+        style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.4;stroke-linejoin:round"}).textContent=c.n;
     }
   }
-  document.getElementById("smap").addEventListener("click",async ev=>{
-    if(!haveProj) return;
-    const r=ev.currentTarget.getBoundingClientRect();
+  const fm=document.getElementById("fusedMap");
+  if(fm) fm.addEventListener("click",async ev=>{
+    if(typeof proj4==="undefined") return;
+    const r=fm.getBoundingClientRect();
     const mx=GX0+(ev.clientX-r.left)/r.width*(GX1-GX0);
     const my=GY1-(ev.clientY-r.top)/r.height*(GY1-GY0);
     if(mx<GX0||mx>GX1||my<GY0||my>GY1) return;
@@ -2320,7 +2268,6 @@ function initStaticMap(){
         POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
       setPoint(pid, `▣ ${cellLabel(cell)} · 25 km`);
       Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
-      placeSmapMarker(la,lo);
       load();
     }catch(e){
       clearSmapCell();
@@ -2728,7 +2675,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v111",
+    "page v112",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2909,7 +2856,7 @@ async function init(){
   }
   initStaticMap();
   const cur=POINTS.find(p=>p.point_id===currentPid);
-  if(cur?.lat!=null) placeSmapMarker(cur.lat,cur.lon);
+  placeMapMarkers();          // the selected point rides the .mmark on each column
   // Deep link straight to a cell (?lat&lon, or the tracker handing one over).
   if(cur && !isStation(cur) && typeof proj4!=="undefined"){
     const [mx,my]=proj4("EPSG:4326","EPSG:3059",[cur.lon,cur.lat]);
