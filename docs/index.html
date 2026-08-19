@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BALTIC_WX — flight meteogram</title>
+<title>TT Aero Meteo — flight meteogram</title>
 <style>
   :root{
     /* Dark theme. The page ground is the slate-navy swatch; panels sit one
@@ -70,6 +70,22 @@
   .smapwrap img{position:absolute;inset:0;width:100%;height:100%}
   .smapwrap svg{position:absolute;inset:0;width:100%;height:100%}
   .mapnote{font-size:10px;color:var(--muted);line-height:1.5;margin-top:6px}
+  /* Title info button + the About drawer it opens */
+  .ibtn{background:none;border:none;color:var(--ink);cursor:pointer;font-size:15px;
+        line-height:1;padding:0 0 0 3px;vertical-align:baseline;opacity:.75}
+  .ibtn:hover{opacity:1}
+  .imodal{position:fixed;inset:0;z-index:60;background:rgba(10,14,26,.55);
+          display:flex;align-items:center;justify-content:center;padding:20px}
+  .imodal[hidden]{display:none}
+  .imodal-card{position:relative;max-width:560px;max-height:82vh;overflow:auto;
+               background:var(--panel);border:1px solid var(--gridday);border-radius:10px;
+               padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  .imodal-h{font-size:16px;font-weight:700;color:var(--ink);margin:0 0 4px}
+  .imodal-card .mapnote{font-size:12px;margin-top:11px}
+  .imodal-card a{color:#9db8ff}
+  .imodal-x{position:absolute;top:8px;right:11px;background:none;border:none;
+            color:var(--muted);font-size:23px;line-height:1;cursor:pointer}
+  .imodal-x:hover{color:var(--text)}
   .weekbar{display:flex;gap:8px;align-items:center;margin-bottom:6px}
   .weekbar .wlabel{font-size:15px;font-weight:700;color:var(--ink);min-width:220px;text-align:center}
   .status{
@@ -179,7 +195,7 @@
 <body>
 <div class="layout">
   <aside class="sidebar side">
-    <h1 id="title">BALTIC_WX</h1>
+    <h1 id="title">TT Aero Meteo <button type="button" id="infoBtn" class="ibtn" aria-label="About this page" title="About this page">&#9432;</button></h1>
     <div class="sel" id="selNote"></div>
     <!-- Both limits are moved onto the panel they draw a line on — see
          placeLimitBox(). Moved rather than duplicated, so there is only ever
@@ -241,21 +257,8 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote">
-      <b>5-model skill-weighted forecast</b> — DWD ICON &middot; MET Norway MEPS &middot; ECMWF IFS &middot; NOAA GFS &middot; UK Met Office UM,
-      blended by 30-day local skill (station + METAR verification; equal weights until &ge;20 samples).
-      Meteogram is live; the fused map refreshes each morning; radar is observed (past only). Times in Europe/Riga.
-    </div>
-    <div class="mapnote"><b>Cloud base is model-derived (LCL)</b>, verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.</div>
-    <div class="mapnote">One slider moves all three columns (identical extent) &middot; drag across the meteogram to move the maps, hover to read an hour &middot; click any 25 km cell to add it. Dots: blue = airports (METAR), teal = national stations (rain + humidity), named = cities.</div>
     <div class="mapnote" id="mapDiag"></div>
     <span class="status" id="status"></span>
-    <div class="mapnote">
-      Sources: <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0) &middot; MET Norway MEPS (CC-BY) &middot; ICM UW meteo.pl UM (advisory)
-      &middot; radar LVĢMC / Keskkonnaagentuur (<a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>) / LHMT
-      (<a href="https://www.meteo.lt/">meteo.lt</a>, CC BY-SA 4.0) via meteolapa.lv
-      &middot; observations LVĢMC (data.gov.lv, CC0), METAR via Iowa State IEM.
-    </div>
   </aside>
 
   <main class="main">
@@ -310,6 +313,26 @@
     </details>
 
   </main>
+</div>
+
+<div id="infoModal" class="imodal" hidden>
+  <div class="imodal-card" role="dialog" aria-modal="true" aria-label="About TT Aero Meteo">
+    <button type="button" id="infoClose" class="imodal-x" aria-label="Close">&times;</button>
+    <h2 class="imodal-h">TT Aero Meteo</h2>
+    <div class="mapnote">
+      <b>5-model skill-weighted forecast</b> — DWD ICON &middot; MET Norway MEPS &middot; ECMWF IFS &middot; NOAA GFS &middot; UK Met Office UM,
+      blended by 30-day local skill (station + METAR verification; equal weights until &ge;20 samples).
+      Meteogram is live; the fused map refreshes each morning; radar is observed (past only). Times in Europe/Riga.
+    </div>
+    <div class="mapnote"><b>Cloud base is model-derived (LCL)</b>, verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.</div>
+    <div class="mapnote">One slider moves all three columns (identical extent) &middot; drag across the meteogram to move the maps, hover to read an hour &middot; click any 25 km cell to add it. Dots: blue = airports (METAR), teal = national stations (rain + humidity), named = cities.</div>
+    <div class="mapnote">
+      Sources: <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0) &middot; MET Norway MEPS (CC-BY) &middot; ICM UW meteo.pl UM (advisory)
+      &middot; radar LVĢMC / Keskkonnaagentuur (<a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>) / LHMT
+      (<a href="https://www.meteo.lt/">meteo.lt</a>, CC BY-SA 4.0) via meteolapa.lv
+      &middot; observations LVĢMC (data.gov.lv, CC0), METAR via Iowa State IEM.
+    </div>
+  </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
@@ -2698,7 +2721,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v106",
+    "page v107",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2881,6 +2904,19 @@ async function init(){
   await load();
 }
 init();
+
+// The title's ⓘ opens the About drawer (moved out of the sidebar). Backdrop
+// click, the × , or Escape close it.
+(function(){
+  const btn=document.getElementById("infoBtn"), modal=document.getElementById("infoModal"),
+        x=document.getElementById("infoClose");
+  if(!btn||!modal) return;
+  const close=()=>{modal.hidden=true;};
+  btn.addEventListener("click",()=>{modal.hidden=false;});
+  if(x) x.addEventListener("click",close);
+  modal.addEventListener("click",e=>{ if(e.target===modal) close(); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape" && !modal.hidden) close(); });
+})();
 </script>
 </body>
 </html>
