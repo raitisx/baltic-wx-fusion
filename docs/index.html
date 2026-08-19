@@ -2296,7 +2296,7 @@ function initStaticMap(){
       selectedCell={...cell, pid, lat:la, lon:lo};
       if(!POINTS.some(p=>p.point_id===pid))
         POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
-      setPoint(pid, `▣ ${cellLabel(cell)} · 25 km`);
+      setPoint(pid, "");
       Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
       load();
     }catch(e){
@@ -2705,7 +2705,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v113",
+    "page v114",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2871,8 +2871,7 @@ async function init(){
   let startPt=POINTS.find(p=>p.point_id===startPid);
   if(!startPt) startPt=POINTS.find(p=>p.point_id==="EVRA") ?? POINTS[0];
   if(startPt) setPoint(startPt.point_id,
-    isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}`
-                       : `▣ ${startPt.name ?? "map cell"} · 25 km`);
+    isStation(startPt) ? `${startPt.point_id} — ${startPt.name??""}` : "");
   for(const k of ["cb","wg","wz"]) limSel(k).addEventListener("change",()=>{saveLimits();render();});
   opsInit();
   document.getElementById("wPrev").addEventListener("click",()=>goWeek(-1));
