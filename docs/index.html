@@ -280,7 +280,7 @@
       </div>
       <div class="mapcols">
         <div class="mapcol">
-          <div class="mapcolhead">TTAero fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°, hour starting here</span></div>
+          <div class="mapcolhead">TTAero fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0°</span></div>
           <div class="stack"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"></div>
         </div>
         <div class="mapcol">
@@ -1155,7 +1155,7 @@ function drawNowLine(svg, plotTop, plotBottom){
   const g=svgEl("g",{},svg);
   const halo=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:"#fffdf4","stroke-width":4,"stroke-opacity":.75},g);
   const line=svgEl("line",{y1:plotTop,y2:plotBottom,stroke:css("--now"),"stroke-width":1.8},g);
-  const tabW=104, tabH=13;
+  const tabW=34, tabH=13;
   const tab=svgEl("rect",{y:plotTop-tabH,width:tabW,height:tabH,rx:2,fill:css("--now"),"fill-opacity":.92},g);
   const lbl=svgEl("text",{y:plotTop-3.5,"font-size":"9","font-weight":"700",fill:"#fffdf4"},g);
 
@@ -1171,7 +1171,7 @@ function drawNowLine(svg, plotTop, plotBottom){
     const tx=Math.min(Math.max(x-tabW/2, P.left), P.width-P.right-tabW);
     tab.setAttribute("x",tx);
     lbl.setAttribute("x",tx+5);
-    lbl.textContent=fmtNowTab.format(new Date());
+    lbl.textContent=fmtHM.format(new Date());
   };
   place();
   clearInterval(nowTimer);
@@ -1757,9 +1757,16 @@ function render(){
     try{hit.releasePointerCapture(ev.pointerId)}catch(e){}
   });
   hit.addEventListener("pointercancel",()=>{dragging=false;});
+  const lidTop=panelTop["lidar"], lidBot=lidTop+panel("lidar").h;
   hit.addEventListener("pointermove",ev=>{
     const r=seekFromX(ev.clientX);
     if(dragging) seekTo(ev.clientX);
+    // The data tooltip belongs to the lidar VFR bar — the one-line go/no-go
+    // summary — so it only shows while the pointer is over that strip. Elsewhere
+    // the chart still drags the seek, just without the table popping up.
+    const rect=svg.getBoundingClientRect();
+    const sy=(ev.clientY-rect.top)/rect.height*totalH;
+    if(sy<lidTop || sy>lidBot){ tip.style.display="none"; return; }
     tip.style.display="block";
     const px=ev.clientX+14, flip=px+240>window.innerWidth;
     tip.style.left=(flip?ev.clientX-254:px)+"px";
@@ -2393,7 +2400,7 @@ function fusedTail(iso, thr){
   if(fu){
     if(fu.hours.includes(iso))
       return {url:`${MAPS_BASE}/${fu.path}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
-              cap:"fused blend (ICON+MEPS+IFS+GFS+UKMO), beyond MEPS · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
+              cap:"fused blend (ICON+MEPS+IFS+GFS+UKMO), beyond MEPS · pink: base<limit · orange: fog · rain green→orange"};
     const ar=MV.loaded.fusedArchive?.hours?.[vtagOf(iso)];
     if(ar)
       return {url:`${MAPS_BASE}/maps/fused/${ar}/${vtagOf(iso)}_alt${thr}.png${vq(fu)}`,
@@ -2409,7 +2416,7 @@ function mepsSrc(iso, tail){
   const beyond=tail || gfsSrc;
   if(!meps) return beyond(iso, thr);
   if(meps.hours.includes(iso))
-    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"MEPS 2.5 km · pink: base<limit · orange: fog · rain green→orange, hour starting here"};
+    return {url:`${MAPS_BASE}/${meps.path}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`, cap:"MEPS 2.5 km · pink: base<limit · orange: fog · rain green→orange"};
   const archRun=MV.loaded.mepsArchive?.hours?.[vtagOf(iso)];
   if(archRun)
     return {url:`${MAPS_BASE}/maps/meps/${archRun}/${vtagOf(iso)}_alt${thr}.png${vq(meps)}`,
@@ -2442,7 +2449,7 @@ function gfsSrc(iso, _thr){
   }
   if(best)
     return {url:`${MAPS_BASE}/${gfs.path}/${vtagOf(best)}_alt${thr}.png${vq(gfs)}`,
-            cap:"GFS 0.25° · rain in the hour starting here"};
+            cap:"GFS 0.25° · rain"};
   const arch=MV.loaded.gfsArchive?.hours;
   if(arch){
     for(let back=0; back<=(gfs.step_h||3); back++){
@@ -2721,7 +2728,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v107",
+    "page v108",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2743,14 +2750,20 @@ async function initMapsViewer(){
 }
 function setMapAxis(){
   if(document.getElementById("mapView").hidden) return;
+  // Keep whatever hour is selected on the seek line across a rebuild — picking a
+  // new point re-runs this, and jumping back to "now" every time was jarring.
+  const prevSel=(MV.hours && MV.hours[MV.idx]!=null) ? Date.parse(MV.hours[MV.idx]) : null;
   MV.hours=[];
   const t0=weekStart.getTime();
   for(let h=0;h<HOURS;h++)
     MV.hours.push(new Date(t0+h*3600e3).toISOString().slice(0,19)+"Z");
-  const now=Date.now();
-  let idx=MV.hours.findIndex(h=>Date.parse(h)>=now);
-  if(idx<0) idx=MV.hours.length-1;
-  if(Date.parse(MV.hours[0])>now) idx=0;
+  let idx=prevSel!=null ? MV.hours.findIndex(h=>Date.parse(h)===prevSel) : -1;
+  if(idx<0){                                  // no prior hour (first load, week change)
+    const now=Date.now();
+    idx=MV.hours.findIndex(h=>Date.parse(h)>=now);
+    if(idx<0) idx=MV.hours.length-1;
+    if(Date.parse(MV.hours[0])>now) idx=0;
+  }
   mapShow(idx);
   prefetchWeek();
 }
@@ -2763,8 +2776,9 @@ async function load(){
   status.textContent="loading…";
   const wEnd=new Date(weekStart.getTime()+7*86400e3);
   syncWeekButtons();
+  const dMon=t=>`${fmtDD.format(t)}.${fmtMon.format(t)}`;   // 17.Aug
   document.getElementById("wLabel").textContent=
-    `Week ${fmtDM.format(new Date(weekStart.getTime()+12*3600e3))} – ${fmtDM.format(new Date(wEnd.getTime()-12*3600e3))}`;
+    `Week ${dMon(new Date(weekStart.getTime()+12*3600e3))} – ${dMon(new Date(wEnd.getTime()-12*3600e3))}`;
   try{
     const pid=currentPid || "EVRA";
     const pt=POINTS.find(p=>p.point_id===pid);
