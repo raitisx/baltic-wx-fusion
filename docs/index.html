@@ -52,7 +52,7 @@
     background:var(--bg); color:var(--text);
     min-height:100vh; padding:14px;
   }
-  .pagehdr{max-width:1480px;margin:0 auto 12px}
+  .pagehdr{max-width:1480px;margin:0 auto 12px;text-align:center}
   .layout{display:flex;gap:16px;max-width:1480px;margin:0 auto;align-items:flex-start}
   .sidebar{width:360px;flex:none;position:sticky;top:10px}
   .main{flex:1;min-width:0}
@@ -186,7 +186,7 @@
   .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
          background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
          pointer-events:none;z-index:3}
-  .mapctl{display:flex;gap:3px;align-items:center;margin:-30px 0 8px;flex-wrap:wrap;position:relative;z-index:5}
+  .mapctl{display:flex;gap:6px;align-items:center;justify-content:center;margin:6px 0 0;flex-wrap:wrap;position:relative;z-index:5}
   .mapctl input[type=range]{flex:1;min-width:200px;accent-color:var(--ink)}
   .mapctl .mtime{font-size:12px;font-weight:700;color:var(--ink);min-width:150px}
   @media (max-width:900px){
@@ -265,7 +265,6 @@
     <div class="weekbar">
       <div class="weekrow">
         <button id="wPrev">◀ prev week</button>
-        <span class="wlabel" id="wLabel"></span>
         <button id="wNext">next week ▶</button>
       </div>
       <button id="wToday">today</button>
@@ -275,23 +274,21 @@
     <div class="tip" id="tip"></div>
 
     <div class="mapview" id="mapView" hidden>
-      <div class="mapctl">
-        <button id="mapPrev">&lt;</button>
-        <button id="mapPlay">▶</button>
-        <button id="mapNext">&gt;</button>
-      </div>
       <div class="mapcols">
         <div class="mapcol">
           <div class="mapcolhead">Baltic fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0° · click to pick a cell</span></div>
           <div class="stack" id="fusedMap"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"><svg id="smapOv" class="mapov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg></div>
+          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
+          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">Radar LV+EE+LT <span class="mapsub" id="radarTime"></span></div>
           <div class="stack"><img class="mimg" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
+          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
       </div>
     </div>
@@ -1786,8 +1783,12 @@ function render(){
   // on an <svg> element is dropped by some browsers, and on touch the browser
   // steals the gesture to scroll (firing pointercancel) — both read as "the drag
   // just stopped". Once pressed, follow the pointer anywhere until release, and
-  // touch-action:none keeps the page from scrolling out from under it.
+  // touch-action:none keeps the page from scrolling out from under it — set on
+  // the SVG root, since some mobile browsers ignore touch-action on inner SVG
+  // nodes and would still hand the gesture to the scroller (a pointercancel that
+  // looks like the drag just died).
   hit.style.touchAction="none";
+  svg.style.touchAction="none";
   const dragMove=ev=>{ if(dragging){ seekTo(ev.clientX); ev.preventDefault(); } };
   const dragEnd=()=>{ if(!dragging) return; dragging=false;
     window.removeEventListener("pointermove",dragMove);
@@ -2704,14 +2705,16 @@ async function initMapsViewer(){
   }));
   if(!Object.keys(MV.loaded).length){ miss.hidden=false; return; }
   view.hidden=false;
-  document.getElementById("mapPrev").addEventListener("click",()=>mapShow(MV.idx-1));
-  document.getElementById("mapNext").addEventListener("click",()=>mapShow(MV.idx+1));
-  document.getElementById("mapPlay").addEventListener("click",()=>{
-    const btn=document.getElementById("mapPlay");
-    if(MV.playing){ clearInterval(MV.playing); MV.playing=null; btn.textContent="▶"; return; }
-    btn.textContent="⏸";
+  // Each map column carries its own ◀ ▶ ▶ copy; they all drive the one shared
+  // playback, so wire every copy and keep their play icons in sync.
+  document.querySelectorAll(".mapPrev").forEach(b=>b.addEventListener("click",()=>mapShow(MV.idx-1)));
+  document.querySelectorAll(".mapNext").forEach(b=>b.addEventListener("click",()=>mapShow(MV.idx+1)));
+  const setPlayIcon=t=>document.querySelectorAll(".mapPlay").forEach(b=>b.textContent=t);
+  document.querySelectorAll(".mapPlay").forEach(b=>b.addEventListener("click",()=>{
+    if(MV.playing){ clearInterval(MV.playing); MV.playing=null; setPlayIcon("▶"); return; }
+    setPlayIcon("⏸");
     MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),500);
-  });
+  }));
   limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
@@ -2720,7 +2723,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v116",
+    "page v117",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2769,8 +2772,8 @@ async function load(){
   const wEnd=new Date(weekStart.getTime()+7*86400e3);
   syncWeekButtons();
   const dMon=t=>`${fmtDD.format(t)}.${fmtMon.format(t)}`;   // 17.Aug
-  document.getElementById("wLabel").textContent=
-    `${dMon(new Date(weekStart.getTime()+12*3600e3))} – ${dMon(new Date(wEnd.getTime()-12*3600e3))}`;
+  { const wl=document.getElementById("wLabel");            // label removed from the bar; keep the guard
+    if(wl) wl.textContent=`${dMon(new Date(weekStart.getTime()+12*3600e3))} – ${dMon(new Date(wEnd.getTime()-12*3600e3))}`; }
   try{
     const pid=currentPid || "EVRA";
     const pt=POINTS.find(p=>p.point_id===pid);
