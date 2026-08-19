@@ -52,6 +52,7 @@
     background:var(--bg); color:var(--text);
     min-height:100vh; padding:14px;
   }
+  .pagehdr{max-width:1480px;margin:0 auto 12px}
   .layout{display:flex;gap:16px;max-width:1480px;margin:0 auto;align-items:flex-start}
   .sidebar{width:360px;flex:none;position:sticky;top:10px}
   .main{flex:1;min-width:0}
@@ -195,9 +196,11 @@
 </style>
 </head>
 <body>
+<header class="pagehdr">
+  <h1 id="title">TT Aero Meteo <button type="button" id="infoBtn" class="ibtn" aria-label="About this page" title="About this page">&#9432;</button></h1>
+</header>
 <div class="layout">
   <aside class="sidebar side">
-    <h1 id="title">TT Aero Meteo <button type="button" id="infoBtn" class="ibtn" aria-label="About this page" title="About this page">&#9432;</button></h1>
     <div class="sel" id="selNote"></div>
     <!-- Both limits are moved onto the panel they draw a line on — see
          placeLimitBox(). Moved rather than duplicated, so there is only ever
@@ -255,7 +258,6 @@
       <option value="800">800</option>
       <option value="1000">1000</option>
     </select>
-    <div class="status" id="status"></div>
   </aside>
 
   <main class="main">
@@ -291,6 +293,8 @@
       </div>
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
+
+    <div class="status" id="status"></div>
 
     <!-- Data table and Jobs drawer are debug tooling — hidden on the normal
          page, revealed with ?debug=1 (see boot). -->
@@ -2705,7 +2709,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v114",
+    "page v115",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
