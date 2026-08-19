@@ -247,7 +247,7 @@
       Meteogram is live; the fused map refreshes each morning; radar is observed (past only). Times in Europe/Riga.
     </div>
     <div class="mapnote"><b>Cloud base is model-derived (LCL)</b>, verified against METAR ceilings — treat &lt;1 km detail as guidance, not gospel.</div>
-    <div class="mapnote">One slider moves all three columns (identical extent) &middot; hover the meteogram to scrub &middot; click any 25 km cell to add it. Dots: blue = airports (METAR), teal = national stations (rain + humidity), named = cities.</div>
+    <div class="mapnote">One slider moves all three columns (identical extent) &middot; drag across the meteogram to move the maps, hover to read an hour &middot; click any 25 km cell to add it. Dots: blue = airports (METAR), teal = national stations (rain + humidity), named = cities.</div>
     <div class="mapnote" id="mapDiag"></div>
     <span class="status" id="status"></span>
     <div class="mapnote">
@@ -1718,12 +1718,25 @@ function render(){
     h=Math.max(0,Math.min(HOURS-1,h));
     return FUSED[h];
   };
-  hit.addEventListener("pointerdown",ev=>{ try{hit.setPointerCapture(ev.pointerId)}catch(e){} });
+  // Drag, don't hover: the seek line (and the maps under it) move only while the
+  // pointer is pressed — press anywhere to jump, drag to slide. Hovering just
+  // shows the tooltip, so you can read an hour without disturbing the maps.
+  let dragging=false;
+  const seekTo=cx=>{ const r=seekFromX(cx); placeSeek(xPos(r.ts));
+                     if(window.__setMapHour) window.__setMapHour(r.ts); };
+  hit.addEventListener("pointerdown",ev=>{
+    dragging=true;
+    try{hit.setPointerCapture(ev.pointerId)}catch(e){}
+    seekTo(ev.clientX);
+  });
+  hit.addEventListener("pointerup",ev=>{
+    dragging=false;
+    try{hit.releasePointerCapture(ev.pointerId)}catch(e){}
+  });
+  hit.addEventListener("pointercancel",()=>{dragging=false;});
   hit.addEventListener("pointermove",ev=>{
     const r=seekFromX(ev.clientX);
-    const x=xPos(r.ts);
-    placeSeek(x);
-    if(window.__setMapHour) window.__setMapHour(r.ts);
+    if(dragging) seekTo(ev.clientX);
     tip.style.display="block";
     const px=ev.clientX+14, flip=px+240>window.innerWidth;
     tip.style.left=(flip?ev.clientX-254:px)+"px";
@@ -2685,7 +2698,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v105",
+    "page v106",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2789,7 +2802,6 @@ async function load(){
         }
       }catch(_){/* live layer is best-effort; DB rows still render */}
     }
-    document.getElementById("title").textContent=`BALTIC_WX · ${Q.name ?? pt?.name ?? pid}`;
     fuse(); render(); renderTable(); setMapAxis();
     const runs={};
     for(const e of FC){ if(!runs[e.m]||e.run>runs[e.m]) runs[e.m]=e.run; }
