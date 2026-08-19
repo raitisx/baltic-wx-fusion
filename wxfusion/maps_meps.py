@@ -433,7 +433,9 @@ def r2_client():
     )
 
 
-_SEA_CMAP = LinearSegmentedColormap.from_list("sea", ["#cfe4f2", "#cfe4f2"])
+from matplotlib.colors import LinearSegmentedColormap as _LSC
+
+_SEA_CMAP = _LSC.from_list("sea", ["#cfe4f2", "#cfe4f2"])
 _sea_layer_cache = "unset"
 
 
