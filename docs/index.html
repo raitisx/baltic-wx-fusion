@@ -87,7 +87,8 @@
   .imodal-x{position:absolute;top:8px;right:11px;background:none;border:none;
             color:var(--muted);font-size:23px;line-height:1;cursor:pointer}
   .imodal-x:hover{color:var(--text)}
-  .weekbar{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+  .weekbar{display:flex;flex-direction:column;align-items:center;gap:5px;margin-bottom:6px}
+  .weekrow{display:flex;gap:8px;align-items:center}
   .weekbar .wlabel{font-size:15px;font-weight:700;color:var(--ink);min-width:220px;text-align:center}
   .status{
     display:block;line-height:1.5;font-size:10px;color:var(--muted);
@@ -191,7 +192,7 @@
   @media (max-width:900px){
     .layout{flex-direction:column}
     .sidebar{width:100%;position:static}
-    .mapcols{flex-direction:column}
+    .mapcols{flex-direction:column;align-items:stretch}
   }
 </style>
 </head>
@@ -262,9 +263,11 @@
 
   <main class="main">
     <div class="weekbar">
-      <button id="wPrev">◀ prev week</button>
-      <span class="wlabel" id="wLabel"></span>
-      <button id="wNext">next week ▶</button>
+      <div class="weekrow">
+        <button id="wPrev">◀ prev week</button>
+        <span class="wlabel" id="wLabel"></span>
+        <button id="wNext">next week ▶</button>
+      </div>
       <button id="wToday">today</button>
     </div>
     <div id="chart"></div>
@@ -1779,20 +1782,28 @@ function render(){
   let dragging=false;
   const seekTo=cx=>{ const r=seekFromX(cx); placeSeek(xPos(r.ts));
                      if(window.__setMapHour) window.__setMapHour(r.ts); };
+  // Scrub with document-level listeners rather than SVG pointer capture: capture
+  // on an <svg> element is dropped by some browsers, and on touch the browser
+  // steals the gesture to scroll (firing pointercancel) — both read as "the drag
+  // just stopped". Once pressed, follow the pointer anywhere until release, and
+  // touch-action:none keeps the page from scrolling out from under it.
+  hit.style.touchAction="none";
+  const dragMove=ev=>{ if(dragging){ seekTo(ev.clientX); ev.preventDefault(); } };
+  const dragEnd=()=>{ if(!dragging) return; dragging=false;
+    window.removeEventListener("pointermove",dragMove);
+    window.removeEventListener("pointerup",dragEnd);
+    window.removeEventListener("pointercancel",dragEnd); };
   hit.addEventListener("pointerdown",ev=>{
     dragging=true;
-    try{hit.setPointerCapture(ev.pointerId)}catch(e){}
     seekTo(ev.clientX);
+    window.addEventListener("pointermove",dragMove);
+    window.addEventListener("pointerup",dragEnd);
+    window.addEventListener("pointercancel",dragEnd);
+    ev.preventDefault();
   });
-  hit.addEventListener("pointerup",ev=>{
-    dragging=false;
-    try{hit.releasePointerCapture(ev.pointerId)}catch(e){}
-  });
-  hit.addEventListener("pointercancel",()=>{dragging=false;});
   const lidTop=panelTop["lidar"], lidBot=lidTop+panel("lidar").h;
   hit.addEventListener("pointermove",ev=>{
-    const r=seekFromX(ev.clientX);
-    if(dragging) seekTo(ev.clientX);
+    const r=seekFromX(ev.clientX);   // drag itself is handled by the document listeners above
     // The data tooltip belongs to the lidar VFR bar — the one-line go/no-go
     // summary — so it only shows while the pointer is over that strip. Elsewhere
     // the chart still drags the seek, just without the table popping up.
@@ -2709,7 +2720,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v115",
+    "page v116",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2759,7 +2770,7 @@ async function load(){
   syncWeekButtons();
   const dMon=t=>`${fmtDD.format(t)}.${fmtMon.format(t)}`;   // 17.Aug
   document.getElementById("wLabel").textContent=
-    `Week ${dMon(new Date(weekStart.getTime()+12*3600e3))} – ${dMon(new Date(wEnd.getTime()-12*3600e3))}`;
+    `${dMon(new Date(weekStart.getTime()+12*3600e3))} – ${dMon(new Date(wEnd.getTime()-12*3600e3))}`;
   try{
     const pid=currentPid || "EVRA";
     const pt=POINTS.find(p=>p.point_id===pid);
