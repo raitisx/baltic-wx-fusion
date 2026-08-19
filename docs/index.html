@@ -257,8 +257,6 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
-    <div class="mapnote" id="mapDiag"></div>
-    <span class="status" id="status"></span>
   </aside>
 
   <main class="main">
@@ -319,6 +317,8 @@
   <div class="imodal-card" role="dialog" aria-modal="true" aria-label="About TT Aero Meteo">
     <button type="button" id="infoClose" class="imodal-x" aria-label="Close">&times;</button>
     <h2 class="imodal-h">TT Aero Meteo</h2>
+    <div class="mapnote" id="status"></div>
+    <div class="mapnote" id="mapDiag"></div>
     <div class="mapnote">
       <b>5-model skill-weighted forecast</b> — DWD ICON &middot; MET Norway MEPS &middot; ECMWF IFS &middot; NOAA GFS &middot; UK Met Office UM,
       blended by 30-day local skill (station + METAR verification; equal weights until &ge;20 samples).
@@ -2728,7 +2728,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v108",
+    "page v109",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2842,8 +2842,12 @@ async function load(){
     fuse(); render(); renderTable(); setMapAxis();
     const runs={};
     for(const e of FC){ if(!runs[e.m]||e.run>runs[e.m]) runs[e.m]=e.run; }
-    const runTxt=MODELS.map(m=>runs[m]?`${m} ${fmtDT.format(new Date(Date.parse(runs[m])))}`:`${m} –`).join(" · ");
-    status.textContent=`${usedSkillWeights?"skill-weighted":"equal weights"}${liveSource==="db+live"?" · live from now on":liveSource==="db+live+hindcast"?" · live + hindcast for gaps":""} · newest runs: ${runTxt}`;
+    const runMs=MODELS.map(m=>runs[m]?Date.parse(runs[m]):null).filter(Boolean);
+    const gen=runMs.length?Math.max(...runMs):null;
+    const genLabel=gen!=null?`${fmtDD.format(gen)}.${fmtMon.format(gen)} ${fmtHM.format(gen)}`:"—";
+    const MLAB=[["meps","MEPS"],["icon","ICON"],["ifs","IFS"],["gfs","GFS"],["ukmo","UKMO"]];
+    const mlist=MLAB.filter(([m])=>runs[m]).map(([,n])=>n).join("; ")||"—";
+    status.innerHTML=`Forecast generated: ${genLabel}<br>${mlist}`;
   }catch(e){
     err.hidden=false;
     err.textContent="Failed to load data: "+e.message;
