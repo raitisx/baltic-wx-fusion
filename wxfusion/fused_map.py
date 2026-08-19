@@ -411,7 +411,7 @@ def render_run() -> None:
 
     manifest = {"run": run_tag, "path": f"maps/fused/{run_tag}", "hours": hours_out,
                 "proj": "epsg3059", "thresholds": THRESHOLDS,
-                "credit": "TTAero fused: ICON+MEPS+IFS+GFS+UKMO via Open-Meteo, downscaled",
+                "credit": "Baltic fused: ICON+MEPS+IFS+GFS+UKMO via Open-Meteo, downscaled",
                 "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     s3.put_object(Bucket=config.R2_BUCKET, Key="maps/fused/latest.json",
                   Body=json.dumps(manifest).encode(), ContentType="application/json",
