@@ -257,6 +257,7 @@
       <img id="smapBg" alt="">
       <svg id="smapOv" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
+    <div class="status" id="status"></div>
   </aside>
 
   <main class="main">
@@ -317,7 +318,6 @@
   <div class="imodal-card" role="dialog" aria-modal="true" aria-label="About TT Aero Meteo">
     <button type="button" id="infoClose" class="imodal-x" aria-label="Close">&times;</button>
     <h2 class="imodal-h">TT Aero Meteo</h2>
-    <div class="mapnote" id="status"></div>
     <div class="mapnote" id="mapDiag"></div>
     <div class="mapnote">
       <b>5-model skill-weighted forecast</b> — DWD ICON &middot; MET Norway MEPS &middot; ECMWF IFS &middot; NOAA GFS &middot; UK Met Office UM,
@@ -2728,7 +2728,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v109",
+    "page v110",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
