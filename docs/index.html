@@ -19,7 +19,7 @@
     --threshold:#ff6259; --belowzone:rgba(240,84,74,.14);
     --ok:#3cb85a; --marginal:#e6a52a; --nofly:#e8483d;
     --now:#2ecb63;
-    --dewwet:#ef5350; --dewdry:#79c879; --dewfrost:#7d8ce0;
+    --dewwet:#4aa6e8; --dewdry:#79c879; --dewfrost:#7d8ce0;
     /* The summary strip. Same red/green family as dew so the two read as a
        pair, a shade deeper because this one is the answer and dew is one of
        its inputs. */
@@ -40,7 +40,7 @@
     --wind:#2b48d9; --gust:#d92f2f; --cloud:#2b2b28; --fog:#e0a300;
     --threshold:#cc2222; --belowzone:rgba(217,47,47,.10);
     --now:#0f9d3a;
-    --dewwet:#c62828; --dewdry:#63b063; --dewfrost:#5b6bc0;
+    --dewwet:#1c7fc4; --dewdry:#63b063; --dewfrost:#5b6bc0;
     --lidarno:#b3261e; --lidarok:#4f9d4f;
     --rainshaft:#16357a;
     background:#fdf9ec; border-radius:6px;
@@ -2685,7 +2685,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v104",
+    "page v105",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
