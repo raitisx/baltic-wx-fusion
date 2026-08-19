@@ -433,6 +433,41 @@ def r2_client():
     )
 
 
+_SEA_CMAP = LinearSegmentedColormap.from_list("sea", ["#cfe4f2", "#cfe4f2"])
+_sea_layer_cache = "unset"
+
+
+def _sea_layer():
+    """(gx, gy, sea_mask) for the light-blue sea base, or None. Cached.
+
+    The static land/sea mask is on the shared 570x690 EPSG:3059 pixel grid; the
+    MEPS axes span the same metre extent, so it overlays regardless of the MEPS
+    native resolution. Cream land is the facecolor; only the sea/lake pixels get
+    painted, under the weather layers."""
+    global _sea_layer_cache
+    if _sea_layer_cache != "unset":
+        return _sea_layer_cache
+    try:
+        body = r2_client().get_object(
+            Bucket=config.R2_BUCKET, Key="maps/static/static_3059.npz")["Body"].read()
+        land = np.load(io.BytesIO(body))["land"]
+        xs = P.X0 + (np.arange(P.W) + 0.5) / P.W * (P.X1 - P.X0)
+        ys = P.Y1 - (np.arange(P.H) + 0.5) / P.H * (P.Y1 - P.Y0)
+        gx, gy = np.meshgrid(xs, ys)
+        _sea_layer_cache = (gx, gy, np.where(~land, 1.0, np.nan))
+    except Exception as e:
+        log.warning("meps sea layer unavailable (%s) — cream sea", type(e).__name__)
+        _sea_layer_cache = None
+    return _sea_layer_cache
+
+
+def _draw_sea(ax):
+    sl = _sea_layer()
+    if sl is not None:
+        ax.pcolormesh(sl[0], sl[1], sl[2], cmap=_SEA_CMAP, vmin=0, vmax=1,
+                      shading="auto", zorder=0)
+
+
 def list_runs() -> list[str]:
     r = session().get(CATALOG, timeout=60)
     r.raise_for_status()
@@ -494,6 +529,7 @@ def draw_hour(cb, fogm, pr, latw, lonw, t2m=None) -> dict:
         ax.set_facecolor("#fbf3de")
         ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
         ax.set_aspect("equal"); ax.axis("off")
+        _draw_sea(ax)
         fg = fogm if fogm is not None else np.zeros(cb.shape, bool)
         below = np.where(np.isfinite(cb) & (cb < thr) & ~fg, 1.0, np.nan)
         ax.pcolormesh(xw, yw, below, cmap=pink, vmin=0, vmax=1, alpha=0.75,
@@ -635,6 +671,7 @@ def backfill_runs(max_runs: int = 12, leads=(1, 2, 3),
                 ax.set_facecolor("#fbf3de")
                 ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
                 ax.set_aspect("equal"); ax.axis("off")
+                _draw_sea(ax)
                 _draw_clouds(ax, xw, yw, tcc[i] if tcc is not None else None, grey)
                 fg = fogm[i] if fogm is not None else np.zeros_like(cb[i], bool)
                 below = np.where(np.isfinite(cb[i]) & (cb[i] < thr) & ~fg, 1.0, np.nan)
@@ -742,6 +779,7 @@ def render_run(max_hours: int = 66) -> None:
         ax.set_facecolor("#fbf3de")
         ax.set_xlim(P.X0, P.X1); ax.set_ylim(P.Y0, P.Y1)
         ax.set_aspect("equal"); ax.axis("off")
+        _draw_sea(ax)
         return fig, ax
 
     def draw_borders(ax):
