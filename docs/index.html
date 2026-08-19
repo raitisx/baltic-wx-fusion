@@ -1045,18 +1045,47 @@ function dayVerdicts(cbLim, wgLim){
 // if the hour has no data to judge.
 const LIDAR_RAIN_MMH  = 0.1;   // the same "wet" threshold the maps are drawn at
 const LIDAR_RAIN_PROB = 0.5;   // ...or half the models calling for rain anyway
+// Precompute the lidar night flag (r.night) across the whole series. Night is
+// no-go; when it begins in the evening and ends in the morning depends on the
+// cloud at sunset/sunrise:
+//   a low deck (ceiling < 1 km) or thick overcast (total cover ≥ 80%) kills the
+//     usable twilight, so no-go runs from the hour nearest sunset to the hour
+//     nearest sunrise;
+//   clear air keeps ~an hour of working light either side, so no-go is
+//     sunset + 1 h to sunrise − 1 h.
+function computeLidarNight(ll){
+  for(const r of FUSED) r.night=false;
+  if(!ll || FUSED.length<2) return;
+  const HR=3600e3, elev=t=>solarElev(t, ll.lat, ll.lon), roundHour=t=>Math.round(t/HR)*HR;
+  const cloudyAt=t=>{
+    let best=null,bd=Infinity;
+    for(const r of FUSED){ const d=Math.abs(r.ts-t); if(d<bd){bd=d;best=r;} }
+    return !best || (best.cb!=null && best.cb<1000) || (best.cc_total!=null && best.cc_total>=80);
+  };
+  const cr=[];   // sun crossings, a day of margin either side of the series
+  for(let t=FUSED[0].ts-24*HR; t<=FUSED[FUSED.length-1].ts+24*HR; t+=HR){
+    const a=elev(t), b=elev(t+HR);
+    if(a>0 && b<=0) cr.push({t:t+a/(a-b)*HR, set:true});
+    else if(a<=0 && b>0) cr.push({t:t+(-a)/(b-a)*HR, set:false});
+  }
+  for(let k=0;k<cr.length;k++){
+    if(!cr[k].set) continue;
+    const sunset=cr[k].t;
+    let sunrise=null;
+    for(let j=k+1;j<cr.length;j++) if(!cr[j].set){ sunrise=cr[j].t; break; }
+    if(sunrise==null) continue;
+    const start=cloudyAt(sunset)  ? roundHour(sunset)  : sunset  + HR;
+    const end  =cloudyAt(sunrise) ? roundHour(sunrise) : sunrise - HR;
+    for(const r of FUSED) if(r.ts>=start && r.ts<end) r.night=true;
+  }
+}
 function lidarWhy(r, cbLim, wgLim, ll){
   if(r.t2m==null) return null;
   const why=[];
-  // VFR needs daylight, so the bar goes red from 30 min after sunset to 30 min
-  // before sunrise. Centre the probe on the hour and look 30 min either side:
-  // the sun cannot rise and set within an hour at this latitude, so if it is
-  // below the horizon at both edges the hour lies inside that night window.
-  // First in the list — a night hour is out no matter what the weather does.
-  const HALF_H=1800e3, mid=r.ts+HALF_H;
-  if(ll && solarElev(mid-HALF_H, ll.lat, ll.lon) <= 0
-        && solarElev(mid+HALF_H, ll.lat, ll.lon) <= 0)
-    why.push("night · VFR only (30 min after sunset to 30 min before sunrise)");
+  // Night is out. When it starts/ends depends on cloud (r.night is precomputed
+  // in computeLidarNight over the whole series). First in the list — a night
+  // hour is out no matter what else the weather does.
+  if(r.night) why.push("night");
   const pr=r.prcp_1h??0, pp=r.prcp_prob??0;
   if(pr>=LIDAR_RAIN_MMH || pp>=LIDAR_RAIN_PROB)
     why.push(`rain ${pr.toFixed(2)} mm/h · ${Math.round(pp*100)}% agree`);
@@ -1331,6 +1360,7 @@ function render(){
   }
   // After the wind, because the gust limit is tested at the selected altitude.
   const lidarLL=activeLatLon();
+  computeLidarNight(lidarLL);
   for(const r of FUSED) r.lidar = lidarWhy(r, cbLim, wgLim, lidarLL);
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.getElementById("chart")).getPropertyValue(v).trim();
@@ -2675,7 +2705,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v112",
+    "page v113",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
