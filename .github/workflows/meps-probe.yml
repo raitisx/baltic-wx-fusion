@@ -13,5 +13,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install netCDF4 numpy requests boto3
-      - run: python jobs/probe_meps_vars.py
+      - run: pip install netCDF4 numpy requests boto3 matplotlib pyproj
+      - run: python jobs/preview_meps_cloudtop.py
