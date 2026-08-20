@@ -137,8 +137,8 @@
   /* The cloud-base limit sits in the meteogram's own gutter, level with the
      dashed line it controls. Positioned in percent so it tracks the SVG as it
      scales. */
-  .limbox{position:absolute;transform:translateY(-50%);width:58px;left:4px}
-  .limbox select{width:100%;padding:2px 0;font-size:11px;font-weight:700;
+  .limbox{position:absolute;transform:translateY(-50%);left:4px;text-align:center}
+  .limbox select{width:auto;padding:2px 0;font-size:11px;font-weight:700;
     color:var(--threshold);border-color:var(--threshold)}
   .limbox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
     text-align:center;margin-top:1px;line-height:1.1}
@@ -211,7 +211,7 @@
     /* The limit boxes are HTML overlays that don't scale with the SVG, so on a
        phone they sit larger than the shrunk chart text. Flatten the native
        <select> chrome and match the on-chart legend size (~9px). */
-    .limbox{width:44px}
+    .limbox{width:auto}
     .limbox select{-webkit-appearance:none;-moz-appearance:none;appearance:none;
       background-image:none;font-size:9px;padding:0;line-height:1.15}
     .limbox.compact select{font-size:9px}
@@ -1413,7 +1413,7 @@ function render(){
   const MOB = !!(window.matchMedia && window.matchMedia("(max-width:640px)").matches);
   P.width = MOB ? 480 : 1180;
   const fLeg = MOB ? 12 : 11;      // left-column panel legends (20% smaller than the day font on mobile)
-  const fTick = MOB ? 15 : 11;     // axis tick numbers
+  const fTick = 11;                // axis tick numbers — kept uniform with the "1 km+" label
   const fDay = MOB ? 17 : 13;      // day header (two lines on mobile)
   const fHour = MOB ? 12 : 8.5;    // hour ticks under the chart
   const legStep = MOB ? 15 : 14;   // legend line spacing
@@ -1694,7 +1694,7 @@ function render(){
     // moved every time you changed it, so the control was never twice in the
     // same place. Fixed, it is where the hand already is.
     placeLimitBox("cb", top + p.h / 2, totalH);
-    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
     bt.textContent="1 km+";
     // Legend for the grey cloud-cover strips sharing this top band.
     svgEl("text",{x:6,y:top+10,"font-size":"9.5","font-weight":"700",
@@ -1829,8 +1829,11 @@ function render(){
                   stroke:css("--gridday"),"stroke-width":1},svg);
   }
 
+  // Hour labels: every 6 h normally, but only 00 and 12 on a phone in week view,
+  // where 4 labels a day across 7 days collide.
+  const hourStep = (MOB && zoomDay==null) ? 12 : 6;
   for(const r of ROWS){
-    if(r.hourOfDay%6!==0) continue;
+    if(r.hourOfDay%hourStep!==0) continue;
     const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":fHour,"font-weight":"700",fill:css("--ink")},svg);
     t.textContent=String(r.hourOfDay).padStart(2,"0");
   }
@@ -2874,7 +2877,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v126",
+    "page v127",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
