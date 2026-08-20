@@ -1467,6 +1467,11 @@ function render(){
     const d0=new Date(ts0+12*3600e3);
     const close = zoomDay==null ? "" : "  ✕";   // zoomed: the header doubles as "back to week"
     const dstr = `${fmtDD.format(d0)}.${fmtMon.format(d0).toLowerCase()}`;   // "19.aug"
+    const vbarY = MOB ? headerH-7 : 22;
+    // Rounded outline so the day header reads as a tappable button (it zooms the
+    // chart to that day). Drawn first, under the text.
+    svgEl("rect",{x:x0+3,y:1,width:x1-x0-6,height:vbarY-3,rx:6,ry:6,
+      fill:"none",stroke:css("--gridday"),"stroke-width":1.2},svg);
     if(MOB){
       // Two taller lines on a phone: the date on top, then the weekday.
       const dt=svgEl("text",{x:xc,y:fDay+4,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
@@ -1479,7 +1484,7 @@ function render(){
     }
     if(verdicts[d]!=="unknown"){
       const vc = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):css("--ok");
-      svgEl("rect",{x:x0+3,y:MOB?headerH-7:22,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
+      svgEl("rect",{x:x0+3,y:vbarY,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
     }
     // The header is the zoom button: tap a day to zoom the meteogram to it, tap
     // again (the ✕) to go back to the week. A transparent hit rect over the whole
@@ -1829,9 +1834,9 @@ function render(){
                   stroke:css("--gridday"),"stroke-width":1},svg);
   }
 
-  // Hour labels: every 6 h normally, but only 00 and 12 on a phone in week view,
-  // where 4 labels a day across 7 days collide.
-  const hourStep = (MOB && zoomDay==null) ? 12 : 6;
+  // Hour labels: every 6 h on desktop. On a phone, only 00 and 12 in week view
+  // (4 a day across 7 days collide), but every 3 h once zoomed to a single day.
+  const hourStep = MOB ? (zoomDay==null ? 12 : 3) : 6;
   for(const r of ROWS){
     if(r.hourOfDay%hourStep!==0) continue;
     const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":fHour,"font-weight":"700",fill:css("--ink")},svg);
@@ -2877,7 +2882,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v127",
+    "page v128",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
