@@ -1,0 +1,17 @@
+name: meps-probe
+# Throwaway: dump the MEPS OPeNDAP variable inventory so we can wire a cloud-top
+# field. Delete this workflow and jobs/probe_meps_vars.py once done.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install netCDF4 numpy requests boto3
+      - run: python jobs/probe_meps_vars.py
