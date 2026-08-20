@@ -911,24 +911,37 @@ function applyMapFog(){
 }
 
 // MEPS cloud TOP for the selected cell, off the same 25 km lattice as the fog
-// side-channel (maps/meps/cloud_top_cells.json). Values are hundreds of metres;
-// only the current run's forecast hours are carried, so the top line appears
-// from now out to the run's reach and is blank on days it doesn't cover.
+// side-channel. Values are hundreds of metres above MSL. The live file carries
+// the current run's forecast hours; the archive carries the freshest run per
+// past valid-hour, so the top line stays continuous back across the window and
+// only goes blank beyond MEPS's forward reach, where no model has a top.
 function applyCloudTop(){
   for(const r of FUSED) r.cb_top=null;
-  const ct=MV.loaded?.cloudTop;
-  if(!ct || !ct.top || !FUSED.length || typeof proj4==="undefined") return;
+  const ct=MV.loaded?.cloudTop;          // latest run: current + future hours
+  const cta=MV.loaded?.cloudTopArchive;  // freshest run per past valid-hour
+  const geo=(ct&&ct.top)?ct:((cta&&cta.hours)?cta:null);
+  if(!geo || !FUSED.length || typeof proj4==="undefined") return;
   const ll=(typeof activeLatLon==="function") ? activeLatLon() : null;
   if(!ll || ll.lat==null) return;
   const [x,y]=proj4("EPSG:4326","EPSG:3059",[ll.lon,ll.lat]);
-  const cx=Math.floor((x-ct.x0)/ct.cell), cy=Math.floor((y-ct.y0)/ct.cell);
-  if(cx<0||cy<0||cx>=ct.nx||cy>=ct.ny) return;
-  const cis=String(cy*ct.nx+cx), step=ct.top_step_m||100;
-  const hourOf={}; (ct.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
+  const cx=Math.floor((x-geo.x0)/geo.cell), cy=Math.floor((y-geo.y0)/geo.cell);
+  if(cx<0||cy<0||cx>=geo.nx||cy>=geo.ny) return;
+  const cis=String(cy*geo.nx+cx), step=(ct?.top_step_m || cta?.top_step_m || 100);
+  const haveLive=!!(ct && ct.top), haveArch=!!(cta && cta.hours);
+  const hourOf={}; if(haveLive) (ct.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
   for(const r of FUSED){
-    const h=hourOf[r.ts]; if(h==null) continue;
-    const cell=ct.top[String(h)];
-    const v=cell ? cell[cis] : undefined;
+    // The live file for the hours it still reaches; the per-hour archive for a
+    // date the axis has moved past — same rule the fog side-channel uses, so
+    // the top line stays continuous across the past instead of blanking out.
+    let v;
+    const h=haveLive ? hourOf[r.ts] : undefined;
+    if(h!=null){
+      const cell=ct.top[String(h)];
+      v = cell ? cell[cis] : undefined;
+    }else if(haveArch){
+      const rec=cta.hours[vtagOf(new Date(r.ts).toISOString())];
+      v = rec && rec.top ? rec.top[cis] : undefined;
+    }
     if(v!=null) r.cb_top=v*step;   // metres above MSL
   }
 }
@@ -1725,7 +1738,7 @@ function render(){
     // A thin cloud-TOP band between the cloudiness strips and the 0-1 km ceiling
     // detail: the MEPS cloud-top line on a compressed 1-3 km scale. Reserved only
     // when the side-channel is loaded, so the panel is unchanged without it.
-    const haveTop = !!(MV.loaded && MV.loaded.cloudTop);
+    const haveTop = !!(MV.loaded && (MV.loaded.cloudTop || MV.loaded.cloudTopArchive));
     // Band height = half the ceiling graph, i.e. the same pixels as 0->500 m of
     // cloud base. The space under the cloudiness band splits 1:2 (band : detail),
     // so the band equals half of the 0-1000 m detail region.
@@ -1752,6 +1765,9 @@ function render(){
     }
     for(const tv of [0,150,300,500,1000]){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
+      // 1000 m is the band/graph boundary; when the cloud-top band is present it
+      // already carries a "1k" tick there, so drop the duplicate number.
+      if(tv===1000 && haveTop) continue;
       const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
@@ -1776,6 +1792,7 @@ function render(){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:ctY(2000),y2:ctY(2000),stroke:css("--grid"),"stroke-width":1},svg);
       svgEl("text",{x:6,y:ctTop+(MOB?11:13),"font-size":"9.5","font-weight":"700",fill:"#6f4bd0"},svg).textContent="cloud top";
       svgEl("text",{x:P.left-6,y:ctBot-1,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="1k";
+      svgEl("text",{x:P.left-6,y:ctY(2000)+3,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="2k";
       svgEl("text",{x:P.left-6,y:ctTop+9,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="3k";
     }
 
@@ -2589,6 +2606,7 @@ const MAP_MANIFESTS={
   fogCells:"maps/meps/fog_cells.json",
   fogCellsArchive:"maps/meps/fog_cells_archive.json",
   cloudTop:"maps/meps/cloud_top_cells.json",
+  cloudTopArchive:"maps/meps/cloud_top_cells_archive.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -2991,7 +3009,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v134",
+    "page v135",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
