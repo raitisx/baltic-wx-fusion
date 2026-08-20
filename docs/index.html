@@ -188,14 +188,14 @@
          background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
          pointer-events:none;z-index:3}
   .mapctl{display:flex;gap:6px;align-items:center;justify-content:center;margin:6px 0 0;flex-wrap:wrap;position:relative;z-index:5}
-  .mapseek{margin:12px 0 2px}
-  #mapRange{-webkit-appearance:none;appearance:none;width:100%;height:16px;border-radius:8px;
+  .mapseek{margin:8px 0 2px}
+  .mapRange{-webkit-appearance:none;appearance:none;width:100%;height:16px;border-radius:8px;
     border:1px solid var(--gridday);background:var(--panel);outline:none;cursor:ew-resize;margin:0}
-  #mapRange::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:24px;
+  .mapRange::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:24px;
     border-radius:4px;background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 3px rgba(0,0,0,.5);cursor:ew-resize}
-  #mapRange::-moz-range-thumb{width:16px;height:24px;border-radius:4px;background:#cc2222;
+  .mapRange::-moz-range-thumb{width:16px;height:24px;border-radius:4px;background:#cc2222;
     border:2px solid #fff9ec;box-shadow:0 0 3px rgba(0,0,0,.5);cursor:ew-resize}
-  #mapRange::-moz-range-track{height:16px;border-radius:8px;background:transparent}
+  .mapRange::-moz-range-track{height:16px;border-radius:8px;background:transparent}
   .mapseekcap{display:flex;align-items:center;gap:7px;justify-content:center;
     font-size:14px;font-weight:700;color:var(--ink);margin-top:5px}
   .mapdn{font-size:15px;line-height:1}
@@ -294,22 +294,18 @@
         <div class="mapcol">
           <div class="mapcolhead">Baltic fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0° · click to pick a cell</span></div>
           <div class="stack" id="fusedMap"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"><svg id="smapOv" class="mapov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg></div>
+          <div class="mapseek"><input type="range" class="mapRange" min="0" max="0" value="0" step="1" aria-label="map time"><div class="mapseekcap"><span class="mapdn"></span><span class="mapSeekTime"></span></div></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
+          <div class="mapseek"><input type="range" class="mapRange" min="0" max="0" value="0" step="1" aria-label="map time"><div class="mapseekcap"><span class="mapdn"></span><span class="mapSeekTime"></span></div></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">Radar LV+EE+LT <span class="mapsub" id="radarTime"></span></div>
           <div class="stack"><img class="mimg" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
+          <div class="mapseek"><input type="range" class="mapRange" min="0" max="0" value="0" step="1" aria-label="map time"><div class="mapseekcap"><span class="mapdn"></span><span class="mapSeekTime"></span></div></div>
         </div>
-      </div>
-      <!-- One seek bar under all three maps: drag to move every column together.
-           The track is shaded by night/day at the selected cell, and the caption
-           reads the frame's date, time and a sun/moon. -->
-      <div class="mapseek">
-        <input type="range" id="mapRange" min="0" max="0" value="0" step="1" aria-label="map time">
-        <div class="mapseekcap"><span id="mapSeekDN" class="mapdn"></span><span id="mapSeekTime"></span></div>
       </div>
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
@@ -1410,6 +1406,10 @@ function render(){
   const fDay = MOB ? 17 : 13;      // day header (two lines on mobile)
   const fHour = MOB ? 12 : 8.5;    // hour ticks under the chart
   const legStep = MOB ? 19 : 14;   // legend line spacing
+  // Mobile: squeeze the panels 20% shorter so more of the chart fits a phone
+  // screen. Original heights are stashed once so the factor never compounds.
+  if(!PANELS[0]._h0) PANELS.forEach(p=>p._h0=p.h);
+  PANELS.forEach(p=>p.h = MOB ? Math.round(p._h0*0.8) : p._h0);
   const cbLim=cbLimit();
   const wgLim=wgLimit();
   // Everything downstream — the panel, the day verdicts, the tooltip — reads
@@ -1476,7 +1476,8 @@ function render(){
       width:Math.min(x1,P.width-P.right)-Math.max(P.left,x0),height:headerH-4,
       fill:"transparent"},svg);
     btn.style.cursor="pointer";
-    btn.addEventListener("click",()=>{ zoomDay = (zoomDay===d ? null : d); render(); });
+    btn.addEventListener("click",()=>{ zoomDay = (zoomDay===d ? null : d); render();
+      if(typeof syncMapZoom==="function") syncMapZoom(); });
   }
 
   const obsIdx={};
@@ -1861,33 +1862,42 @@ function render(){
   // Drag, don't hover: the seek line (and the maps under it) move only while the
   // pointer is pressed — press anywhere to jump, drag to slide. Hovering just
   // shows the tooltip, so you can read an hour without disturbing the maps.
-  let dragging=false;
+  let dragging=false, pend=null;   // pend = a touch that hasn't committed to a scrub yet
   const seekTo=cx=>{ const r=seekFromX(cx); placeSeek(xPos(r.ts));
                      if(window.__setMapHour) window.__setMapHour(r.ts); };
-  // Scrub with document-level listeners rather than SVG pointer capture: capture
-  // on an <svg> element is dropped by some browsers, and on touch the browser
-  // steals the gesture to scroll (firing pointercancel) — both read as "the drag
-  // just stopped". Once pressed, follow the pointer anywhere until release.
-  // touch-action:pinch-zoom (not none) is the split the user asked for: the
-  // browser keeps two-finger pinch-to-zoom, while single-finger gestures are
-  // ours to scrub — set on the SVG root, since some mobile browsers ignore
-  // touch-action on inner SVG nodes. A second finger coming down cancels the
-  // scrub (isPrimary check below) so the pinch is clean.
-  hit.style.touchAction="pinch-zoom";
-  svg.style.touchAction="pinch-zoom";
-  const dragMove=ev=>{ if(dragging){ seekTo(ev.clientX); ev.preventDefault(); } };
-  const dragEnd=()=>{ if(!dragging) return; dragging=false;
-    window.removeEventListener("pointermove",dragMove);
-    window.removeEventListener("pointerup",dragEnd);
-    window.removeEventListener("pointercancel",dragEnd); };
+  // Gesture split (document-level listeners so a scrub survives leaving the SVG):
+  //   • touch-action: pan-y  → a VERTICAL one-finger drag scrolls the page past
+  //     the chart, and two fingers pinch-zoom; only HORIZONTAL drags are ours.
+  //   • On touch we don't seek on touchdown — we wait for the first move: if it
+  //     is mostly horizontal we scrub, if mostly vertical we hand it back to the
+  //     page scroller (which fires pointercancel). A tap still jumps.
+  //   • A mouse seeks immediately (no scroll to protect).
+  // Set on the SVG root too — some mobile browsers ignore touch-action on inner
+  // SVG nodes.
+  hit.style.touchAction="pan-y pinch-zoom";
+  svg.style.touchAction="pan-y pinch-zoom";
+  let dragUp, dragCancel;
+  const dragMove=ev=>{
+    if(dragging){ seekTo(ev.clientX); ev.preventDefault(); return; }
+    if(pend){
+      const dx=ev.clientX-pend.x, dy=ev.clientY-pend.y;
+      if(Math.abs(dx)>Math.abs(dy) && Math.abs(dx)>4){ dragging=true; pend=null; seekTo(ev.clientX); ev.preventDefault(); }
+      else if(Math.abs(dy)>6){ pend=null; }     // vertical → let the page scroll
+    }
+  };
+  const cleanup=()=>{ window.removeEventListener("pointermove",dragMove);
+    window.removeEventListener("pointerup",dragUp);
+    window.removeEventListener("pointercancel",dragCancel); };
+  dragUp=ev=>{ if(pend && !dragging) seekTo(pend.x);   // a plain tap still jumps
+    dragging=false; pend=null; cleanup(); };
+  dragCancel=()=>{ dragging=false; pend=null; cleanup(); };   // scroll took over: no jump
   hit.addEventListener("pointerdown",ev=>{
-    if(!ev.isPrimary){ dragEnd(); return; }   // second finger → let the browser pinch-zoom
-    dragging=true;
-    seekTo(ev.clientX);
+    if(!ev.isPrimary){ dragging=false; pend=null; cleanup(); return; }   // 2nd finger → pinch
+    if(ev.pointerType==="touch"){ pend={x:ev.clientX,y:ev.clientY}; dragging=false; }
+    else { dragging=true; seekTo(ev.clientX); ev.preventDefault(); }
     window.addEventListener("pointermove",dragMove);
-    window.addEventListener("pointerup",dragEnd);
-    window.addEventListener("pointercancel",dragEnd);
-    ev.preventDefault();
+    window.addEventListener("pointerup",dragUp);
+    window.addEventListener("pointercancel",dragCancel);
   });
   const lidTop=panelTop["lidar"], lidBot=lidTop+panel("lidar").h;
   hit.addEventListener("pointermove",ev=>{
@@ -2725,21 +2735,41 @@ function showFrame(img, capEl, url, cap, dimTo){
 // The seek-bar track is shaded night (blue) / day (cream) at the selected cell.
 // Rebuilt only when the location or the hour list changes — cheap to guard, and
 // mapShow calls it every frame.
+// The map seek bars span the whole week, or — when the meteogram is zoomed to a
+// day — just that day's 24 hours, so the maps zoom with the chart.
+function mapHourRange(){
+  const n=MV.hours.length;
+  if(typeof zoomDay!=="undefined" && zoomDay!=null && n){
+    return [Math.min(zoomDay*24, n-1), Math.min(zoomDay*24+23, n-1)];
+  }
+  return [0, Math.max(0, n-1)];
+}
 let _dnKey=null;
 function dayNightTrack(){
-  const rg=document.getElementById("mapRange"); if(!rg) return;
-  const ll=activeLatLon(), n=MV.hours.length;
-  const key = ll ? `${ll.lat},${ll.lon}|${n}` : `-|${n}`;
+  const ranges=document.querySelectorAll(".mapRange"); if(!ranges.length) return;
+  const ll=activeLatLon(), n=MV.hours.length, [lo,hi]=mapHourRange();
+  const key = `${ll?ll.lat+","+ll.lon:"-"}|${lo}-${hi}|${n}`;
   if(key===_dnKey) return;
   _dnKey=key;
-  if(!ll || !n){ rg.style.background=""; return; }
-  const stops=[];
-  for(let i=0;i<n;i++){
-    const night = solarElev(Date.parse(MV.hours[i])+1800e3, ll.lat, ll.lon) <= 0;
-    const c = night ? "#43536e" : "#f0e4ba";
-    stops.push(`${c} ${(i/n*100).toFixed(2)}%`, `${c} ${((i+1)/n*100).toFixed(2)}%`);
+  let bg="";
+  if(ll && n){
+    const span=Math.max(1,hi-lo+1), stops=[];
+    for(let k=0;k<span;k++){
+      const night = solarElev(Date.parse(MV.hours[lo+k])+1800e3, ll.lat, ll.lon) <= 0;
+      const c = night ? "#43536e" : "#f0e4ba";
+      stops.push(`${c} ${(k/span*100).toFixed(2)}%`, `${c} ${((k+1)/span*100).toFixed(2)}%`);
+    }
+    bg=`linear-gradient(90deg, ${stops.join(",")})`;
   }
-  rg.style.background = `linear-gradient(90deg, ${stops.join(",")})`;
+  ranges.forEach(rg=>{ rg.style.background=bg; });
+}
+// Point the map seek bars at the current view (whole week or the zoomed day) and
+// snap the shown frame into range. Called when the day zoom toggles.
+function syncMapZoom(){
+  const [lo,hi]=mapHourRange();
+  document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo; rg.max=hi; });
+  _dnKey=null;
+  mapShow(Math.max(lo, Math.min(hi, MV.idx)));
 }
 function mapShow(i){
   if(!MV.hours.length) return;
@@ -2751,13 +2781,12 @@ function mapShow(i){
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
   // The seek bar under the maps: keep the thumb, the caption and the sun/moon
   // in step with the frame.
-  { const rg=document.getElementById("mapRange"); if(rg && +rg.value!==MV.idx) rg.value=MV.idx; }
-  { const tEl=document.getElementById("mapSeekTime");
-    if(tEl) tEl.textContent=`${fmtWd.format(d)} ${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`; }
-  { const dn=document.getElementById("mapSeekDN"); if(dn){
-      const ll=activeLatLon();
-      const night = ll ? solarElev(Date.parse(iso)+1800e3, ll.lat, ll.lon) <= 0 : false;
-      dn.textContent = night ? "🌙" : "☀️"; } }
+  { const cap=`${fmtWd.format(d)} ${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;
+    const ll=activeLatLon();
+    const night = ll ? solarElev(Date.parse(iso)+1800e3, ll.lat, ll.lon) <= 0 : false;
+    document.querySelectorAll(".mapRange").forEach(rg=>{ if(+rg.value!==MV.idx) rg.value=MV.idx; });
+    document.querySelectorAll(".mapSeekTime").forEach(el=>el.textContent=cap);
+    document.querySelectorAll(".mapdn").forEach(el=>el.textContent=night?"🌙":"☀️"); }
   dayNightTrack();
   const m=fusedSrc(iso), mImg=document.getElementById("imgMeps");
   if(m && m.request) requestMapHour(m.request, mImg);
@@ -2824,8 +2853,7 @@ async function initMapsViewer(){
   // One seek bar under the maps drives all three columns together (and the
   // meteogram seek line, via mapShow's __seekTo call). The old per-column
   // ◀ ▶ ▶ buttons are gone.
-  const range=document.getElementById("mapRange");
-  range.addEventListener("input",()=>mapShow(+range.value));
+  document.querySelectorAll(".mapRange").forEach(rg=>rg.addEventListener("input",()=>mapShow(+rg.value)));
   limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
@@ -2834,7 +2862,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v121",
+    "page v122",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2863,7 +2891,7 @@ function setMapAxis(){
   const t0=weekStart.getTime();
   for(let h=0;h<HOURS;h++)
     MV.hours.push(new Date(t0+h*3600e3).toISOString().slice(0,19)+"Z");
-  { const rg=document.getElementById("mapRange"); if(rg) rg.max=Math.max(0,MV.hours.length-1); }
+  { const [lo,hi]=mapHourRange(); document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo; rg.max=hi; }); }
   let idx=prevSel!=null ? MV.hours.findIndex(h=>Date.parse(h)===prevSel) : -1;
   if(idx<0){                                  // no prior hour (first load, week change)
     const now=Date.now();
