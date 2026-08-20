@@ -138,13 +138,13 @@
      dashed line it controls. Positioned in percent so it tracks the SVG as it
      scales. */
   .limbox{position:absolute;transform:translateY(-50%);width:58px;left:4px}
-  .limbox select{width:100%;padding:2px 3px;font-size:11px;font-weight:700;
+  .limbox select{width:100%;padding:2px 0;font-size:11px;font-weight:700;
     color:var(--threshold);border-color:var(--threshold)}
   .limbox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
     text-align:center;margin-top:1px;line-height:1.1}
   /* Compact variant (altitude): arrow-less number with the label to its right. */
   .limbox.compact{width:auto;display:flex;align-items:center;gap:3px}
-  .limbox.compact select{width:auto;padding:1px 3px;-webkit-appearance:none;
+  .limbox.compact select{width:auto;padding:1px 0;-webkit-appearance:none;
     -moz-appearance:none;appearance:none;background-image:none;text-align:center;
     color:var(--threshold);border-color:var(--threshold)}
   .limbox.compact .cbcap{margin-top:0;color:var(--threshold)}
@@ -213,7 +213,7 @@
        <select> chrome and match the on-chart legend size (~9px). */
     .limbox{width:44px}
     .limbox select{-webkit-appearance:none;-moz-appearance:none;appearance:none;
-      background-image:none;font-size:9px;padding:0 2px;line-height:1.15}
+      background-image:none;font-size:9px;padding:0;line-height:1.15}
     .limbox.compact select{font-size:9px}
     .limbox .cbcap{font-size:8px;line-height:1.05}
   }
@@ -2872,7 +2872,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v124",
+    "page v125",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
