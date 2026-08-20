@@ -59,7 +59,8 @@
   .main{flex:1;min-width:0}
   h1{font-size:18px;font-weight:700;margin:0 0 10px;color:var(--ink);letter-spacing:.2px}
   .side label{display:block;font-size:12px;color:var(--text);margin:8px 0 3px;font-weight:700}
-  .sel{font-size:12px;color:var(--ink);font-weight:700;margin:0 0 4px;min-height:16px}
+  .sel{font-size:12px;color:var(--ink);font-weight:700;margin:2px 0;text-align:center}
+  .sel:empty{display:none}
   select,button{
     font:inherit;font-size:13px;color:var(--text);
     background:var(--panel);border:1px solid var(--gridday);
@@ -219,12 +220,15 @@
   <h1 id="title">TT Aero Meteo <button type="button" id="infoBtn" class="ibtn" aria-label="About this page" title="About this page">&#9432;</button></h1>
 </header>
 <div class="layout">
-  <aside class="sidebar side">
-    <div class="sel" id="selNote"></div>
-    <!-- Both limits are moved onto the panel they draw a line on — see
-         placeLimitBox(). Moved rather than duplicated, so there is only ever
-         one of each. The ceiling list is fine-grained on purpose: the decision
-         it drives is not a round number, it is whatever the job needs. -->
+  <!-- The left sidebar is gone (it only held the selection note and the limit
+       selects). This holder stays hidden and off the layout; placeLimitBox()
+       moves the <select>s onto the chart, and the selection note now sits under
+       the week nav in <main>.
+       Both limits are moved onto the panel they draw a line on — see
+       placeLimitBox(). Moved rather than duplicated, so there is only ever
+       one of each. The ceiling list is fine-grained on purpose: the decision
+       it drives is not a round number, it is whatever the job needs. -->
+  <aside class="side" hidden>
     <select id="selCb" hidden>
       <option value="50">50</option>
       <option value="70">70</option>
@@ -285,6 +289,7 @@
       <button id="wToday">today</button>
       <button id="wNext">next week ▶</button>
     </div>
+    <div class="sel" id="selNote"></div>
     <div id="chart"></div>
     <div class="err" id="err" hidden></div>
     <div class="tip" id="tip"></div>
@@ -1401,11 +1406,11 @@ function render(){
   // view is unchanged.
   const MOB = !!(window.matchMedia && window.matchMedia("(max-width:640px)").matches);
   P.width = MOB ? 480 : 1180;
-  const fLeg = MOB ? 15 : 11;      // left-column panel legends
+  const fLeg = MOB ? 12 : 11;      // left-column panel legends (20% smaller than the day font on mobile)
   const fTick = MOB ? 15 : 11;     // axis tick numbers
   const fDay = MOB ? 17 : 13;      // day header (two lines on mobile)
   const fHour = MOB ? 12 : 8.5;    // hour ticks under the chart
-  const legStep = MOB ? 19 : 14;   // legend line spacing
+  const legStep = MOB ? 15 : 14;   // legend line spacing
   // Mobile: squeeze the panels 20% shorter so more of the chart fits a phone
   // screen. Original heights are stashed once so the factor never compounds.
   if(!PANELS[0]._h0) PANELS.forEach(p=>p._h0=p.h);
@@ -1455,15 +1460,16 @@ function render(){
     const x0=xPos(ts0), x1=xPos(ts0+86400e3), xc=(x0+x1)/2;
     const d0=new Date(ts0+12*3600e3);
     const close = zoomDay==null ? "" : "  ✕";   // zoomed: the header doubles as "back to week"
+    const dstr = `${fmtDD.format(d0)}.${fmtMon.format(d0).toLowerCase()}`;   // "19.aug"
     if(MOB){
-      // Two taller lines on a phone: weekday, then the date. "Mon 16. Aug."
-      const wd=svgEl("text",{x:xc,y:fDay+4,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
-      wd.textContent = `${fmtWd.format(d0)}${close}`;
-      const dt=svgEl("text",{x:xc,y:fDay*2+8,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
-      dt.textContent = `${fmtDNM.format(d0).replace(" ",". ")}.`;
+      // Two taller lines on a phone: the date on top, then the weekday.
+      const dt=svgEl("text",{x:xc,y:fDay+4,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
+      dt.textContent = `${dstr}${close}`;
+      const wd=svgEl("text",{x:xc,y:fDay*2+8,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
+      wd.textContent = fmtWd.format(d0);
     }else{
       const t=svgEl("text",{x:xc,y:15,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
-      t.textContent = `${fmtWd.format(d0)} ${fmtDNM.format(d0).replace(" ",". ")}.` + close;
+      t.textContent = `${fmtWd.format(d0)} ${dstr}` + close;
     }
     if(verdicts[d]!=="unknown"){
       const vc = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):css("--ok");
@@ -2862,7 +2868,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v122",
+    "page v123",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
