@@ -208,10 +208,14 @@
     .main{width:100%}
     .mapcols{flex-direction:column;align-items:stretch}
     .mapcol{width:100%}
-    /* Mobile browsers render native <select> chrome big; flatten the on-chart
-       limit dropdowns so they don't balloon over the meteogram. */
+    /* The limit boxes are HTML overlays that don't scale with the SVG, so on a
+       phone they sit larger than the shrunk chart text. Flatten the native
+       <select> chrome and match the on-chart legend size (~9px). */
+    .limbox{width:44px}
     .limbox select{-webkit-appearance:none;-moz-appearance:none;appearance:none;
-      background-image:none;font-size:11px;padding:1px 3px;line-height:1.1}
+      background-image:none;font-size:9px;padding:0 2px;line-height:1.15}
+    .limbox.compact select{font-size:9px}
+    .limbox .cbcap{font-size:8px;line-height:1.05}
   }
 </style>
 </head>
@@ -2868,7 +2872,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v123",
+    "page v124",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
