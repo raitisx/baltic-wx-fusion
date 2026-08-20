@@ -137,7 +137,7 @@
   /* The cloud-base limit sits in the meteogram's own gutter, level with the
      dashed line it controls. Positioned in percent so it tracks the SVG as it
      scales. */
-  .limbox{position:absolute;transform:translateY(-50%);left:4px;text-align:center}
+  .limbox{position:absolute;transform:translateY(-50%);left:4px;text-align:left}
   .limbox select{width:auto;padding:2px 0;font-size:11px;font-weight:700;
     color:var(--threshold);border-color:var(--threshold)}
   .limbox .cbcap{font-size:10px;font-weight:700;color:var(--threshold);
@@ -2436,6 +2436,29 @@ function initStaticMap(){
       mk("text",{x:px+4,y:py,"font-size":"15",fill:"#1c1a12","text-anchor":"start","pointer-events":"none",
         style:"paint-order:stroke;stroke:#fdf9ec;stroke-width:3.4;stroke-linejoin:round"}).textContent=c.n;
     }
+    // Station dots, on top of the cities: METAR airports as larger blue dots,
+    // the denser national network (LVĢMC / meteo.lt / Estonia) as small teal
+    // dots. Each has a transparent hit circle (pointer-events re-enabled over
+    // the pointer-events:none overlay) that picks that station instead of a
+    // 25 km cell.
+    for(const p of (POINTS||[])){
+      if(p.lat==null || !isStation(p)) continue;
+      const [mx,my]=proj4("EPSG:4326","EPSG:3059",[p.lon,p.lat]);
+      const [px,py]=metersToPx(mx,my);
+      if(px<0||px>570||py<0||py>690) continue;
+      const metar = p.kind==="metar";
+      mk("circle",{cx:px,cy:py,r:metar?4.5:2.2,
+        fill:metar?"#1c2c85":"#14532d","fill-opacity":metar?0.85:0.9,
+        stroke:"#fdf9ec","stroke-width":metar?1.5:0.5,"pointer-events":"none"});
+      const hit=mk("circle",{cx:px,cy:py,r:metar?12:5,fill:"#000","fill-opacity":0,"pointer-events":"all"});
+      hit.style.cursor="pointer";
+      hit.addEventListener("click",ev=>{
+        ev.stopPropagation();
+        clearSmapCell();
+        setPoint(p.point_id, metar ? `${p.point_id} — ${p.name??""}` : (p.name||p.point_id));
+        load();
+      });
+    }
   }
   const fm=document.getElementById("fusedMap");
   if(fm) fm.addEventListener("click",async ev=>{
@@ -2906,7 +2929,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v129",
+    "page v130",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
