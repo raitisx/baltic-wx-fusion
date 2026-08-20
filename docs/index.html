@@ -813,6 +813,7 @@ function fuse(){
   }
   shiftPrecipToHourStart();
   applyMapFog();         // before the dew: fog keeps the ground wet
+  applyCloudTop();       // MEPS cloud-top sampled at the cell, for the top line
   computeDew();          // needs the rain already stamped to the hour it falls
 }
 
@@ -906,6 +907,29 @@ function applyMapFog(){
     r.fog_i = Math.max(byVis, MAP_FOG_MIN_I);
   }
   return n>0;
+}
+
+// MEPS cloud TOP for the selected cell, off the same 25 km lattice as the fog
+// side-channel (maps/meps/cloud_top_cells.json). Values are hundreds of metres;
+// only the current run's forecast hours are carried, so the top line appears
+// from now out to the run's reach and is blank on days it doesn't cover.
+function applyCloudTop(){
+  for(const r of FUSED) r.cb_top=null;
+  const ct=MV.loaded?.cloudTop;
+  if(!ct || !ct.top || !FUSED.length || typeof proj4==="undefined") return;
+  const ll=(typeof activeLatLon==="function") ? activeLatLon() : null;
+  if(!ll || ll.lat==null) return;
+  const [x,y]=proj4("EPSG:4326","EPSG:3059",[ll.lon,ll.lat]);
+  const cx=Math.floor((x-ct.x0)/ct.cell), cy=Math.floor((y-ct.y0)/ct.cell);
+  if(cx<0||cy<0||cx>=ct.nx||cy>=ct.ny) return;
+  const cis=String(cy*ct.nx+cx), step=ct.top_step_m||100;
+  const hourOf={}; (ct.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
+  for(const r of FUSED){
+    const h=hourOf[r.ts]; if(h==null) continue;
+    const cell=ct.top[String(h)];
+    const v=cell ? cell[cis] : undefined;
+    if(v!=null) r.cb_top=v*step;   // metres above MSL
+  }
 }
 
 // Every precipitation number we receive — Open-Meteo's, the stations', and the
@@ -1697,7 +1721,15 @@ function render(){
     // No separate fog strip any more — fog is drawn against this same scale,
     // so zero metres is the floor of the panel.
     const bandH=44;
-    const y0=bot-2, yTopDetail=top+bandH+4;
+    // A thin cloud-TOP band between the cloudiness strips and the 0-1 km ceiling
+    // detail: the MEPS cloud-top line on a compressed 1-3 km scale. Reserved only
+    // when the side-channel is loaded, so the panel is unchanged without it.
+    const haveTop = !!(MV.loaded && MV.loaded.cloudTop);
+    const ctH = haveTop ? (MOB?18:24) : 0;
+    const ctTop = top+bandH, ctBot = ctTop+ctH;
+    const CT_LO=1000, CT_HI=3000;   // metres; tops above CT_HI peg at the band top
+    const ctY=v=>{ const c=Math.max(CT_LO,Math.min(v,CT_HI)); return ctBot-(c-CT_LO)/(CT_HI-CT_LO)*(ctBot-ctTop); };
+    const y0=bot-2, yTopDetail=ctBot+4;
     const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
     for(const r of ROWS){
       if(r.hourOfDay%6!==0) continue;
@@ -1723,13 +1755,27 @@ function render(){
     // moved every time you changed it, so the control was never twice in the
     // same place. Fixed, it is where the hand already is.
     placeLimitBox("cb", top + p.h / 2, totalH);
-    const bt=svgEl("text",{x:P.left-6,y:top+bandH/2+4,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
-    bt.textContent="1 km+";
     // Legend for the grey cloud-cover strips sharing this top band.
     svgEl("text",{x:6,y:top+10,"font-size":"9.5","font-weight":"700",
                   fill:css("--muted")},svg).textContent="cloudiness";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
+    if(haveTop){
+      // Cloud-top band: closing rule, a mid gridline at 2 km, km ticks and the
+      // MEPS cloud-top line (indigo). Tops above 3 km peg at the band top.
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:ctBot,y2:ctBot,stroke:css("--gridday"),"stroke-width":1},svg);
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:ctY(2000),y2:ctY(2000),stroke:css("--grid"),"stroke-width":1},svg);
+      svgEl("text",{x:6,y:ctTop+(MOB?11:13),"font-size":"9.5","font-weight":"700",fill:"#6f4bd0"},svg).textContent="cloud top";
+      svgEl("text",{x:P.left-6,y:ctBot-1,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="1k";
+      svgEl("text",{x:P.left-6,y:ctTop+9,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="3k";
+      let dt="",pen=false;
+      for(const r of ROWS){
+        if(r.cb_top==null){pen=false;continue;}
+        dt+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+ctY(r.cb_top).toFixed(1)+" ";
+        pen=true;
+      }
+      if(dt) svgEl("path",{d:dt,fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+    }
 
     const strips=[["cc_high",0],["cc_mid",1],["cc_low",2]];
     const sh=(bandH-10)/3;
@@ -1748,7 +1794,7 @@ function render(){
     let d="",pen=false;
     for(const r of rows){
       if(r.cb==null){pen=false;continue;}
-      const yy=r.cb>1000? top+bandH : y(r.cb);
+      const yy=r.cb>1000? yTopDetail : y(r.cb);
       d+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+yy.toFixed(1)+" ";
       pen=true;
     }
@@ -1767,7 +1813,7 @@ function render(){
       if(pr<LIDAR_RAIN_MMH) continue;
       const base=rows[i].cb;
       if(base==null) continue;
-      const yTop=base>1000 ? top+bandH : y(base);
+      const yTop=base>1000 ? yTopDetail : y(base);
       const op=(0.4+0.55*(r.prcp_prob??1)).toFixed(2);
       svgEl("line",{x1:xPos(r.ts+1800e3),x2:xPos(r.ts+1800e3),y1:yTop,y2:y0,
                     stroke:css("--rainshaft"),"stroke-width":1.6,
@@ -1775,9 +1821,9 @@ function render(){
     }
     svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
     for(const r of rows) if(r.cb!=null && r.cb>1000)
-      svgEl("circle",{cx:xPos(r.ts),cy:top+bandH-6,r:1.8,fill:css("--cloud")},svg);
+      svgEl("circle",{cx:xPos(r.ts),cy:yTopDetail-4,r:1.8,fill:css("--cloud")},svg);
     for(const o of (obsIdx.cb_ceiling||[])) if(vis(o.ts))
-      svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?top+bandH-6:y(o.v),r:2.6,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1},svg);
+      svgEl("circle",{cx:xPos(o.ts),cy:o.v>1000?yTopDetail-4:y(o.v),r:2.6,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1},svg);
     // Fog, on the ceiling panel's own scale: a bar reaching the 300 m gridline
     // is fog at full strength, and a shorter one is proportionally thinner. It
     // reads directly against the ceiling trace above it rather than as a
@@ -1985,6 +2031,7 @@ function render(){
         + (wzLevel()>10 ? " (from the 10 m gust)"
                         : (r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:""))],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
+      ...(r.cb_top!=null?[["--cloud","cloud top",`${(r.cb_top/1000).toFixed(1)} km · MEPS`]]:[]),
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
       ...(r.dew?[[r.dew.frost?"--dewfrost":r.dew.wet?"--dewwet":"--dewdry",
         r.dew.frost?"frost":r.dew.wet?(r.dew.fromRain?"wet (rain)":"dew"):"ground dry",
@@ -2527,6 +2574,7 @@ const MAP_MANIFESTS={
   fused:"maps/fused/latest.json", fusedArchive:"maps/fused/archive.json",
   fogCells:"maps/meps/fog_cells.json",
   fogCellsArchive:"maps/meps/fog_cells_archive.json",
+  cloudTop:"maps/meps/cloud_top_cells.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -2929,7 +2977,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v130",
+    "page v131",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
