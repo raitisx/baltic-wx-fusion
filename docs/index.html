@@ -1727,10 +1727,15 @@ function render(){
     const haveTop = !!(MV.loaded && MV.loaded.cloudTop);
     const ctH = haveTop ? (MOB?18:24) : 0;
     const ctTop = top+bandH, ctBot = ctTop+ctH;
-    const CT_LO=1000, CT_HI=3000;   // metres; tops above CT_HI peg at the band top
+    const CT_LO=1000, CT_HI=3000;   // metres; tops above CT_HI peg flat at the band top
     const ctY=v=>{ const c=Math.max(CT_LO,Math.min(v,CT_HI)); return ctBot-(c-CT_LO)/(CT_HI-CT_LO)*(ctBot-ctTop); };
-    const y0=bot-2, yTopDetail=ctBot+4;
+    // The 0-1 km detail starts flush under the cloud-top band (no gap) so the two
+    // scales meet exactly at 1 km, and the cloud-top line stays continuous.
+    const y0=bot-2, yTopDetail=ctBot+(haveTop?0:4);
     const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
+    // One height→y for the whole cloud-top trace: the 1-3 km band above 1 km
+    // (flat at 3 km when higher), dropping into the ceiling detail below 1 km.
+    const ctLineY=v=>v>=CT_LO ? ctY(v) : y(v);
     for(const r of ROWS){
       if(r.hourOfDay%6!==0) continue;
       svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
@@ -1768,13 +1773,6 @@ function render(){
       svgEl("text",{x:6,y:ctTop+(MOB?11:13),"font-size":"9.5","font-weight":"700",fill:"#6f4bd0"},svg).textContent="cloud top";
       svgEl("text",{x:P.left-6,y:ctBot-1,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="1k";
       svgEl("text",{x:P.left-6,y:ctTop+9,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="3k";
-      let dt="",pen=false;
-      for(const r of ROWS){
-        if(r.cb_top==null){pen=false;continue;}
-        dt+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+ctY(r.cb_top).toFixed(1)+" ";
-        pen=true;
-      }
-      if(dt) svgEl("path",{d:dt,fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
     }
 
     const strips=[["cc_high",0],["cc_mid",1],["cc_low",2]];
@@ -1820,6 +1818,18 @@ function render(){
                     "stroke-dasharray":"3 3","stroke-opacity":op},svg);
     }
     svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
+    // Cloud-top line (indigo), drawn on top of the ceiling trace so it stays
+    // continuous across the band boundary: the 1-3 km band above 1 km (flat at
+    // 3 km when higher) and the 0-1 km ceiling detail below it.
+    if(haveTop){
+      let dt="",pen=false;
+      for(const r of ROWS){
+        if(r.cb_top==null){pen=false;continue;}
+        dt+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+ctLineY(r.cb_top).toFixed(1)+" ";
+        pen=true;
+      }
+      if(dt) svgEl("path",{d:dt,fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+    }
     for(const r of rows) if(r.cb!=null && r.cb>1000)
       svgEl("circle",{cx:xPos(r.ts),cy:yTopDetail-4,r:1.8,fill:css("--cloud")},svg);
     for(const o of (obsIdx.cb_ceiling||[])) if(vis(o.ts))
@@ -2977,7 +2987,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v131",
+    "page v132",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
