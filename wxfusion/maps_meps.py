@@ -433,9 +433,6 @@ def r2_client():
     )
 
 
-from matplotlib.colors import LinearSegmentedColormap as _LSC
-
-_SEA_CMAP = _LSC.from_list("sea", ["#cfe4f2", "#cfe4f2"])
 _sea_layer_cache = "unset"
 
 
@@ -464,9 +461,14 @@ def _sea_layer():
 
 
 def _draw_sea(ax):
+    # matplotlib is imported lazily here (not at module scope): maps_meps is also
+    # imported by the UM scraper for its constants, and that job has no matplotlib
+    # installed — a module-level import broke it.
     sl = _sea_layer()
     if sl is not None:
-        ax.pcolormesh(sl[0], sl[1], sl[2], cmap=_SEA_CMAP, vmin=0, vmax=1,
+        from matplotlib.colors import LinearSegmentedColormap
+        cmap = LinearSegmentedColormap.from_list("sea", ["#cfe4f2", "#cfe4f2"])
+        ax.pcolormesh(sl[0], sl[1], sl[2], cmap=cmap, vmin=0, vmax=1,
                       shading="auto", zorder=0)
 
 
