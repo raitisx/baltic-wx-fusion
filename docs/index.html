@@ -629,10 +629,11 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
 // per parameter — ~13x smaller on disk and ~6x less JSON than a row per value.
 // Expand it back into flat entries so everything downstream (including the
 // live Open-Meteo path) sees one shape.
-// Ceiling = lowest broken-or-more cloud. 60% is the aviation BKN threshold;
-// below it cloud is scattered and there is no ceiling to report. Verified
-// against 3 days of METAR ceilings: gating cuts ICON's mean error from
-// ~920 m to ~530 m and MEPS's from ~918 m to ~559 m.
+// Ceiling = lowest scattered-or-more cloud. 38% is the aviation SCT threshold
+// (3 oktas). A pure-METAR fit prefers the BKN threshold (60%, ~530 m error vs
+// ~920 m ungated), but the meteogram is a flight-planning aid and we don't fly
+// through scattered cloud either, so scattered low cloud is reported as a
+// ceiling deliberately — a conservative floor, not the statistical best fit.
 // Visibility, on the meteorological scale: under 1 km is fog, 1-5 km is mist.
 // The bar starts at mist so deteriorating air is visible before it becomes
 // fog, and is full at 300 m. Log-spaced, or everything between 5 km and 1 km
@@ -653,7 +654,7 @@ const MAP_FOG_MIN_I = 0.55;
 // How long rendered frames are kept. Beyond this the hour has to be redrawn
 // from the stored grid, which is a background job rather than a page load.
 const FRAME_DAYS=21;   // matches FRAME_KEEP_DAYS on both writers
-const CEILING_COVER=60;
+const CEILING_COVER=38;   // scattered (3 oktas) — we won't fly through it either
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
   "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis",
   "ws80m","ws120m","ws180m","wdir80","wdir120","wdir180"];
@@ -2990,7 +2991,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v133",
+    "page v134",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),

@@ -59,12 +59,14 @@ MAP_HOURLY_VARS = {
 }
 
 
-# Low-cloud fraction at or above which a ceiling is deemed to exist. 60% is
-# the BKN threshold aviation uses (5 oktas); below it cloud is scattered and
-# there is no ceiling to report. Measured against 3 days of METAR ceilings at
-# our stations, gating here cuts mean absolute error from ~920 m to ~530 m for
-# ICON and ~918 m to ~559 m for MEPS.
-CEILING_COVER = float(os.environ.get("CEILING_COVER", "60"))
+# Low-cloud fraction at or above which a ceiling is deemed to exist. 38% is the
+# SCT threshold aviation uses (3 oktas). A pure-METAR fit prefers the BKN
+# threshold (60%, 5 oktas — cuts mean absolute error from ~920 m to ~530 m for
+# ICON and ~918 m to ~559 m for MEPS), but the meteogram is a flight-planning
+# aid and we don't fly through scattered cloud either, so scattered low cloud
+# is reported as a ceiling deliberately — a conservative floor, not the best
+# statistical fit. Keep this in step with CEILING_COVER on the page.
+CEILING_COVER = float(os.environ.get("CEILING_COVER", "38"))
 
 # Fog is a ceiling on the ground, and the low-cloud fraction does not see it.
 # At 56.57N 26.40E on 29 July 04:00 UTC, MEPS had relative humidity 100% with
