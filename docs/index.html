@@ -52,7 +52,8 @@
     background:var(--bg); color:var(--text);
     min-height:100vh; padding:14px;
   }
-  .pagehdr{max-width:1480px;margin:0 auto 12px;text-align:center}
+  .pagehdr{max-width:1480px;margin:0 auto;text-align:center}
+  .pagehdr h1{margin:0}
   .layout{display:flex;gap:16px;max-width:1480px;margin:0 auto;align-items:flex-start}
   .sidebar{width:360px;flex:none;position:sticky;top:10px}
   .main{flex:1;min-width:0}
@@ -2768,7 +2769,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v119",
+    "page v120",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
