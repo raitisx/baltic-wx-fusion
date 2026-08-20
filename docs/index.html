@@ -53,7 +53,7 @@
     min-height:100vh; padding:14px;
   }
   .pagehdr{max-width:1480px;margin:0 auto;text-align:center}
-  .pagehdr h1{margin:0}
+  .pagehdr h1{margin:0;line-height:1}
   .layout{display:flex;gap:16px;max-width:1480px;margin:0 auto;align-items:flex-start}
   .sidebar{width:360px;flex:none;position:sticky;top:10px}
   .main{flex:1;min-width:0}
@@ -188,6 +188,17 @@
          background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
          pointer-events:none;z-index:3}
   .mapctl{display:flex;gap:6px;align-items:center;justify-content:center;margin:6px 0 0;flex-wrap:wrap;position:relative;z-index:5}
+  .mapseek{margin:12px 0 2px}
+  #mapRange{-webkit-appearance:none;appearance:none;width:100%;height:16px;border-radius:8px;
+    border:1px solid var(--gridday);background:var(--panel);outline:none;cursor:ew-resize;margin:0}
+  #mapRange::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:24px;
+    border-radius:4px;background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 3px rgba(0,0,0,.5);cursor:ew-resize}
+  #mapRange::-moz-range-thumb{width:16px;height:24px;border-radius:4px;background:#cc2222;
+    border:2px solid #fff9ec;box-shadow:0 0 3px rgba(0,0,0,.5);cursor:ew-resize}
+  #mapRange::-moz-range-track{height:16px;border-radius:8px;background:transparent}
+  .mapseekcap{display:flex;align-items:center;gap:7px;justify-content:center;
+    font-size:14px;font-weight:700;color:var(--ink);margin-top:5px}
+  .mapdn{font-size:15px;line-height:1}
   .mapctl input[type=range]{flex:1;min-width:200px;accent-color:var(--ink)}
   .mapctl .mtime{font-size:12px;font-weight:700;color:var(--ink);min-width:150px}
   @media (max-width:900px){
@@ -283,18 +294,22 @@
         <div class="mapcol">
           <div class="mapcolhead">Baltic fused <span class="mapsub" id="mepsTime">grey: total cloud · pink: base&lt;limit (m above ground) · orange: fog · rain green→orange, blue below 0° · click to pick a cell</span></div>
           <div class="stack" id="fusedMap"><img class="mimg" id="imgMeps" alt="" onerror="this.style.opacity='0.12'"><svg id="smapOv" class="mapov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg></div>
-          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">UM 4 km (meteo.pl) <span class="mapsub" id="umTime">snapshot at this hour</span></div>
           <div class="stack"><img class="mimg" id="imgUm" alt="" onerror="this.style.opacity='0'"></div>
-          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
         <div class="mapcol">
           <div class="mapcolhead">Radar LV+EE+LT <span class="mapsub" id="radarTime"></span></div>
           <div class="stack"><img class="mimg" id="imgRadar" alt="" onerror="this.style.opacity='0'"></div>
-          <div class="mapctl"><button class="mapPrev">&lt;</button><button class="mapPlay">▶</button><button class="mapNext">&gt;</button></div>
         </div>
+      </div>
+      <!-- One seek bar under all three maps: drag to move every column together.
+           The track is shaded by night/day at the selected cell, and the caption
+           reads the frame's date, time and a sun/moon. -->
+      <div class="mapseek">
+        <input type="range" id="mapRange" min="0" max="0" value="0" step="1" aria-label="map time">
+        <div class="mapseekcap"><span id="mapSeekDN" class="mapdn"></span><span id="mapSeekTime"></span></div>
       </div>
     </div>
     <div class="mapnote" id="mapMissing" hidden>Hourly maps not published yet.</div>
@@ -1180,6 +1195,13 @@ function xPos(ts){
   const [t0,t1]=viewDomain();
   return P.left + (ts-t0)/(t1-t0)*(P.width-P.left-P.right);
 }
+// Re-render on resize/rotate so the mobile↔desktop coordinate width and fonts
+// (see render) track the viewport. Debounced; render() is a hoisted decl.
+let _resizeT=null;
+window.addEventListener("resize",()=>{
+  clearTimeout(_resizeT);
+  _resizeT=setTimeout(()=>{ if(typeof FUSED!=="undefined" && FUSED.length) render(); },160);
+});
 function niceTicks(min,max,n){
   const span=max-min, step0=span/n, mag=10**Math.floor(Math.log10(step0));
   const step=[1,2,2.5,5,10].map(k=>k*mag).find(s=>span/s<=n)||mag*10;
@@ -1376,6 +1398,18 @@ function render(){
   const ROWS = zoomDay==null ? FUSED : FUSED.filter(r=>vis(r.ts));
   const DAYS = zoomDay==null ? [0,1,2,3,4,5,6] : [zoomDay];
   if(!ROWS.length) return;
+  // Mobile: the SVG scales to the screen width, so on a phone the whole chart
+  // (and its text) shrinks to ~1/3. Narrow the coordinate width so everything
+  // renders larger on screen, bump the legend / day-header / tick fonts, and
+  // give the day headers two taller lines. All guarded by MOB, so the desktop
+  // view is unchanged.
+  const MOB = !!(window.matchMedia && window.matchMedia("(max-width:640px)").matches);
+  P.width = MOB ? 480 : 1180;
+  const fLeg = MOB ? 15 : 11;      // left-column panel legends
+  const fTick = MOB ? 15 : 11;     // axis tick numbers
+  const fDay = MOB ? 17 : 13;      // day header (two lines on mobile)
+  const fHour = MOB ? 12 : 8.5;    // hour ticks under the chart
+  const legStep = MOB ? 19 : 14;   // legend line spacing
   const cbLim=cbLimit();
   const wgLim=wgLimit();
   // Everything downstream — the panel, the day verdicts, the tooltip — reads
@@ -1393,7 +1427,7 @@ function render(){
   const verdicts=dayVerdicts(cbLim,wgLim);
   const css=v=>getComputedStyle(document.getElementById("chart")).getPropertyValue(v).trim();
 
-  const headerH=34;
+  const headerH = MOB ? 60 : 34;
   const totalH = headerH + PANELS.reduce((a,p)=>a+p.h+3,0) + 30;
   const svg=svgEl("svg",{viewBox:`0 0 ${P.width} ${totalH}`, "aria-label":"7-day flight meteogram"});
   chart.appendChild(svg);
@@ -1418,15 +1452,22 @@ function render(){
 
   for(const d of DAYS){
     const ts0=FUSED[0].ts + d*86400e3;
-    const x0=xPos(ts0), x1=xPos(ts0+86400e3);
-    const t=svgEl("text",{x:(x0+x1)/2,y:15,"text-anchor":"middle","font-size":"13","font-weight":"700",fill:css("--ink")},svg);
-    // "Mon 16. Aug." rather than "Mon 16/08".
+    const x0=xPos(ts0), x1=xPos(ts0+86400e3), xc=(x0+x1)/2;
     const d0=new Date(ts0+12*3600e3);
-    t.textContent = `${fmtWd.format(d0)} ${fmtDNM.format(d0).replace(" ",". ")}.`
-                    + (zoomDay==null ? "" : "  ✕");   // zoomed: the header doubles as "back to week"
+    const close = zoomDay==null ? "" : "  ✕";   // zoomed: the header doubles as "back to week"
+    if(MOB){
+      // Two taller lines on a phone: weekday, then the date. "Mon 16. Aug."
+      const wd=svgEl("text",{x:xc,y:fDay+4,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
+      wd.textContent = `${fmtWd.format(d0)}${close}`;
+      const dt=svgEl("text",{x:xc,y:fDay*2+8,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
+      dt.textContent = `${fmtDNM.format(d0).replace(" ",". ")}.`;
+    }else{
+      const t=svgEl("text",{x:xc,y:15,"text-anchor":"middle","font-size":fDay,"font-weight":"700",fill:css("--ink")},svg);
+      t.textContent = `${fmtWd.format(d0)} ${fmtDNM.format(d0).replace(" ",". ")}.` + close;
+    }
     if(verdicts[d]!=="unknown"){
       const vc = verdicts[d]==="nofly"?css("--nofly"):verdicts[d]==="marginal"?css("--marginal"):css("--ok");
-      svgEl("rect",{x:x0+3,y:22,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
+      svgEl("rect",{x:x0+3,y:MOB?headerH-7:22,width:x1-x0-6,height:5,rx:2.5,fill:vc,opacity:.85},svg);
     }
     // The header is the zoom button: tap a day to zoom the meteogram to it, tap
     // again (the ✕) to go back to the week. A transparent hit rect over the whole
@@ -1455,14 +1496,14 @@ function render(){
     const ly0=panelTop[p.id]+Math.round(p.h*p.at);
     let ly=ly0;
     for(const [txt,varName] of [...p.rows].reverse()){
-      const t=svgEl("text",{x:6,y:ly,"font-size":"11","font-weight":"700",fill:css(varName)},svg);
+      const t=svgEl("text",{x:6,y:ly,"font-size":fLeg,"font-weight":"700",fill:css(varName)},svg);
       t.textContent=txt;
-      ly-=14;
+      ly-=legStep;
     }
     // The black dots on the temperature trace are real observations; label them
     // bold, just under the dew-pt line.
     if(p.id==="temp"){
-      svgEl("text",{x:6,y:ly0+14,"font-size":"11","font-weight":"800",
+      svgEl("text",{x:6,y:ly0+legStep,"font-size":fLeg,"font-weight":"800",
                     fill:css("--text")},svg).textContent="real meas.";
     }
   }
@@ -1496,7 +1537,7 @@ function render(){
       // one panel and the bottom tick of the one above land on the same line
       // and overprint each other.
       const ly=Math.min(bot-2, Math.max(top+9, y(tv)+4));
-      const t=svgEl("text",{x:P.left-6,y:ly,"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+      const t=svgEl("text",{x:P.left-6,y:ly,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
@@ -1628,7 +1669,7 @@ function render(){
     }
     for(const tv of [0,150,300,500,1000]){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":"11","font-weight":"700",fill:css("--ink")},svg);
+      const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv;
     }
     const cbLimV=cbLimit();
@@ -1777,7 +1818,7 @@ function render(){
 
   for(const r of ROWS){
     if(r.hourOfDay%6!==0) continue;
-    const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":"8.5","font-weight":"700",fill:css("--ink")},svg);
+    const t=svgEl("text",{x:xPos(r.ts),y:plotBottom+13,"text-anchor":"middle","font-size":fHour,"font-weight":"700",fill:css("--ink")},svg);
     t.textContent=String(r.hourOfDay).padStart(2,"0");
   }
 
@@ -2681,6 +2722,25 @@ function showFrame(img, capEl, url, cap, dimTo){
   };
   pre.src=url;
 }
+// The seek-bar track is shaded night (blue) / day (cream) at the selected cell.
+// Rebuilt only when the location or the hour list changes — cheap to guard, and
+// mapShow calls it every frame.
+let _dnKey=null;
+function dayNightTrack(){
+  const rg=document.getElementById("mapRange"); if(!rg) return;
+  const ll=activeLatLon(), n=MV.hours.length;
+  const key = ll ? `${ll.lat},${ll.lon}|${n}` : `-|${n}`;
+  if(key===_dnKey) return;
+  _dnKey=key;
+  if(!ll || !n){ rg.style.background=""; return; }
+  const stops=[];
+  for(let i=0;i<n;i++){
+    const night = solarElev(Date.parse(MV.hours[i])+1800e3, ll.lat, ll.lon) <= 0;
+    const c = night ? "#43536e" : "#f0e4ba";
+    stops.push(`${c} ${(i/n*100).toFixed(2)}%`, `${c} ${((i+1)/n*100).toFixed(2)}%`);
+  }
+  rg.style.background = `linear-gradient(90deg, ${stops.join(",")})`;
+}
 function mapShow(i){
   if(!MV.hours.length) return;
   MV.idx=Math.max(0,Math.min(MV.hours.length-1,i));
@@ -2689,6 +2749,16 @@ function mapShow(i){
   const d=new Date(iso);
   const label=`${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;  // 01.Aug. 11:00
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
+  // The seek bar under the maps: keep the thumb, the caption and the sun/moon
+  // in step with the frame.
+  { const rg=document.getElementById("mapRange"); if(rg && +rg.value!==MV.idx) rg.value=MV.idx; }
+  { const tEl=document.getElementById("mapSeekTime");
+    if(tEl) tEl.textContent=`${fmtWd.format(d)} ${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`; }
+  { const dn=document.getElementById("mapSeekDN"); if(dn){
+      const ll=activeLatLon();
+      const night = ll ? solarElev(Date.parse(iso)+1800e3, ll.lat, ll.lon) <= 0 : false;
+      dn.textContent = night ? "🌙" : "☀️"; } }
+  dayNightTrack();
   const m=fusedSrc(iso), mImg=document.getElementById("imgMeps");
   if(m && m.request) requestMapHour(m.request, mImg);
   showFrame(mImg, document.getElementById("mepsTime"), m&&m.url, m&&m.cap, "0.15");
@@ -2751,16 +2821,11 @@ async function initMapsViewer(){
   }));
   if(!Object.keys(MV.loaded).length){ miss.hidden=false; return; }
   view.hidden=false;
-  // Each map column carries its own ◀ ▶ ▶ copy; they all drive the one shared
-  // playback, so wire every copy and keep their play icons in sync.
-  document.querySelectorAll(".mapPrev").forEach(b=>b.addEventListener("click",()=>mapShow(MV.idx-1)));
-  document.querySelectorAll(".mapNext").forEach(b=>b.addEventListener("click",()=>mapShow(MV.idx+1)));
-  const setPlayIcon=t=>document.querySelectorAll(".mapPlay").forEach(b=>b.textContent=t);
-  document.querySelectorAll(".mapPlay").forEach(b=>b.addEventListener("click",()=>{
-    if(MV.playing){ clearInterval(MV.playing); MV.playing=null; setPlayIcon("▶"); return; }
-    setPlayIcon("⏸");
-    MV.playing=setInterval(()=>mapShow((MV.idx+1)%MV.hours.length),500);
-  }));
+  // One seek bar under the maps drives all three columns together (and the
+  // meteogram seek line, via mapShow's __seekTo call). The old per-column
+  // ◀ ▶ ▶ buttons are gone.
+  const range=document.getElementById("mapRange");
+  range.addEventListener("input",()=>mapShow(+range.value));
   limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
@@ -2769,7 +2834,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v120",
+    "page v121",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -2798,6 +2863,7 @@ function setMapAxis(){
   const t0=weekStart.getTime();
   for(let h=0;h<HOURS;h++)
     MV.hours.push(new Date(t0+h*3600e3).toISOString().slice(0,19)+"Z");
+  { const rg=document.getElementById("mapRange"); if(rg) rg.max=Math.max(0,MV.hours.length-1); }
   let idx=prevSel!=null ? MV.hours.findIndex(h=>Date.parse(h)===prevSel) : -1;
   if(idx<0){                                  // no prior hour (first load, week change)
     const now=Date.now();
