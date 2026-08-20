@@ -239,15 +239,16 @@ def _draw_rain(ax, xw, yw, prm, t2m, greens, blues, rain_norm, alpha=0.9):
                   cmap=blues, norm=rain_norm, alpha=alpha, shading="auto")
 
 
-# A ceiling needs broken-or-more low cloud, the same 5-okta rule the meteogram
-# applies. MEPS publishes cloud_base_altitude wherever it finds any cloud base
-# at all, and below 700 m that is almost never a ceiling: over the Baltic
-# window of the 30.07 18Z run, the pixels with a base under 700 m had a mean
-# low-cloud fraction of 0.011 and a 90th percentile of 0.00 — no low cloud
-# worth the name. Meanwhile where the low cloud really was broken, the base sat
-# at 1150-1550 m. Painting the first group pink is what made the map disagree
-# with the meteogram, which has been gating since the LCL fix.
-CEILING_LCC = 0.60
+# A ceiling needs scattered-or-more low cloud, the same 3-okta rule the
+# meteogram applies (we don't fly through scattered cloud either). MEPS
+# publishes cloud_base_altitude wherever it finds any cloud base at all, and
+# below 700 m that is almost never a ceiling: over the Baltic window of the
+# 30.07 18Z run, the pixels with a base under 700 m had a mean low-cloud
+# fraction of 0.011 and a 90th percentile of 0.00 — no low cloud worth the
+# name. Painting the first group pink is what made the map disagree with the
+# meteogram, which has been gating since the LCL fix. Keep this in step with
+# CEILING_COVER on the page and in the ingest.
+CEILING_LCC = 0.38
 # Fog is a zero-foot ceiling however the cloud-base field reports it.
 FOG_COVER = 0.60
 # ...and so is a ceiling sitting on the deck, whether or not the fog field
