@@ -396,6 +396,7 @@ def _archive_fog_cells(s3, run_tag, hours_out, out):
 
 
 CLOUD_TOP_CELL_KEY = "maps/meps/cloud_top_cells.json"
+CLOUD_TOP_CELL_ARCHIVE_KEY = "maps/meps/cloud_top_cells_archive.json"
 
 
 def write_cloud_top_cells(s3, run_tag, hours_out, ctop, latw, lonw):
@@ -439,8 +440,48 @@ def write_cloud_top_cells(s3, run_tag, hours_out, ctop, latw, lonw):
                       CacheControl="public, max-age=300")
         log.info("cloud-top cells: %d of %d hours have a top somewhere",
                  len(out), len(hours_out))
+        try:
+            _archive_cloud_top_cells(s3, run_tag, hours_out, out)
+        except Exception:
+            log.exception("cloud-top archive: not updated")   # live file already written
     except Exception:      # never fail a map run over the side channel
         log.exception("cloud-top cells: not written")
+
+
+def _archive_cloud_top_cells(s3, run_tag, hours_out, out):
+    """Fold this run's cloud-top hours into the rolling per-hour archive.
+
+    Same rule as _archive_fog_cells: keyed by valid-hour (YYYYMMDDTHH), a later
+    run overwriting an hour it still forecasts so each hour carries its freshest
+    run, and hours past the frame window are dropped. This is what makes the
+    meteogram's cloud-top line continuous across the past — MEPS only forecasts
+    forward, so without it the line is blank on every hour the axis has moved
+    past. Written whole each pass; stays small because clear cells are omitted.
+    """
+    try:
+        prev = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET, Key=CLOUD_TOP_CELL_ARCHIVE_KEY)["Body"].read())
+        hours = prev.get("hours", {}) if isinstance(prev, dict) else {}
+    except Exception:
+        hours = {}   # first run, or unreadable — start clean
+
+    for h_str, cells in out.items():
+        vtag = hours_out[int(h_str)][:13].replace("-", "")   # 2026-08-08T07 -> 20260808T07
+        hours[vtag] = {"run": run_tag, "top": cells}
+
+    cutoff = (dt.datetime.now(dt.timezone.utc)
+              - dt.timedelta(days=FOG_ARCHIVE_KEEP_DAYS)).strftime("%Y%m%dT%H")
+    hours = {k: v for k, v in hours.items() if k >= cutoff}
+
+    body = {"nx": FOG_CELL_NX, "ny": FOG_CELL_NY,
+            "x0": FOG_CELL_X0, "y0": FOG_CELL_Y0, "cell": FOG_CELL_M,
+            "top_step_m": 100, "hours": hours,
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    s3.put_object(Bucket=config.R2_BUCKET, Key=CLOUD_TOP_CELL_ARCHIVE_KEY,
+                  Body=json.dumps(body).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("cloud-top archive: %d valid-hours retained", len(hours))
 
 
 def _gate_ceiling(cb, lcc, fog, vis=None):
