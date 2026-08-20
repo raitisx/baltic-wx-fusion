@@ -87,9 +87,9 @@
   .imodal-x{position:absolute;top:8px;right:11px;background:none;border:none;
             color:var(--muted);font-size:23px;line-height:1;cursor:pointer}
   .imodal-x:hover{color:var(--text)}
-  .weekbar{display:flex;flex-direction:column;align-items:center;gap:5px;margin-bottom:6px}
-  .weekrow{display:flex;gap:8px;align-items:center}
-  .weekbar .wlabel{font-size:15px;font-weight:700;color:var(--ink);min-width:220px;text-align:center}
+  .weekbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;margin-bottom:6px}
+  .weekbar #wPrev{justify-self:start}
+  .weekbar #wNext{justify-self:end}
   .status{
     display:block;line-height:1.5;font-size:10px;color:var(--muted);
     text-align:left;white-space:normal;margin-top:6px;
@@ -183,16 +183,22 @@
   #fusedMap{cursor:crosshair}
   .stack img.mimg{position:absolute;inset:0;width:100%;height:100%;display:block}
   /* the selected cell/station, in the same place on every map */
-  .mmark{position:absolute;width:11px;height:11px;margin:-6px 0 0 -6px;border-radius:50%;
+  .mmark{position:absolute;width:11px;height:11px;transform:translate(-50%,-50%);border-radius:50%;
          background:#cc2222;border:2px solid #fff9ec;box-shadow:0 0 4px rgba(0,0,0,.45);
          pointer-events:none;z-index:3}
   .mapctl{display:flex;gap:6px;align-items:center;justify-content:center;margin:6px 0 0;flex-wrap:wrap;position:relative;z-index:5}
   .mapctl input[type=range]{flex:1;min-width:200px;accent-color:var(--ink)}
   .mapctl .mtime{font-size:12px;font-weight:700;color:var(--ink);min-width:150px}
   @media (max-width:900px){
-    .layout{flex-direction:column}
+    .layout{flex-direction:column;align-items:stretch}
     .sidebar{width:100%;position:static}
+    .main{width:100%}
     .mapcols{flex-direction:column;align-items:stretch}
+    .mapcol{width:100%}
+    /* Mobile browsers render native <select> chrome big; flatten the on-chart
+       limit dropdowns so they don't balloon over the meteogram. */
+    .limbox select{-webkit-appearance:none;-moz-appearance:none;appearance:none;
+      background-image:none;font-size:11px;padding:1px 3px;line-height:1.1}
   }
 </style>
 </head>
@@ -263,11 +269,9 @@
 
   <main class="main">
     <div class="weekbar">
-      <div class="weekrow">
-        <button id="wPrev">◀ prev week</button>
-        <button id="wNext">next week ▶</button>
-      </div>
+      <button id="wPrev">◀ prev week</button>
       <button id="wToday">today</button>
+      <button id="wNext">next week ▶</button>
     </div>
     <div id="chart"></div>
     <div class="err" id="err" hidden></div>
@@ -2723,7 +2727,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v117",
+    "page v118",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
