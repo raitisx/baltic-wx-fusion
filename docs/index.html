@@ -1822,12 +1822,22 @@ function render(){
     // their own polygons.
     for(const r of ROWS){
       const pl = r.cloudProf ? layersOf(r.cloudProf) : [];
-      r._cbShow = r.cb!=null ? r.cb : (pl.length ? pl[0][0] : null);
-      r._topShow = r.cb_top!=null ? r.cb_top : (pl.length ? pl[0][1] : null);
+      let cbShow = r.cb!=null ? r.cb : (pl.length ? pl[0][0] : null);
+      let topShow = r.cb_top!=null ? r.cb_top : (pl.length ? pl[0][1] : null);
+      // Rain means cloud overhead down to a low base — a raining hour must never
+      // be blank. The fused ceiling vote can null out while the fused rain still
+      // comes through (models disagreeing on the cloud but agreeing on the
+      // shower), so fall back to the low, saturated LCL for the base and a deep
+      // top, and the grey column + ceiling + rain shaft all appear.
+      if((r.prcp_1h ?? 0) >= LIDAR_RAIN_MMH){
+        if(cbShow==null) cbShow = Math.min(r.cb_lcl ?? 300, 800);
+        if(topShow==null || topShow < cbShow+300) topShow = Math.max(cbShow+300, r.cb_top ?? CT_MAX);
+      }
+      r._cbShow = cbShow; r._topShow = topShow;
       const decks=[];
-      if(r._cbShow!=null && r._topShow!=null && r._topShow>r._cbShow)
-        decks.push([r._cbShow, Math.min(r._topShow, CT_MAX)]);
-      for(const [b,t] of pl) if(r._topShow==null || b >= r._topShow+150) decks.push([b,t]);
+      if(cbShow!=null && topShow!=null && topShow>cbShow)
+        decks.push([cbShow, Math.min(topShow, CT_MAX)]);
+      for(const [b,t] of pl) if(topShow==null || b >= topShow+150) decks.push([b,t]);
       r._decks = decks;
     }
     for(const r of ROWS){
@@ -3101,7 +3111,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v142",
+    "page v143",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
