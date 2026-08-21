@@ -1877,7 +1877,10 @@ function render(){
     // Drawn as runs rather than one rectangle per hour: 168 abutting rects at
     // fractional x leave hairline seams that read as stripes, and this bar is
     // too short to carry that much texture.
-    const state = r => !r.dew ? "none" : r.dew.frost ? "frost" : r.dew.wet ? "wet" : "dry";
+    // A raining hour reads wet (blue) whatever the water balance says: the film
+    // can evaporate below the wet threshold mid-hour, but if it is raining the
+    // ground is wet, full stop.
+    const state = r => !r.dew ? "none" : r.dew.frost ? "frost" : (r.dew.wet || r.dew.rain) ? "wet" : "dry";
     // Wet reads at full strength; dry is quieter, because "you can fly" should
     // not shout as loudly as "you cannot".
     const paint = {none:[css("--grid"),1], frost:[css("--dewfrost"),0.95],
@@ -1890,11 +1893,6 @@ function render(){
       svgEl("rect",{x,y,width:xPos(ROWS[j].ts+3600e3)-x,height:h,fill:c,opacity:o},svg);
       i=j+1;
     }
-    // A tick where the ground dries, and only a tick. The printed times had to
-    // go: on a showery week there were nine of them, they were the loudest
-    // thing on a 26 px strip, and the number is in the tooltip anyway.
-    for(const c of ROWS.filter(r=>r.dew?.cleared!=null).map(r=>r.dew.cleared))
-      svgEl("line",{x1:xPos(c),x2:xPos(c),y1:y,y2:y+h,stroke:"#fffdf4","stroke-width":1.4},svg);
     for(const d of DAYS){
       const x=xPos(FUSED[0].ts+d*86400e3);
       svgEl("line",{x1:x,x2:x,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
@@ -1920,11 +1918,6 @@ function render(){
       let j=i; while(j+1<ROWS.length && state(ROWS[j+1])===s) j++;
       const x=xPos(ROWS[i].ts), [c,o]=paint[s];
       svgEl("rect",{x,y,width:xPos(ROWS[j].ts+3600e3)-x,height:h,fill:c,opacity:o},svg);
-      // A tick where a window opens. On a marginal week the green runs are an
-      // hour or two wide and the eye needs an edge to land on; the hour itself
-      // is in the tooltip.
-      if(s==="ok" && i>0)
-        svgEl("line",{x1:x,x2:x,y1:y,y2:y+h,stroke:"#fffdf4","stroke-width":1.4},svg);
       i=j+1;
     }
     for(const d of DAYS){
@@ -3009,7 +3002,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v138",
+    "page v139",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
