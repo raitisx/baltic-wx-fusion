@@ -1783,21 +1783,43 @@ function render(){
     const bandH=44;                                   // cloudiness strips at the top
     const haveTop = FUSED.some(r=>r.cb_top!=null);    // fused deck-top line
     const haveProf = FUSED.some(r=>r.cloudProf!=null);// fused vertical profile (grey)
-    // One continuous height scale from the ground to 5 km, but NOT linear: the
+    // One continuous height scale from the ground to 3 km, but NOT linear: the
     // 0-1 km detail keeps most of the pixels (a 200 m ceiling has to stay
-    // legible) and 1-5 km is compressed above it. Everything on this panel — the
-    // grey cloud layers, the ceiling, the cloud top, fog and rain — shares it.
-    const gTop=top+bandH, y0=bot-2, H=y0-gTop, hLow=H*0.58, CT_MAX=5000;
+    // legible) and 1-3 km is compressed above it. Everything drawn on this panel
+    // shares it. Cloud above 3 km lives in the strips and in the tooltip's real
+    // cloud-top figure, which still runs to 5 km.
+    const gTop=top+bandH, y0=bot-2, H=y0-gTop, hLow=H*0.58, CT_MAX=3000;
     const yMid=y0-hLow;                               // the 1 km line
     const y=v=>{ const c=Math.max(0,Math.min(v,CT_MAX));
       return c<=1000 ? y0-(c/1000)*hLow : yMid-((c-1000)/(CT_MAX-1000))*(H-hLow); };
     const ceilY=y, ctLineY=y;                         // base and top ride the same scale
-    // Grey-layer cell edges: midpoints between the sampled levels, floored at the
-    // ground and capped at 5 km, so each level's cover paints the slab around it.
-    const LH=CTOP_LEVELS.map(([hpa,hm])=>hm);
-    const cellEdge=[0];
-    for(let k=0;k<LH.length-1;k++) cellEdge.push((LH[k]+LH[k+1])/2);
-    cellEdge.push(CT_MAX);
+    // Cloud layers, from the fused profile: the levels within the drawn range
+    // (<= 3 km) and the slab edges around them (midpoints, floored at ground,
+    // capped at 3 km). layersOf splits a profile into [base, top] decks —
+    // contiguous runs of scattered-or-more cover, one clear level bridged.
+    const GLEV=CTOP_LEVELS.filter(([hpa,hm])=>hm<=CT_MAX+200).map(([hpa,hm])=>hm);
+    const gEdge=[0];
+    for(let k=0;k<GLEV.length-1;k++) gEdge.push((GLEV[k]+GLEV[k+1])/2);
+    gEdge.push(CT_MAX);
+    const layersOf=prof=>{
+      const out=[]; let base=null, tp=null, gap=0;
+      for(let k=0;k<GLEV.length;k++){
+        if((prof[k]??0)>=CEILING_COVER){ if(base==null) base=gEdge[k]; tp=gEdge[k+1]; gap=0; }
+        else if(base!=null){ gap++; if(gap>1){ out.push([base,tp]); base=null; gap=0; } }
+      }
+      if(base!=null) out.push([base,tp]);
+      return out;
+    };
+    // Per hour: the cloud decks, and the ceiling/top to draw. The ceiling is the
+    // LCL where there is low cloud (precise near the ground) and the lowest
+    // deck's base otherwise, so an elevated deck lifts the ceiling toward 3 km
+    // instead of pegging it. The top is the fused deck top (to 5 km in the
+    // tooltip, drawn pegged at 3 km).
+    for(const r of ROWS){
+      r._layers = r.cloudProf ? layersOf(r.cloudProf) : [];
+      r._cbShow = r.cb!=null ? r.cb : (r._layers.length ? r._layers[0][0] : null);
+      r._topShow = r.cb_top!=null ? r.cb_top : (r._layers.length ? r._layers[0][1] : null);
+    }
     for(const r of ROWS){
       if(r.hourOfDay%6!==0) continue;
       svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
@@ -1808,7 +1830,7 @@ function render(){
       const xe=xPos(FUSED[0].ts+(d+1)*86400e3);   // closing edge of the last/zoomed day
       if(xe<=P.width-P.right+0.5) svgEl("line",{x1:xe,x2:xe,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
     }
-    for(const tv of [0,300,500,750,1000,2000,3000,4000,5000]){
+    for(const tv of [0,300,500,750,1000,2000,3000]){
       // The 1 km line is the scale's kink, so draw it a touch stronger.
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),
         stroke:tv===1000?css("--gridday"):css("--grid"),"stroke-width":1},svg);
@@ -1843,32 +1865,49 @@ function render(){
           fill:css("--cloud"),"fill-opacity":(0.08+0.72*cov/100).toFixed(2)},svg);
       }
     }
-    // Grey cloud layers at true height: shade each level's slab by the fused
-    // cover there, so two decks with clear air between them read as two grey
-    // bands with a gap. Semi-transparent, so the ceiling and top lines show
-    // through. Drawn under those lines and the rain shafts.
+    // Grey cloud layers as filled polygons: each deck is tracked across the
+    // hours (matched by height overlap) into a band, then filled between its
+    // base and top. Two decks with clear air between read as two grey shapes
+    // with a gap. Semi-transparent, drawn under the ceiling/top lines and the
+    // rain shafts. Hour centres carry the outline; the ends stretch half an
+    // hour so a lone hour still paints a slab.
     if(haveProf){
+      const halfW=(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))/2;
+      let active=[]; const done=[];              // each track is a list of [x, base, top]
       for(const r of ROWS){
-        if(r.cloudProf==null) continue;
-        const x=xPos(r.ts), w=xPos(r.ts+3600e3)-x;
-        for(let k=0;k<LH.length;k++){
-          const cov=r.cloudProf[k];
-          if(cov==null || cov<8) continue;            // clearish → leave the ground showing
-          const yt=y(cellEdge[k+1]), yb=y(cellEdge[k]);
-          svgEl("rect",{x:x+0.2,y:yt,width:w-0.4,height:yb-yt,
-            fill:"#555b64","fill-opacity":(cov/100*0.5).toFixed(2)},svg);
+        const xc=xPos(r.ts+1800e3), ls=r._layers;
+        const used=new Array(ls.length).fill(false), cont=[];
+        for(const tr of active){
+          const last=tr[tr.length-1]; let bi=-1;
+          for(let li=0;li<ls.length;li++){ if(used[li]) continue;
+            if(ls[li][1]>last[1] && ls[li][0]<last[2]){ bi=li; break; } }   // height overlap
+          if(bi>=0){ used[bi]=true; tr.push([xc,ls[bi][0],ls[bi][1]]); cont.push(tr); }
+          else done.push(tr);
         }
+        for(let li=0;li<ls.length;li++) if(!used[li]) cont.push([[xc,ls[li][0],ls[li][1]]]);
+        active=cont;
+      }
+      done.push(...active);
+      for(const tr of done){
+        if(!tr.length) continue;
+        const x0e=tr[0][0]-halfW, x1e=tr[tr.length-1][0]+halfW;
+        let d="M"+x0e.toFixed(1)+" "+y(tr[0][2]).toFixed(1);            // top edge, L→R
+        for(const p of tr) d+=" L"+p[0].toFixed(1)+" "+y(p[2]).toFixed(1);
+        d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][2]).toFixed(1);
+        d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][1]).toFixed(1);    // base edge, R→L
+        for(let i=tr.length-1;i>=0;i--) d+=" L"+tr[i][0].toFixed(1)+" "+y(tr[i][1]).toFixed(1);
+        d+=" L"+x0e.toFixed(1)+" "+y(tr[0][1]).toFixed(1)+" Z";
+        svgEl("path",{d,fill:"#555b64","fill-opacity":.34,stroke:"none"},svg);
       }
     }
-    // A missing ceiling is drawn at the 1 km line rather than as a gap:
-    // "nothing below a kilometre" is information, not absence of it. A real base
-    // keeps its height and rides up into the 1-3 km band when it is that high.
-    const rows=ROWS.map(r=>({ts:r.ts, cb:r.cb!=null ? r.cb : (r.t2m!=null?1001:null)}));
+    // The ceiling line: the cloud base to draw each hour — the LCL where there
+    // is low cloud (precise near the ground), else the lowest deck's base, so an
+    // elevated deck lifts the line toward 3 km. A gap where there is no cloud in
+    // range; the grey below already says where the deck is.
     let d="",pen=false;
-    for(const r of rows){
-      if(r.cb==null){pen=false;continue;}
-      const yy=ceilY(r.cb);
-      d+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+yy.toFixed(1)+" ";
+    for(const r of ROWS){
+      if(r._cbShow==null){pen=false;continue;}
+      d+=(pen?"L":"M")+xPos(r.ts+1800e3).toFixed(1)+" "+y(r._cbShow).toFixed(1)+" ";
       pen=true;
     }
     // Rain shafts: a dashed line from the cloud base down to the deck for every
@@ -1884,9 +1923,9 @@ function render(){
       // so an uncertain hour is faint and a wet, agreed one is bold.
       const pr=r.prcp_1h ?? 0;
       if(pr<LIDAR_RAIN_MMH) continue;
-      const base=rows[i].cb;
+      const base=r._cbShow;
       if(base==null) continue;
-      const yTop=ceilY(base);
+      const yTop=y(base);
       const op=(0.4+0.55*(r.prcp_prob??1)).toFixed(2);
       svgEl("line",{x1:xPos(r.ts+1800e3),x2:xPos(r.ts+1800e3),y1:yTop,y2:y0,
                     stroke:css("--rainshaft"),"stroke-width":1.6,
@@ -1894,12 +1933,13 @@ function render(){
     }
     svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
     // Cloud-top line (indigo) for the lowest deck, over the grey layers and the
-    // ceiling trace. Same 0-5 km scale; a top above 5 km sits on the ceiling.
-    if(haveTop){
+    // ceiling trace. Drawn on the 0-3 km scale (a higher top pegs at 3 km); the
+    // tooltip carries the real figure to 5 km.
+    {
       let dt="",pen=false;
       for(const r of ROWS){
-        if(r.cb_top==null){pen=false;continue;}
-        dt+=(pen?"L":"M")+xPos(r.ts).toFixed(1)+" "+ctLineY(r.cb_top).toFixed(1)+" ";
+        if(r._topShow==null){pen=false;continue;}
+        dt+=(pen?"L":"M")+xPos(r.ts+1800e3).toFixed(1)+" "+y(r._topShow).toFixed(1)+" ";
         pen=true;
       }
       if(dt) svgEl("path",{d:dt,fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
@@ -3051,7 +3091,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v140",
+    "page v141",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
