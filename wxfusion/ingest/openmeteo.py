@@ -195,7 +195,7 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                     if arr:
                         ctop_levels[lv] = arr
             for i, valid in enumerate(times):
-                t2m = td2m = cc_low = rh = None
+                t2m = td2m = cc_low = cc_mid = cc_high = rh = None
                 for param, arr in series.items():
                     v = arr[i] if i < len(arr) else None
                     if v is None:
@@ -209,8 +209,13 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                         td2m = float(v)
                     elif param == "cc_low":
                         cc_low = float(v)
+                    elif param == "cc_mid":
+                        cc_mid = float(v)
+                    elif param == "cc_high":
+                        cc_high = float(v)
                     elif param == "rh":
                         rh = float(v)
+                have_ceiling = False
                 if t2m is not None and td2m is not None:
                     lcl = lcl_height(t2m, td2m)
                     # Raw LCL, kept as a diagnostic.
@@ -226,21 +231,29 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                     # ceiling below ~1 km, not missing data.
                     fog = ((rh is not None and rh >= FOG_RH)
                            or (t2m - td2m) <= FOG_DEWPOINT_DEP)
-                    if (cc_low is not None and cc_low >= CEILING_COVER) or fog:
+                    have_ceiling = (cc_low is not None and cc_low >= CEILING_COVER) or fog
+                    if have_ceiling:
                         rows.append(
                             (our_model, run_time, valid, point["point_id"], "cb", lcl)
                         )
                 # Cloud top of the lowest deck (m AMSL), for the meteogram's top
-                # line. Emitted independently of the ceiling; the page fuses it
-                # across models and keeps it consistent with the fused base.
-                if ctop_levels:
-                    cover = {lv: (arr[i] if i < len(arr) else None)
-                             for lv, arr in ctop_levels.items()}
-                    ct = low_deck_top(cover)
-                    if ct is not None:
-                        rows.append(
-                            (our_model, run_time, valid, point["point_id"], "cb_top", float(ct))
-                        )
+                # line. The page fuses it across models and keeps it consistent
+                # with the fused base. Prefer the real deck from the pressure
+                # profile; but Open-Meteo's aggregate cc_low and its
+                # pressure-level cloud_cover disagree for some models (ICON most
+                # often), so where there is a ceiling but the profile shows no
+                # deck, fall back to the low band's top — pegged up if there is
+                # mid/high cloud above it — rather than leave a base with no top.
+                ct = low_deck_top({lv: (arr[i] if i < len(arr) else None)
+                                   for lv, arr in ctop_levels.items()}) if ctop_levels else None
+                if ct is None and have_ceiling:
+                    hi = ((cc_mid is not None and cc_mid >= CEILING_COVER)
+                          or (cc_high is not None and cc_high >= CEILING_COVER))
+                    ct = 3012.0 if hi else 1949.0     # 700 hPa vs 800 hPa (low-band top)
+                if ct is not None:
+                    rows.append(
+                        (our_model, run_time, valid, point["point_id"], "cb_top", float(ct))
+                    )
     # Open-Meteo's free tier rate-limits per minute, and one pass is ~338
     # points x 5 models. Firing that as a few back-to-back requests bursts past
     # the limit and the whole batch comes back 429 (which is what broke the
