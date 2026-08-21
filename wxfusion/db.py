@@ -126,7 +126,7 @@ def prune_observations(conn: psycopg.Connection, keep_days: int, archived_days) 
 
 FORECAST_PARAMS = [
     "t2m", "td2m", "rh", "ws10m", "wg10m", "wdir", "prcp_1h", "pres_msl",
-    "cc_low", "cc_mid", "cc_high", "cc_total", "cb_lcl", "cb", "vis",
+    "cc_low", "cc_mid", "cc_high", "cc_total", "cb_lcl", "cb", "cb_top", "vis",
 ]
 _FH_COLS = ", ".join(FORECAST_PARAMS)
 _FH_PLACEHOLDERS = ", ".join(["%s"] * (4 + len(FORECAST_PARAMS)))
