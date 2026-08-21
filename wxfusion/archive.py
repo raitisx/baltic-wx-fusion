@@ -27,7 +27,8 @@ log = logging.getLogger(__name__)
 
 PARAMS = [
     "t2m", "td2m", "rh", "ws10m", "wg10m", "wdir", "prcp_1h", "pres_msl",
-    "cc_low", "cc_mid", "cc_high", "cc_total", "cb_lcl", "cb", "cb_top", "vis",
+    "cc_low", "cc_mid", "cc_high", "cc_total", "cb_lcl", "cb", "cb_top",
+    "cloud_profile", "vis",
 ]
 
 # Observations carry a different set: no split cloud layers, but visibility,
