@@ -110,6 +110,46 @@ def lcl_height(t2m: float, td2m: float) -> float:
     return max(0.0, 125.0 * (t2m - td2m))
 
 
+# Cloud TOP — the height of the lowest cloudy deck, for the meteogram's top
+# line. Derived from the pressure-level cloud-cover profile so it is a
+# multi-model quantity, fused the same way the ceiling (cb) is, instead of the
+# single-model MEPS field it replaces (which went blank whenever MEPS was the
+# dry model while the fused base showed cloud). Standard-atmosphere geopotential
+# heights (m AMSL) stand in for Open-Meteo's own geopotential_height — they
+# agree to a few metres over the Baltic lowland, and skipping that field halves
+# the request weight this adds. Levels stop at 700 hPa (~3 km): the meteogram's
+# cloud-top band caps there, so a deck reaching 700 hPa already pegs at the top.
+# Six levels, not the full sounding: 900-700 hPa span the 1-3 km band and
+# 1000/950 catch a low deck dropping below it, while 975/925 are close enough to
+# their neighbours to skip. Keeps the extra request weight this adds to ~45%.
+CTOP_LEVEL_M = {1000: 111, 950: 540, 900: 988, 850: 1457, 800: 1949, 700: 3012}
+CTOP_VARS = [f"cloud_cover_{L}hPa" for L in sorted(CTOP_LEVEL_M)]
+
+
+def low_deck_top(cover_by_level: dict) -> float | None:
+    """Top height (m AMSL) of the lowest cloudy deck, or None if there is none.
+
+    Walks the profile from the ground up; the first contiguous run of levels
+    with cloud cover >= CEILING_COVER (one clear level tolerated as a bridge)
+    is the low deck, and the highest cloudy level in it is the top. Same cover
+    threshold as the ceiling, so a top exists on the footing the base does."""
+    prof = sorted((CTOP_LEVEL_M[L], c) for L, c in cover_by_level.items()
+                  if L in CTOP_LEVEL_M)
+    base = top = None
+    gap = 0
+    for hgt, cov in prof:
+        if cov is not None and cov >= CEILING_COVER:
+            if base is None:
+                base = hgt
+            top = hgt
+            gap = 0
+        elif base is not None:
+            gap += 1
+            if gap > 1:      # two clear levels end the deck; one is bridged
+                break
+    return top
+
+
 def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
     """points: dicts with point_id/lat/lon. Returns wx.forecasts rows.
 
@@ -120,6 +160,10 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
     """
     if not points:
         return []
+    # The station set (default) also derives the cloud-top line from the
+    # pressure-level cloud-cover profile; the map grid (MAP_HOURLY_VARS) does
+    # not draw a top, so it skips the extra levels and keeps its lean weight.
+    want_ctop = hourly_vars is None
     hourly_vars = hourly_vars or HOURLY_VARS
     fetched_at = dt.datetime.now(dt.timezone.utc)
     s = session()
@@ -140,6 +184,16 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                 arr = hourly.get(f"{om_var}_{om_model}") or hourly.get(om_var)
                 if arr:
                     series[param] = arr
+            # Pressure-level cloud cover for the cloud-top line (station set
+            # only). Kept apart from `series` because it is not emitted raw —
+            # only the derived cb_top is — so it never becomes a stored param.
+            ctop_levels: dict[int, list] = {}
+            if want_ctop:
+                for lv in CTOP_LEVEL_M:
+                    arr = (hourly.get(f"cloud_cover_{lv}hPa_{om_model}")
+                           or hourly.get(f"cloud_cover_{lv}hPa"))
+                    if arr:
+                        ctop_levels[lv] = arr
             for i, valid in enumerate(times):
                 t2m = td2m = cc_low = rh = None
                 for param, arr in series.items():
@@ -176,6 +230,17 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                         rows.append(
                             (our_model, run_time, valid, point["point_id"], "cb", lcl)
                         )
+                # Cloud top of the lowest deck (m AMSL), for the meteogram's top
+                # line. Emitted independently of the ceiling; the page fuses it
+                # across models and keeps it consistent with the fused base.
+                if ctop_levels:
+                    cover = {lv: (arr[i] if i < len(arr) else None)
+                             for lv, arr in ctop_levels.items()}
+                    ct = low_deck_top(cover)
+                    if ct is not None:
+                        rows.append(
+                            (our_model, run_time, valid, point["point_id"], "cb_top", float(ct))
+                        )
     # Open-Meteo's free tier rate-limits per minute, and one pass is ~338
     # points x 5 models. Firing that as a few back-to-back requests bursts past
     # the limit and the whole batch comes back 429 (which is what broke the
@@ -202,7 +267,8 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                 params={
                     "latitude": lat,
                     "longitude": lon,
-                    "hourly": ",".join(hourly_vars),
+                    "hourly": ",".join(list(hourly_vars)
+                                       + (CTOP_VARS if want_ctop else [])),
                     "models": ",".join(config.OPENMETEO_MODELS.values()),
                     "forecast_days": config.FORECAST_DAYS,
                     "windspeed_unit": "ms",

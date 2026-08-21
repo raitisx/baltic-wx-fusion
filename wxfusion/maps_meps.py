@@ -395,95 +395,6 @@ def _archive_fog_cells(s3, run_tag, hours_out, out):
     log.info("fog archive: %d valid-hours retained", len(hours))
 
 
-CLOUD_TOP_CELL_KEY = "maps/meps/cloud_top_cells.json"
-CLOUD_TOP_CELL_ARCHIVE_KEY = "maps/meps/cloud_top_cells_archive.json"
-
-
-def write_cloud_top_cells(s3, run_tag, hours_out, ctop, latw, lonw):
-    """Sample MEPS cloud_top_altitude onto the page's 25 km cell lattice.
-
-    Same nearest-point-per-cell rule and lattice as write_fog_cells, so the page
-    reads a per-cell cloud-top series for the selected cell and draws it as a
-    line on the meteogram. Stored in hundreds of metres (clear cells omitted)."""
-    if ctop is None or not hours_out:
-        return
-    try:
-        clat, clon = _cell_centres_latlon()
-        flat_lat = latw.ravel()
-        flat_lon = lonw.ravel()
-        cl = clat.ravel()
-        co = clon.ravel()
-        idx = np.empty(cl.size, dtype=np.int64)
-        for a in range(0, cl.size, 64):
-            b = min(a + 64, cl.size)
-            d = ((flat_lat[None, :] - cl[a:b, None]) * 111.0) ** 2 \
-                + ((flat_lon[None, :] - co[a:b, None])
-                   * 111.0 * np.cos(np.radians(cl[a:b, None]))) ** 2
-            idx[a:b] = np.argmin(d, axis=1)
-        out = {}
-        for h in range(min(len(hours_out), ctop.shape[0])):
-            ch = np.asarray(ctop[h], dtype=float).ravel()[idx]
-            hm = np.where(np.isfinite(ch) & (ch > 0) & (ch < 20000), ch, np.nan)
-            hit = np.flatnonzero(np.isfinite(hm))
-            if not hit.size:
-                continue
-            vals = np.clip(np.rint(hm[hit] / 100.0), 1, 655).astype(int)  # hundreds of m
-            out[str(h)] = {str(int(c)): int(v) for c, v in zip(hit, vals)}
-        body = {"run": run_tag, "hours": hours_out,
-                "nx": FOG_CELL_NX, "ny": FOG_CELL_NY,
-                "x0": FOG_CELL_X0, "y0": FOG_CELL_Y0, "cell": FOG_CELL_M,
-                "top_step_m": 100, "top": out,
-                "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-        s3.put_object(Bucket=config.R2_BUCKET, Key=CLOUD_TOP_CELL_KEY,
-                      Body=json.dumps(body).encode(),
-                      ContentType="application/json",
-                      CacheControl="public, max-age=300")
-        log.info("cloud-top cells: %d of %d hours have a top somewhere",
-                 len(out), len(hours_out))
-        try:
-            _archive_cloud_top_cells(s3, run_tag, hours_out, out)
-        except Exception:
-            log.exception("cloud-top archive: not updated")   # live file already written
-    except Exception:      # never fail a map run over the side channel
-        log.exception("cloud-top cells: not written")
-
-
-def _archive_cloud_top_cells(s3, run_tag, hours_out, out):
-    """Fold this run's cloud-top hours into the rolling per-hour archive.
-
-    Same rule as _archive_fog_cells: keyed by valid-hour (YYYYMMDDTHH), a later
-    run overwriting an hour it still forecasts so each hour carries its freshest
-    run, and hours past the frame window are dropped. This is what makes the
-    meteogram's cloud-top line continuous across the past — MEPS only forecasts
-    forward, so without it the line is blank on every hour the axis has moved
-    past. Written whole each pass; stays small because clear cells are omitted.
-    """
-    try:
-        prev = json.loads(s3.get_object(
-            Bucket=config.R2_BUCKET, Key=CLOUD_TOP_CELL_ARCHIVE_KEY)["Body"].read())
-        hours = prev.get("hours", {}) if isinstance(prev, dict) else {}
-    except Exception:
-        hours = {}   # first run, or unreadable — start clean
-
-    for h_str, cells in out.items():
-        vtag = hours_out[int(h_str)][:13].replace("-", "")   # 2026-08-08T07 -> 20260808T07
-        hours[vtag] = {"run": run_tag, "top": cells}
-
-    cutoff = (dt.datetime.now(dt.timezone.utc)
-              - dt.timedelta(days=FOG_ARCHIVE_KEEP_DAYS)).strftime("%Y%m%dT%H")
-    hours = {k: v for k, v in hours.items() if k >= cutoff}
-
-    body = {"nx": FOG_CELL_NX, "ny": FOG_CELL_NY,
-            "x0": FOG_CELL_X0, "y0": FOG_CELL_Y0, "cell": FOG_CELL_M,
-            "top_step_m": 100, "hours": hours,
-            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-    s3.put_object(Bucket=config.R2_BUCKET, Key=CLOUD_TOP_CELL_ARCHIVE_KEY,
-                  Body=json.dumps(body).encode(),
-                  ContentType="application/json",
-                  CacheControl="public, max-age=300")
-    log.info("cloud-top archive: %d valid-hours retained", len(hours))
-
-
 def _gate_ceiling(cb, lcc, fog, vis=None):
     """Cloud base -> aviation ceiling, plus a separate fog mask.
 
@@ -820,14 +731,6 @@ def render_run(max_hours: int = 66) -> None:
     n = min(len(times), max_hours + 1)
     log.info("fetching %d steps, window %dx%d", n, y1 - y0 + 1, x1 - x0 + 1)
     cb = np.array(ds.variables["cloud_base_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1])
-    # Cloud TOP for the meteogram's cloud-top line (a side channel, not drawn on
-    # the map). Direct MEPS field, above MSL; clear sky comes back as the ~1e30
-    # fill, masked when sampled.
-    try:
-        ctop = np.array(ds.variables["cloud_top_altitude"][:n, 0, y0:y1 + 1, x0:x1 + 1], dtype=float)
-    except Exception:
-        ctop = None
-        log.warning("no cloud_top_altitude in this MEPS run")
     acc = np.array(ds.variables["precipitation_amount_acc"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     lcc = np.array(ds.variables["low_type_cloud_area_fraction"][:n, 0, y0:y1 + 1, x0:x1 + 1])
     # Grey wash = low + medium cloud only, combined under random overlap
@@ -950,7 +853,6 @@ def render_run(max_hours: int = 66) -> None:
             log.info("rendered %d/%d hours", i, n - 1)
 
     write_fog_cells(s3, run_tag, hours_out, fogm, vis, latw, lonw)
-    write_cloud_top_cells(s3, run_tag, hours_out, ctop, latw, lonw)
 
     manifest = {
         "run": run_tag,

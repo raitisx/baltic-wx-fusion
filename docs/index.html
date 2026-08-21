@@ -578,10 +578,25 @@ const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m
   wind_speed_80m:"ws80m", wind_speed_120m:"ws120m", wind_speed_180m:"ws180m",
   wind_direction_80m:"wdir80", wind_direction_120m:"wdir120",
   wind_direction_180m:"wdir180"};
+// Pressure-level cloud cover for the fused cloud-top line — same levels and
+// standard-atmosphere heights (m AMSL) the ingest uses, see
+// wxfusion/ingest/openmeteo.py. Stops at 700 hPa (~3 km): the band caps there.
+const CTOP_LEVELS=[[1000,111],[950,540],[900,988],[850,1457],[800,1949],[700,3012]];
+const CTOP_VARS=CTOP_LEVELS.map(([hpa])=>`cloud_cover_${hpa}hPa`);
+// Top of the lowest cloudy deck (m AMSL) from a [height,cover] profile, or null
+// — the client twin of low_deck_top() in the ingest.
+function lowDeckTop(cover){
+  let base=null, top=null, gap=0;
+  for(const [h,c] of cover){
+    if(c!=null && c>=CEILING_COVER){ if(base==null) base=h; top=h; gap=0; }
+    else if(base!=null){ gap++; if(gap>1) break; }
+  }
+  return top;
+}
 async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
   u.searchParams.set("latitude", lat); u.searchParams.set("longitude", lon);
-  u.searchParams.set("hourly", Object.keys(OM_VARS).join(","));
+  u.searchParams.set("hourly", Object.keys(OM_VARS).concat(CTOP_VARS).join(","));
   u.searchParams.set("models", Object.values(OM_MODELS).join(","));
   // Both windows follow the week being looked at rather than sitting at a
   // fixed seven. The old pair — forecast 7, past capped at 7 — could not cover
@@ -604,6 +619,11 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
       const arr = hourly[`${omv}_${om}`] || hourly[omv];
       if(arr) series[p]=arr;
     }
+    const plev=[];
+    for(const [hpa,hm] of CTOP_LEVELS){
+      const arr = hourly[`cloud_cover_${hpa}hPa_${om}`] || hourly[`cloud_cover_${hpa}hPa`];
+      if(arr) plev.push([hm,arr]);
+    }
     for(let i=0;i<(hourly.time||[]).length;i++){
       const t = hourly.time[i]+":00+00:00";
       let t2m=null, td2m=null, ccLow=null;
@@ -620,6 +640,11 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
         // ceiling where the model also has broken-or-more low cloud.
         if(ccLow!=null && ccLow>=CEILING_COVER)
           out.push({m:our, run:run.toISOString(), t, p:"cb", v:lcl});
+      }
+      // Cloud top of the lowest deck, same derivation as the ingest.
+      if(plev.length){
+        const ct=lowDeckTop(plev.map(([hm,arr])=>[hm,arr[i]]));
+        if(ct!=null) out.push({m:our, run:run.toISOString(), t, p:"cb_top", v:ct});
       }
     }
   }
@@ -656,7 +681,7 @@ const MAP_FOG_MIN_I = 0.55;
 const FRAME_DAYS=21;   // matches FRAME_KEEP_DAYS on both writers
 const CEILING_COVER=38;   // scattered (3 oktas) — we won't fly through it either
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
-  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","vis",
+  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","cb_top","vis",
   "ws80m","ws120m","ws180m","wdir80","wdir120","wdir180"];
 function expandWide(rows){
   const out=[];
@@ -719,7 +744,7 @@ function fuse(){
   for(let h=0; h<HOURS; h++){
     const ts = t0 + h*3600e3;
     const row = {ts, hourOfDay: rigaHour(new Date(ts))};
-    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","pres_msl","vis","ws80m","ws120m","ws180m"]){
+    for(const p of ["t2m","td2m","rh","prcp_1h","ws10m","wg10m","cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","cb_top","pres_msl","vis","ws80m","ws120m","ws180m"]){
       const per = (idx[p]||{})[ts] || {};
       const vals = MODELS.map(m=>per[m] ?? null);
       const ws = MODELS.map(m=>{
@@ -787,6 +812,11 @@ function fuse(){
       row.cb = wmean(withC.map(x=>x.ceil), withC.map(x=>x.w));
       row.cb_sd = wstd(withC.map(x=>x.ceil), row.cb);
     }
+    // Cloud top (fused above, from the pressure-level decks) only means
+    // something over a ceiling, so it lives and dies with the base: no ceiling,
+    // no top; and a top can never sit below the base it caps.
+    if(row.cb==null) row.cb_top=null;
+    else if(row.cb_top!=null) row.cb_top=Math.max(row.cb_top, row.cb);
     // Fog: any model saturated at the surface. Not a vote — the low-cloud
     // fraction cannot express fog (MEPS had RH 100%, T = Td, and cc_low 0 at
     // the cell that started this), so a single model reporting it is worth
@@ -814,7 +844,6 @@ function fuse(){
   }
   shiftPrecipToHourStart();
   applyMapFog();         // before the dew: fog keeps the ground wet
-  applyCloudTop();       // MEPS cloud-top sampled at the cell, for the top line
   computeDew();          // needs the rain already stamped to the hour it falls
 }
 
@@ -908,42 +937,6 @@ function applyMapFog(){
     r.fog_i = Math.max(byVis, MAP_FOG_MIN_I);
   }
   return n>0;
-}
-
-// MEPS cloud TOP for the selected cell, off the same 25 km lattice as the fog
-// side-channel. Values are hundreds of metres above MSL. The live file carries
-// the current run's forecast hours; the archive carries the freshest run per
-// past valid-hour, so the top line stays continuous back across the window and
-// only goes blank beyond MEPS's forward reach, where no model has a top.
-function applyCloudTop(){
-  for(const r of FUSED) r.cb_top=null;
-  const ct=MV.loaded?.cloudTop;          // latest run: current + future hours
-  const cta=MV.loaded?.cloudTopArchive;  // freshest run per past valid-hour
-  const geo=(ct&&ct.top)?ct:((cta&&cta.hours)?cta:null);
-  if(!geo || !FUSED.length || typeof proj4==="undefined") return;
-  const ll=(typeof activeLatLon==="function") ? activeLatLon() : null;
-  if(!ll || ll.lat==null) return;
-  const [x,y]=proj4("EPSG:4326","EPSG:3059",[ll.lon,ll.lat]);
-  const cx=Math.floor((x-geo.x0)/geo.cell), cy=Math.floor((y-geo.y0)/geo.cell);
-  if(cx<0||cy<0||cx>=geo.nx||cy>=geo.ny) return;
-  const cis=String(cy*geo.nx+cx), step=(ct?.top_step_m || cta?.top_step_m || 100);
-  const haveLive=!!(ct && ct.top), haveArch=!!(cta && cta.hours);
-  const hourOf={}; if(haveLive) (ct.hours||[]).forEach((iso,h)=>{ hourOf[Date.parse(iso)]=h; });
-  for(const r of FUSED){
-    // The live file for the hours it still reaches; the per-hour archive for a
-    // date the axis has moved past — same rule the fog side-channel uses, so
-    // the top line stays continuous across the past instead of blanking out.
-    let v;
-    const h=haveLive ? hourOf[r.ts] : undefined;
-    if(h!=null){
-      const cell=ct.top[String(h)];
-      v = cell ? cell[cis] : undefined;
-    }else if(haveArch){
-      const rec=cta.hours[vtagOf(new Date(r.ts).toISOString())];
-      v = rec && rec.top ? rec.top[cis] : undefined;
-    }
-    if(v!=null) r.cb_top=v*step;   // metres above MSL
-  }
 }
 
 // Every precipitation number we receive — Open-Meteo's, the stations', and the
@@ -1738,7 +1731,7 @@ function render(){
     // A thin cloud-TOP band between the cloudiness strips and the 0-1 km ceiling
     // detail: the MEPS cloud-top line on a compressed 1-3 km scale. Reserved only
     // when the side-channel is loaded, so the panel is unchanged without it.
-    const haveTop = !!(MV.loaded && (MV.loaded.cloudTop || MV.loaded.cloudTopArchive));
+    const haveTop = FUSED.some(r=>r.cb_top!=null);   // fused pressure-level deck top
     // Band height = half the ceiling graph, i.e. the same pixels as 0->500 m of
     // cloud base. The space under the cloudiness band splits 1:2 (band : detail),
     // so the band equals half of the 0-1000 m detail region.
@@ -2062,7 +2055,7 @@ function render(){
         + (wzLevel()>10 ? " (from the 10 m gust)"
                         : (r.wg10m_sd!=null?` ±${f(r.wg10m_sd)}`:""))],
       ["--cloud","ceiling",(r.cb!=null?Math.round(r.cb)+" m":"none <1 km")+(r.cb_sd!=null?` ±${Math.round(r.cb_sd)}`:"")+(r.cb_agree!=null?` · ${Math.round(r.cb_agree*100)}% of models`:"")],
-      ...(r.cb_top!=null?[["--cloud","cloud top",`${(r.cb_top/1000).toFixed(1)} km · MEPS`]]:[]),
+      ...(r.cb_top!=null?[["--cloud","cloud top",`${(r.cb_top/1000).toFixed(1)} km`+(r.cb_top_sd!=null?` ±${Math.round(r.cb_top_sd)}`:"")]]:[]),
       ["--cloud","cover L/M/H",`${Math.round(r.cc_low??0)}/${Math.round(r.cc_mid??0)}/${Math.round(r.cc_high??0)} %`],
       ...(r.dew?[[r.dew.frost?"--dewfrost":r.dew.wet?"--dewwet":"--dewdry",
         r.dew.frost?"frost":r.dew.wet?(r.dew.fromRain?"wet (rain)":"dew"):"ground dry",
@@ -2605,8 +2598,6 @@ const MAP_MANIFESTS={
   fused:"maps/fused/latest.json", fusedArchive:"maps/fused/archive.json",
   fogCells:"maps/meps/fog_cells.json",
   fogCellsArchive:"maps/meps/fog_cells_archive.json",
-  cloudTop:"maps/meps/cloud_top_cells.json",
-  cloudTopArchive:"maps/meps/cloud_top_cells_archive.json",
 };
 function vq(man){ return "?v="+encodeURIComponent(man?.generated_at || man?.run || "0"); }
 const MV={loaded:{}, hours:[], idx:0, playing:null};
@@ -3009,7 +3000,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v135",
+    "page v136",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
