@@ -626,26 +626,31 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
     }
     for(let i=0;i<(hourly.time||[]).length;i++){
       const t = hourly.time[i]+":00+00:00";
-      let t2m=null, td2m=null, ccLow=null;
+      let t2m=null, td2m=null, ccLow=null, ccMid=null, ccHigh=null;
       for(const [p,arr] of Object.entries(series)){
         const v=arr[i];
         if(v==null) continue;
         out.push({m:our, run:run.toISOString(), t, p, v});
-        if(p==="t2m") t2m=v; else if(p==="td2m") td2m=v; else if(p==="cc_low") ccLow=v;
+        if(p==="t2m") t2m=v; else if(p==="td2m") td2m=v;
+        else if(p==="cc_low") ccLow=v; else if(p==="cc_mid") ccMid=v; else if(p==="cc_high") ccHigh=v;
       }
+      let haveCeil=false;
       if(t2m!=null && td2m!=null){
         const lcl=Math.max(0,125*(t2m-td2m));
         out.push({m:our, run:run.toISOString(), t, p:"cb_lcl", v:lcl});
         // Same ceiling rule as the server ingest: an LCL only counts as a
         // ceiling where the model also has broken-or-more low cloud.
-        if(ccLow!=null && ccLow>=CEILING_COVER)
+        haveCeil = ccLow!=null && ccLow>=CEILING_COVER;
+        if(haveCeil)
           out.push({m:our, run:run.toISOString(), t, p:"cb", v:lcl});
       }
-      // Cloud top of the lowest deck, same derivation as the ingest.
-      if(plev.length){
-        const ct=lowDeckTop(plev.map(([hm,arr])=>[hm,arr[i]]));
-        if(ct!=null) out.push({m:our, run:run.toISOString(), t, p:"cb_top", v:ct});
-      }
+      // Cloud top of the lowest deck, same derivation and fallback as the
+      // ingest: prefer the pressure profile, else the low-band top over a
+      // ceiling (pegged up if mid/high cloud sits above).
+      let ct = plev.length ? lowDeckTop(plev.map(([hm,arr])=>[hm,arr[i]])) : null;
+      if(ct==null && haveCeil)
+        ct = ((ccMid!=null&&ccMid>=CEILING_COVER)||(ccHigh!=null&&ccHigh>=CEILING_COVER)) ? 3012 : 1949;
+      if(ct!=null) out.push({m:our, run:run.toISOString(), t, p:"cb_top", v:ct});
     }
   }
   return out;
@@ -3000,7 +3005,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v136",
+    "page v137",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
