@@ -581,8 +581,11 @@ const OM_VARS = {temperature_2m:"t2m", dew_point_2m:"td2m", relative_humidity_2m
 // Pressure-level cloud cover for the fused cloud-top line — same levels and
 // standard-atmosphere heights (m AMSL) the ingest uses, see
 // wxfusion/ingest/openmeteo.py. Stops at 700 hPa (~3 km): the band caps there.
+// Eight pressure levels, surface to 500 hPa (~5 km), as [hPa, height m AMSL].
+// The cloud view is capped at 5 km, so this is the whole of it. Order (low→high)
+// is the packing order shared with the ingest — do not reorder.
 const CTOP_LEVELS=[[1000,111],[950,540],[900,988],[850,1457],[800,1949],[700,3012],
-  [600,4206],[500,5574],[400,7185],[300,9164]];
+  [600,4206],[500,5574]];
 const CTOP_VARS=CTOP_LEVELS.map(([hpa])=>`cloud_cover_${hpa}hPa`);
 // Top of the lowest cloudy deck (m AMSL) from a [height,cover] profile, or null
 // — the client twin of low_deck_top() in the ingest.
@@ -593,6 +596,24 @@ function lowDeckTop(cover){
     else if(base!=null){ gap++; if(gap>1) break; }
   }
   return top;
+}
+// The vertical cloud profile packed into one number (a nibble per level, cover
+// quantised 0-15, surface in the lowest nibble) — the twins of pack_profile in
+// the ingest, so the packed value crosses the pipeline unchanged.
+function packProfile(coverByHpa){
+  let v=0;
+  CTOP_LEVELS.forEach(([hpa],i)=>{
+    const c=coverByHpa[hpa];
+    const q=c==null?0:Math.max(0,Math.min(15,Math.round(c/100*15)));
+    v+=q*Math.pow(16,i);
+  });
+  return v;
+}
+// -> array of eight covers (0-100), low→high, matching CTOP_LEVELS.
+function unpackProfile(v){
+  const out=[];
+  for(let i=0;i<CTOP_LEVELS.length;i++) out.push((Math.floor(v/Math.pow(16,i))%16)/15*100);
+  return out;
 }
 async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
   const u = new URL("https://api.open-meteo.com/v1/forecast");
@@ -623,7 +644,7 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
     const plev=[];
     for(const [hpa,hm] of CTOP_LEVELS){
       const arr = hourly[`cloud_cover_${hpa}hPa_${om}`] || hourly[`cloud_cover_${hpa}hPa`];
-      if(arr) plev.push([hm,arr]);
+      if(arr) plev.push([hpa,hm,arr]);
     }
     for(let i=0;i<(hourly.time||[]).length;i++){
       const t = hourly.time[i]+":00+00:00";
@@ -647,11 +668,17 @@ async function fetchOpenMeteoDirect(lat, lon, pastDays, fcDays){
       }
       // Cloud top of the lowest deck, same derivation and fallback as the
       // ingest: prefer the pressure profile, else the low-band top over a
-      // ceiling (pegged up if mid/high cloud sits above).
-      let ct = plev.length ? lowDeckTop(plev.map(([hm,arr])=>[hm,arr[i]])) : null;
+      // ceiling (pegged up if mid/high cloud sits above). Capped at 5 km.
+      let ct = plev.length ? lowDeckTop(plev.map(([hpa,hm,arr])=>[hm,arr[i]])) : null;
       if(ct==null && haveCeil)
         ct = ((ccMid!=null&&ccMid>=CEILING_COVER)||(ccHigh!=null&&ccHigh>=CEILING_COVER)) ? 3012 : 1949;
-      if(ct!=null) out.push({m:our, run:run.toISOString(), t, p:"cb_top", v:ct});
+      if(ct!=null) out.push({m:our, run:run.toISOString(), t, p:"cb_top", v:Math.min(ct,5000)});
+      // The packed vertical profile, same encoding as the ingest.
+      if(plev.length){
+        const cov={}; for(const [hpa,hm,arr] of plev) cov[hpa]=arr[i];
+        const prof=packProfile(cov);
+        if(prof>0) out.push({m:our, run:run.toISOString(), t, p:"cloud_profile", v:prof});
+      }
     }
   }
   return out;
@@ -687,7 +714,7 @@ const MAP_FOG_MIN_I = 0.55;
 const FRAME_DAYS=21;   // matches FRAME_KEEP_DAYS on both writers
 const CEILING_COVER=38;   // scattered (3 oktas) — we won't fly through it either
 const WIDE_PARAMS=["t2m","td2m","rh","ws10m","wg10m","wdir","prcp_1h","pres_msl",
-  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","cb_top","vis",
+  "cc_low","cc_mid","cc_high","cc_total","cb_lcl","cb","cb_top","cloud_profile","vis",
   "ws80m","ws120m","ws180m","wdir80","wdir120","wdir180"];
 function expandWide(rows){
   const out=[];
@@ -823,6 +850,28 @@ function fuse(){
     // no top; and a top can never sit below the base it caps.
     if(row.cb==null) row.cb_top=null;
     else if(row.cb_top!=null) row.cb_top=Math.max(row.cb_top, row.cb);
+    // Vertical cloud profile: unpack each model's packed cover profile and take
+    // the skill-weighted mean per level, so the grey layers are a multi-model
+    // blend by height. A model that reported the hour but has no profile is
+    // clear there (the ingest omits an all-clear profile), so it contributes
+    // zeros and rightly pulls the fused cover down.
+    {
+      const pp=(idx["cloud_profile"]||{})[ts]||{};
+      const nlev=CTOP_LEVELS.length;
+      const acc=new Array(nlev).fill(0), wsum=new Array(nlev).fill(0);
+      let any=false;
+      for(const m of MODELS){
+        const reported=(idx["cb_lcl"]||{})[ts]?.[m]!=null || (idx["cc_total"]||{})[ts]?.[m]!=null;
+        const prof = pp[m]!=null ? unpackProfile(pp[m]) : (reported ? new Array(nlev).fill(0) : null);
+        if(prof==null) continue;
+        any=true;
+        const rt=runAt[`${m}|${ts}`]||ts;
+        const lead=Math.max(0,Math.round((ts-rt)/3600e3));
+        const w=wIdx[`${m}|cb|${leadBin(lead)}`]??1;
+        for(let k=0;k<nlev;k++){ acc[k]+=prof[k]*w; wsum[k]+=w; }
+      }
+      row.cloudProf = any ? acc.map((a,k)=>wsum[k]?a/wsum[k]:0) : null;
+    }
     // Fog: any model saturated at the surface. Not a vote — the low-cloud
     // fraction cannot express fog (MEPS had RH 100%, T = Td, and cc_low 0 at
     // the cell that started this), so a single model reporting it is worth
@@ -1731,31 +1780,24 @@ function render(){
   {
     const p=PANELS[3];
     const top=panelTop[p.id], bot=top+p.h;
-    // No separate fog strip any more — fog is drawn against this same scale,
-    // so zero metres is the floor of the panel.
-    const bandH=44;
-    // A thin cloud-TOP band between the cloudiness strips and the 0-1 km ceiling
-    // detail: the MEPS cloud-top line on a compressed 1-3 km scale. Reserved only
-    // when the side-channel is loaded, so the panel is unchanged without it.
-    const haveTop = FUSED.some(r=>r.cb_top!=null);   // fused pressure-level deck top
-    // Band height = half the ceiling graph, i.e. the same pixels as 0->500 m of
-    // cloud base. The space under the cloudiness band splits 1:2 (band : detail),
-    // so the band equals half of the 0-1000 m detail region.
-    const ctH = haveTop ? (p.h-bandH-2)/3 : 0;
-    const ctTop = top+bandH, ctBot = ctTop+ctH;
-    const CT_LO=1000, CT_HI=3000;   // metres; tops above CT_HI peg flat at the band top
-    const ctY=v=>{ const c=Math.max(CT_LO,Math.min(v,CT_HI)); return ctBot-(c-CT_LO)/(CT_HI-CT_LO)*(ctBot-ctTop); };
-    // The 0-1 km detail starts flush under the cloud-top band (no gap) so the two
-    // scales meet exactly at 1 km, and the cloud-top line stays continuous.
-    const y0=bot-2, yTopDetail=ctBot+(haveTop?0:4);
-    const y=v=>{ const c=Math.max(0,Math.min(v,1000)); return y0-(c/1000)*(y0-yTopDetail); };
-    // One height→y for the whole cloud-top trace: the 1-3 km band above 1 km
-    // (flat at 3 km when higher), dropping into the ceiling detail below 1 km.
-    const ctLineY=v=>v>=CT_LO ? ctY(v) : y(v);
-    // The ceiling (base) trace uses the same continuous scale so a base between
-    // 1 and 3 km carries on up into the band instead of pegging at 1 km. With no
-    // band present it still pegs at the top of the detail region.
-    const ceilY=v=>v>=CT_LO ? (haveTop?ctY(v):yTopDetail) : y(v);
+    const bandH=44;                                   // cloudiness strips at the top
+    const haveTop = FUSED.some(r=>r.cb_top!=null);    // fused deck-top line
+    const haveProf = FUSED.some(r=>r.cloudProf!=null);// fused vertical profile (grey)
+    // One continuous height scale from the ground to 5 km, but NOT linear: the
+    // 0-1 km detail keeps most of the pixels (a 200 m ceiling has to stay
+    // legible) and 1-5 km is compressed above it. Everything on this panel — the
+    // grey cloud layers, the ceiling, the cloud top, fog and rain — shares it.
+    const gTop=top+bandH, y0=bot-2, H=y0-gTop, hLow=H*0.58, CT_MAX=5000;
+    const yMid=y0-hLow;                               // the 1 km line
+    const y=v=>{ const c=Math.max(0,Math.min(v,CT_MAX));
+      return c<=1000 ? y0-(c/1000)*hLow : yMid-((c-1000)/(CT_MAX-1000))*(H-hLow); };
+    const ceilY=y, ctLineY=y;                         // base and top ride the same scale
+    // Grey-layer cell edges: midpoints between the sampled levels, floored at the
+    // ground and capped at 5 km, so each level's cover paints the slab around it.
+    const LH=CTOP_LEVELS.map(([hpa,hm])=>hm);
+    const cellEdge=[0];
+    for(let k=0;k<LH.length-1;k++) cellEdge.push((LH[k]+LH[k+1])/2);
+    cellEdge.push(CT_MAX);
     for(const r of ROWS){
       if(r.hourOfDay%6!==0) continue;
       svgEl("line",{x1:xPos(r.ts),x2:xPos(r.ts),y1:top,y2:bot,stroke:css("--grid"),"stroke-width":1},svg);
@@ -1766,12 +1808,11 @@ function render(){
       const xe=xPos(FUSED[0].ts+(d+1)*86400e3);   // closing edge of the last/zoomed day
       if(xe<=P.width-P.right+0.5) svgEl("line",{x1:xe,x2:xe,y1:top,y2:bot,stroke:css("--gridday"),"stroke-width":1.2},svg);
     }
-    for(const tv of [0,150,300,500,750,1000]){
-      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),stroke:css("--grid"),"stroke-width":1},svg);
-      // 1000 m is the band/graph boundary; when the cloud-top band is present it
-      // already carries a "1km" tick there, so drop the duplicate number.
-      if(tv===1000 && haveTop) continue;
-      const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(top+9,y(tv)+4)),"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
+    for(const tv of [0,300,500,750,1000,2000,3000,4000,5000]){
+      // The 1 km line is the scale's kink, so draw it a touch stronger.
+      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),
+        stroke:tv===1000?css("--gridday"):css("--grid"),"stroke-width":1},svg);
+      const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(gTop+8,y(tv)+4)),"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
       t.textContent=tv>=1000?(tv/1000)+"km":tv+"m";
     }
     const cbLimV=cbLimit();
@@ -1788,16 +1829,8 @@ function render(){
                   fill:css("--muted")},svg).textContent="cloudiness";
     svgEl("line",{x1:P.left,x2:P.width-P.right,y1:top+bandH,y2:top+bandH,stroke:css("--gridday"),"stroke-width":1},svg);
     svgEl("rect",{x:P.left,y:top,width:P.width-P.left-P.right,height:p.h,fill:"none",stroke:css("--gridday"),"stroke-width":1},svg);
-    if(haveTop){
-      // Cloud-top band: closing rule, a mid gridline at 2 km, km ticks and the
-      // fused cloud-top line (indigo). Tops above 3 km peg at the band top.
-      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:ctBot,y2:ctBot,stroke:css("--gridday"),"stroke-width":1},svg);
-      svgEl("line",{x1:P.left,x2:P.width-P.right,y1:ctY(2000),y2:ctY(2000),stroke:css("--grid"),"stroke-width":1},svg);
-      svgEl("text",{x:6,y:ctTop+(MOB?11:13),"font-size":"9.5","font-weight":"700",fill:"#6f4bd0"},svg).textContent="cloud top";
-      svgEl("text",{x:P.left-6,y:ctBot-1,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="1km";
-      svgEl("text",{x:P.left-6,y:ctY(2000)+3,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="2km";
-      svgEl("text",{x:P.left-6,y:ctTop+9,"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg).textContent="3km+";
-    }
+    if(haveTop)
+      svgEl("text",{x:6,y:gTop+(MOB?11:13),"font-size":"9.5","font-weight":"700",fill:"#6f4bd0"},svg).textContent="cloud top";
 
     const strips=[["cc_high",0],["cc_mid",1],["cc_low",2]];
     const sh=(bandH-10)/3;
@@ -1808,6 +1841,23 @@ function render(){
         if(cov==null || cov<5) continue;
         svgEl("rect",{x:x+0.3,y:top+3+i*(sh+2),width:w-0.6,height:sh,
           fill:css("--cloud"),"fill-opacity":(0.08+0.72*cov/100).toFixed(2)},svg);
+      }
+    }
+    // Grey cloud layers at true height: shade each level's slab by the fused
+    // cover there, so two decks with clear air between them read as two grey
+    // bands with a gap. Semi-transparent, so the ceiling and top lines show
+    // through. Drawn under those lines and the rain shafts.
+    if(haveProf){
+      for(const r of ROWS){
+        if(r.cloudProf==null) continue;
+        const x=xPos(r.ts), w=xPos(r.ts+3600e3)-x;
+        for(let k=0;k<LH.length;k++){
+          const cov=r.cloudProf[k];
+          if(cov==null || cov<8) continue;            // clearish → leave the ground showing
+          const yt=y(cellEdge[k+1]), yb=y(cellEdge[k]);
+          svgEl("rect",{x:x+0.2,y:yt,width:w-0.4,height:yb-yt,
+            fill:"#555b64","fill-opacity":(cov/100*0.5).toFixed(2)},svg);
+        }
       }
     }
     // A missing ceiling is drawn at the 1 km line rather than as a gap:
@@ -1843,9 +1893,8 @@ function render(){
                     "stroke-dasharray":"3 3","stroke-opacity":op},svg);
     }
     svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
-    // Cloud-top line (indigo), drawn on top of the ceiling trace so it stays
-    // continuous across the band boundary: the 1-3 km band above 1 km (flat at
-    // 3 km when higher) and the 0-1 km ceiling detail below it.
+    // Cloud-top line (indigo) for the lowest deck, over the grey layers and the
+    // ceiling trace. Same 0-5 km scale; a top above 5 km sits on the ceiling.
     if(haveTop){
       let dt="",pen=false;
       for(const r of ROWS){
@@ -3002,7 +3051,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v139",
+    "page v140",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),

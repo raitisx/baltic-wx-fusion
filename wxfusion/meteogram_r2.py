@@ -64,7 +64,7 @@ select point_id, model as m,
        to_char(run_time   at time zone 'UTC', '{_ISO}') as run,
        to_char(valid_time at time zone 'UTC', '{_ISO}') as t,
        t2m, td2m, rh, ws10m, wg10m, wdir, prcp_1h, pres_msl,
-       cc_low, cc_mid, cc_high, cc_total, cb_lcl, cb, cb_top
+       cc_low, cc_mid, cc_high, cc_total, cb_lcl, cb, cb_top, cloud_profile
 from (
   select distinct on (point_id, model, valid_time) *
   from wx.forecasts_h
@@ -76,7 +76,7 @@ order by point_id, m, t
 
 _FCST_VALS = ["t2m", "td2m", "rh", "ws10m", "wg10m", "wdir", "prcp_1h",
               "pres_msl", "cc_low", "cc_mid", "cc_high", "cc_total",
-              "cb_lcl", "cb", "cb_top"]
+              "cb_lcl", "cb", "cb_top", "cloud_profile"]
 
 # The observation side of the same window, unpivoted to {t, p, v} — the shape
 # wx_point_obs_window returns. The point join is station-only, matching that

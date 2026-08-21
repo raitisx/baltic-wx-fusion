@@ -110,23 +110,32 @@ def lcl_height(t2m: float, td2m: float) -> float:
     return max(0.0, 125.0 * (t2m - td2m))
 
 
-# Cloud TOP — the height of the lowest cloudy deck, for the meteogram's top
-# line. Derived from the pressure-level cloud-cover profile so it is a
-# multi-model quantity, fused the same way the ceiling (cb) is, instead of the
-# single-model MEPS field it replaces (which went blank whenever MEPS was the
-# dry model while the fused base showed cloud). Standard-atmosphere geopotential
-# heights (m AMSL) stand in for Open-Meteo's own geopotential_height — they
-# agree to a few metres over the Baltic lowland, and skipping that field halves
-# the request weight this adds. Levels stop at 700 hPa (~3 km): the meteogram's
-# cloud-top band caps there, so a deck reaching 700 hPa already pegs at the top.
-# Pressure levels sampled for the deck top. 1000-700 hPa (to ~3 km) is what the
-# meteogram's band draws; 600-300 hPa carry on up so the TRUE top of a deep deck
-# is known — the graph pegs the line at 3 km but the tooltip shows the real
-# height from here (a rain deck tops out near 7-9 km, not 3). 975/925 and the
-# levels above 300 are skipped as close enough to their neighbours.
-CTOP_LEVEL_M = {1000: 111, 950: 540, 900: 988, 850: 1457, 800: 1949, 700: 3012,
-                600: 4206, 500: 5574, 400: 7185, 300: 9164}
+# The vertical cloud profile: cloud cover at eight pressure levels, from the
+# surface to 500 hPa (~5 km, the ceiling the meteogram's cloud view is capped
+# at). Standard-atmosphere geopotential heights (m AMSL) stand in for
+# Open-Meteo's own geopotential_height — they agree to a few metres over the
+# Baltic lowland, and skipping that field halves the request weight. This one
+# profile drives both the cloud-top line (deck top, below) and the grey cloud
+# layers the meteogram draws at true height.
+CTOP_LEVEL_M = {1000: 111, 950: 540, 900: 988, 850: 1457, 800: 1949,
+                700: 3012, 600: 4206, 500: 5574}
+CTOP_ORDER = sorted(CTOP_LEVEL_M, key=lambda L: CTOP_LEVEL_M[L])   # by height, low→high
 CTOP_VARS = [f"cloud_cover_{L}hPa" for L in sorted(CTOP_LEVEL_M)]
+
+
+def pack_profile(cover_by_level: dict) -> float:
+    """Pack the eight-level cover profile into one number — a nibble per level
+    (cover quantised 0-15), level 0 (surface) in the lowest nibble. Kept as a
+    single stored value so the whole vertical profile rides through the hot
+    table and the meteogram JSON without eight extra columns; the page unpacks
+    it, fuses per level across models, and shades grey cloud layers by height.
+    32 bits, so it needs double precision (float32 would round it)."""
+    v = 0.0
+    for i, lv in enumerate(CTOP_ORDER):
+        c = cover_by_level.get(lv)
+        q = 0 if c is None else max(0, min(15, int(round(c / 100.0 * 15))))
+        v += q * (16 ** i)
+    return v
 
 
 def low_deck_top(cover_by_level: dict) -> float | None:
@@ -247,16 +256,22 @@ def fetch(points: list[dict], hourly_vars: dict | None = None) -> list[tuple]:
                 # often), so where there is a ceiling but the profile shows no
                 # deck, fall back to the low band's top — pegged up if there is
                 # mid/high cloud above it — rather than leave a base with no top.
-                ct = low_deck_top({lv: (arr[i] if i < len(arr) else None)
-                                   for lv, arr in ctop_levels.items()}) if ctop_levels else None
-                if ct is None and have_ceiling:
-                    hi = ((cc_mid is not None and cc_mid >= CEILING_COVER)
-                          or (cc_high is not None and cc_high >= CEILING_COVER))
-                    ct = 3012.0 if hi else 1949.0     # 700 hPa vs 800 hPa (low-band top)
-                if ct is not None:
-                    rows.append(
-                        (our_model, run_time, valid, point["point_id"], "cb_top", float(ct))
-                    )
+                if ctop_levels:
+                    cover = {lv: (arr[i] if i < len(arr) else None)
+                             for lv, arr in ctop_levels.items()}
+                    ct = low_deck_top(cover)
+                    if ct is None and have_ceiling:
+                        hi = ((cc_mid is not None and cc_mid >= CEILING_COVER)
+                              or (cc_high is not None and cc_high >= CEILING_COVER))
+                        ct = 3012.0 if hi else 1949.0    # 700 hPa vs 800 hPa (low-band top)
+                    if ct is not None:
+                        rows.append((our_model, run_time, valid, point["point_id"],
+                                     "cb_top", min(float(ct), 5000.0)))    # capped at 5 km
+                    # The full vertical profile (packed), for the grey layers.
+                    prof = pack_profile(cover)
+                    if prof > 0:
+                        rows.append((our_model, run_time, valid, point["point_id"],
+                                     "cloud_profile", prof))
     # Open-Meteo's free tier rate-limits per minute, and one pass is ~338
     # points x 5 models. Firing that as a few back-to-back requests bursts past
     # the limit and the whole batch comes back 429 (which is what broke the
