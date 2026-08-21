@@ -1810,15 +1810,25 @@ function render(){
       if(base!=null) out.push([base,tp]);
       return out;
     };
-    // Per hour: the cloud decks, and the ceiling/top to draw. The ceiling is the
+    // Per hour: the ceiling/top to draw, and the grey decks. The ceiling is the
     // LCL where there is low cloud (precise near the ground) and the lowest
-    // deck's base otherwise, so an elevated deck lifts the ceiling toward 3 km
-    // instead of pegging it. The top is the fused deck top (to 5 km in the
-    // tooltip, drawn pegged at 3 km).
+    // profile deck's base otherwise, so an elevated deck lifts the ceiling
+    // toward 3 km. The top is the fused deck top (to 5 km in the tooltip, drawn
+    // pegged at 3 km). The PRIMARY grey deck fills between those two lines — the
+    // pressure profile under-reports low cloud, so trusting it alone leaves the
+    // grey floating above the ceiling in a convective column; anchoring it to
+    // the ceiling and top the lines already show keeps the grey on the cloud.
+    // Genuinely separate higher decks (a clear gap above the top) are added as
+    // their own polygons.
     for(const r of ROWS){
-      r._layers = r.cloudProf ? layersOf(r.cloudProf) : [];
-      r._cbShow = r.cb!=null ? r.cb : (r._layers.length ? r._layers[0][0] : null);
-      r._topShow = r.cb_top!=null ? r.cb_top : (r._layers.length ? r._layers[0][1] : null);
+      const pl = r.cloudProf ? layersOf(r.cloudProf) : [];
+      r._cbShow = r.cb!=null ? r.cb : (pl.length ? pl[0][0] : null);
+      r._topShow = r.cb_top!=null ? r.cb_top : (pl.length ? pl[0][1] : null);
+      const decks=[];
+      if(r._cbShow!=null && r._topShow!=null && r._topShow>r._cbShow)
+        decks.push([r._cbShow, Math.min(r._topShow, CT_MAX)]);
+      for(const [b,t] of pl) if(r._topShow==null || b >= r._topShow+150) decks.push([b,t]);
+      r._decks = decks;
     }
     for(const r of ROWS){
       if(r.hourOfDay%6!==0) continue;
@@ -1875,7 +1885,7 @@ function render(){
       const halfW=(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))/2;
       let active=[]; const done=[];              // each track is a list of [x, base, top]
       for(const r of ROWS){
-        const xc=xPos(r.ts+1800e3), ls=r._layers;
+        const xc=xPos(r.ts+1800e3), ls=r._decks;
         const used=new Array(ls.length).fill(false), cont=[];
         for(const tr of active){
           const last=tr[tr.length-1]; let bi=-1;
@@ -3091,7 +3101,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v141",
+    "page v142",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
