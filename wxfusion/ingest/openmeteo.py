@@ -119,10 +119,13 @@ def lcl_height(t2m: float, td2m: float) -> float:
 # agree to a few metres over the Baltic lowland, and skipping that field halves
 # the request weight this adds. Levels stop at 700 hPa (~3 km): the meteogram's
 # cloud-top band caps there, so a deck reaching 700 hPa already pegs at the top.
-# Six levels, not the full sounding: 900-700 hPa span the 1-3 km band and
-# 1000/950 catch a low deck dropping below it, while 975/925 are close enough to
-# their neighbours to skip. Keeps the extra request weight this adds to ~45%.
-CTOP_LEVEL_M = {1000: 111, 950: 540, 900: 988, 850: 1457, 800: 1949, 700: 3012}
+# Pressure levels sampled for the deck top. 1000-700 hPa (to ~3 km) is what the
+# meteogram's band draws; 600-300 hPa carry on up so the TRUE top of a deep deck
+# is known — the graph pegs the line at 3 km but the tooltip shows the real
+# height from here (a rain deck tops out near 7-9 km, not 3). 975/925 and the
+# levels above 300 are skipped as close enough to their neighbours.
+CTOP_LEVEL_M = {1000: 111, 950: 540, 900: 988, 850: 1457, 800: 1949, 700: 3012,
+                600: 4206, 500: 5574, 400: 7185, 300: 9164}
 CTOP_VARS = [f"cloud_cover_{L}hPa" for L in sorted(CTOP_LEVEL_M)]
 
 
