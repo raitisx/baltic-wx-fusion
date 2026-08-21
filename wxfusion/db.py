@@ -164,7 +164,14 @@ def upsert_forecasts(conn: psycopg.Connection, rows: list[tuple]) -> int:
             f"""
             insert into wx.forecasts_h (model, run_time, valid_time, point_id, {_FH_COLS})
             values ({_FH_PLACEHOLDERS})
-            on conflict (model, run_time, valid_time, point_id) do nothing
+            on conflict (model, run_time, valid_time, point_id)
+            -- Raw values for a given run never change, so first write wins for
+            -- them. cb_top is the exception: it is a DERIVATION, and when the
+            -- derivation improves (e.g. the pressure-deck fallback) a re-ingest
+            -- of the same run should carry the fix to rows already written,
+            -- rather than leaving them stale until the run ages out. coalesce so
+            -- a later pass that happens to miss the profile never nulls a top.
+            do update set cb_top = coalesce(excluded.cb_top, wx.forecasts_h.cb_top)
             """,
             payload,
         )
