@@ -2596,6 +2596,38 @@ function cellAt(mx,my){
     xc:GX0+(cx+0.5)*CELL, yc:GY0+(cy+0.5)*CELL};
 }
 function cellLabel(c){ return `cell ${Math.round(c.x0/1000)}/${Math.round(c.y0/1000)}`; }
+// Click-to-pick on a map: every map (fused, UM, radar) is reprojected onto the
+// same EPSG:3059 grid, so a click anywhere on any of them selects the 25 km
+// cell under the pointer and loads its meteogram. Idempotent, so re-running the
+// map setup never stacks a second listener.
+function wireMapPick(el){
+  if(!el || el.dataset.pickWired) return;
+  el.dataset.pickWired="1";
+  el.style.cursor="crosshair";
+  el.addEventListener("click",async ev=>{
+    if(typeof proj4==="undefined") return;
+    const r=el.getBoundingClientRect();
+    const mx=GX0+(ev.clientX-r.left)/r.width*(GX1-GX0);
+    const my=GY1-(ev.clientY-r.top)/r.height*(GY1-GY0);
+    if(mx<GX0||mx>GX1||my<GY0||my>GY1) return;
+    const cell=cellAt(mx,my);
+    const [lon,lat]=proj4("EPSG:3059","EPSG:4326",[cell.xc,cell.yc]);
+    const la=+lat.toFixed(3), lo=+lon.toFixed(3);
+    highlightCell(cell);                       // instant feedback on the fused map, before the round-trip
+    try{
+      const pid=await rpc("wx_ensure_point",{p_lat:la,p_lon:lo,p_name:cellLabel(cell)});
+      selectedCell={...cell, pid, lat:la, lon:lo};
+      if(!POINTS.some(p=>p.point_id===pid))
+        POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
+      setPoint(pid, "");
+      Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
+      load();
+    }catch(e){
+      clearSmapCell();
+      console.error(e);
+    }
+  });
+}
 function initStaticMap(){
   const ov=document.getElementById("smapOv");
   if(!ov) return;
@@ -2642,30 +2674,11 @@ function initStaticMap(){
       });
     }
   }
-  const fm=document.getElementById("fusedMap");
-  if(fm) fm.addEventListener("click",async ev=>{
-    if(typeof proj4==="undefined") return;
-    const r=fm.getBoundingClientRect();
-    const mx=GX0+(ev.clientX-r.left)/r.width*(GX1-GX0);
-    const my=GY1-(ev.clientY-r.top)/r.height*(GY1-GY0);
-    if(mx<GX0||mx>GX1||my<GY0||my>GY1) return;
-    const cell=cellAt(mx,my);
-    const [lon,lat]=proj4("EPSG:3059","EPSG:4326",[cell.xc,cell.yc]);
-    const la=+lat.toFixed(3), lo=+lon.toFixed(3);
-    highlightCell(cell);                       // instant feedback, before the round-trip
-    try{
-      const pid=await rpc("wx_ensure_point",{p_lat:la,p_lon:lo,p_name:cellLabel(cell)});
-      selectedCell={...cell, pid, lat:la, lon:lo};
-      if(!POINTS.some(p=>p.point_id===pid))
-        POINTS.push({point_id:pid,name:cellLabel(cell),lat:la,lon:lo});
-      setPoint(pid, "");
-      Q.lat=la; Q.lon=lo; Q.name=cellLabel(cell);
-      load();
-    }catch(e){
-      clearSmapCell();
-      console.error(e);
-    }
-  });
+  // Pick a cell from any of the three maps — they share the 3059 grid. On the
+  // fused map the station hit-dots sit above this and stop the event first.
+  wireMapPick(document.getElementById("fusedMap"));
+  wireMapPick(document.getElementById("imgUm")?.parentElement);
+  wireMapPick(document.getElementById("imgRadar")?.parentElement);
 }
 function highlightCell(cell){
   const ov=document.getElementById("smapOv");
@@ -3111,7 +3124,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v143",
+    "page v144",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
