@@ -76,8 +76,12 @@ CASES = [
          bbox=(56.4, 57.1, 25.9, 27.3)),
 ]
 
-# A beam case passes when the sector holds at most this much echo afterwards.
-BEAM_LEFTOVER_MAX_PX = 25
+# A beam case passes when the sector holds at most this much RAY-SHAPED echo
+# afterwards — thin (<=3 deg), radially elongated components. Judging by raw
+# sector count failed immediately: the 02.08 sector legitimately holds ~4000 px
+# of rain, and the wide "azimuth approximate" sectors sweep up scattered real
+# echo. Rain blobs are not rays; a surviving beam is.
+BEAM_LEFTOVER_MAX_PX = 15
 # A weather case passes when at least this fraction of the classified echo in
 # the bbox survives the full chain.
 WEATHER_SURVIVE_FRAC = 0.6
@@ -117,15 +121,48 @@ def run_chain(f):
     return arr, cls, grid, comp
 
 
-def polar_sector_mask(site, az_lo, az_hi, r_lo, r_hi):
+def _site_px(site):
     la0, lo0 = next((la, lo) for n, la, lo in RADAR_SITES if n == site)
     x0, y0 = P.to_xy(lo0, la0)
-    sx = (x0 - P.X0) / (P.X1 - P.X0) * P.W
-    sy = (P.Y1 - y0) / (P.Y1 - P.Y0) * P.H
+    return ((x0 - P.X0) / (P.X1 - P.X0) * P.W,
+            (P.Y1 - y0) / (P.Y1 - P.Y0) * P.H)
+
+
+def polar_sector_mask(site, az_lo, az_hi, r_lo, r_hi):
+    sx, sy = _site_px(site)
     yy, xx = np.mgrid[0:P.H, 0:P.W]
     rng = np.hypot(xx - sx, yy - sy)             # ~1 km per px
     az = (np.degrees(np.arctan2(xx - sx, -(yy - sy)))) % 360.0   # 0=N, cw
     return (rng >= r_lo) & (rng <= r_hi) & (az >= az_lo) & (az <= az_hi)
+
+
+def ray_leftover_px(comp, site, sector_mask):
+    """Echo px inside the sector that belong to RAY-shaped components — thin in
+    azimuth (<=3 deg), long and radially elongated. Rain blobs do not qualify;
+    a surviving interference beam does. Same polar framing the remover uses."""
+    from scipy import ndimage
+    sx, sy = _site_px(site)
+    lit = (comp > 0) & sector_mask
+    if not lit.any():
+        return 0
+    yy, xx = np.mgrid[0:P.H, 0:P.W]
+    rng = np.hypot(xx - sx, yy - sy)
+    az = (np.degrees(np.arctan2(xx - sx, -(yy - sy)))) % 360.0
+    N_AZ, R_MAX = 720, 320
+    ab = np.clip((az / 360.0 * N_AZ).astype(int), 0, N_AZ - 1)
+    rb = np.clip(rng.astype(int), 0, R_MAX)
+    occ = np.zeros((N_AZ, R_MAX + 1), bool)
+    occ[ab[lit], rb[lit]] = True
+    closed = ndimage.binary_closing(occ, structure=np.ones((1, 15), bool))
+    lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
+    bad = np.zeros((N_AZ, R_MAX + 1), bool)
+    for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+        a_span = (sl[0].stop - sl[0].start) * 360.0 / N_AZ
+        r_span = sl[1].stop - sl[1].start
+        width_km = max(1e-6, (sl[1].start + sl[1].stop) / 2.0 * np.radians(a_span))
+        if a_span <= 3.0 and r_span >= 25 and (r_span / width_km) >= 6.0:
+            bad |= (lab == i)
+    return int((lit & bad[ab, rb]).sum())
 
 
 def grid_bbox_mask(bbox):
@@ -159,12 +196,12 @@ for c in CASES:
         continue
     if c["kind"] == "beam":
         m = polar_sector_mask(c["site"], *c["az"], *c["rng"])
-        left = int(((comp > 0) & m).sum())
         before = int(((grid > 0) & m).sum())
+        left = ray_leftover_px(comp, c["site"], m)
         ok = left <= BEAM_LEFTOVER_MAX_PX
         print(f"{'PASS' if ok else 'FAIL'}  {tag} (sweep {t:%d.%m %H:%M}): "
               f"sector {c['az'][0]:.0f}-{c['az'][1]:.0f} deg — "
-              f"{before} px classified, {left} px left (max {BEAM_LEFTOVER_MAX_PX})"
+              f"{before} px echo, {left} ray-shaped px left (max {BEAM_LEFTOVER_MAX_PX})"
               + (f" [{c['note']}]" if c.get("note") else ""))
     else:
         m = grid_bbox_mask(c["bbox"])
