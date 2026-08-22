@@ -2892,13 +2892,15 @@ function requestMapHour(iso, img){
     }).catch(()=>{});
   }, {once:true});
 }
-function radarSrc(iso){
+function radarSrc(iso, qMin){
   const rad=MV.loaded.radar;
   if(!rad) return null;
-  const ts=Date.parse(iso);
+  const ts=Date.parse(iso)+(qMin||0)*60e3;
   const cands=new Set(rad.frames||[]);
   const archHours=MV.loaded.radarArchive?.hours||{};
   for(const k in archHours) cands.add(archHours[k]);
+  const archQ=MV.loaded.radarArchive?.quarters||{};
+  for(const k in archQ) cands.add(archQ[k]);
   let best=null, bd=1e15;
   for(const f of cands){
     const d=Math.abs(frameTime(f).getTime()-ts);
@@ -2923,6 +2925,8 @@ function radarRev(vtag){
       MV.radarRevByTag={};
       for(const h in arch.hours||{})
         if(arch.rev[h]) MV.radarRevByTag[arch.hours[h]]=arch.rev[h];
+      for(const h in arch.quarters||{})
+        if(arch.rev[h]) MV.radarRevByTag[arch.quarters[h]]=arch.rev[h];
     }
     const r=MV.radarRevByTag[vtag];
     if(r) return encodeURIComponent(r);
@@ -3009,16 +3013,20 @@ function dayNightTrack(){
 // snap the shown frame into range. Called when the day zoom toggles.
 function syncMapZoom(){
   const [lo,hi]=mapHourRange();
-  document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo; rg.max=hi; });
+  document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo*4; rg.max=hi*4+3; });
   _dnKey=null;
   mapShow(Math.max(lo, Math.min(hi, MV.idx)));
 }
-function mapShow(i){
+function mapShow(i,q){
   if(!MV.hours.length) return;
   MV.idx=Math.max(0,Math.min(MV.hours.length-1,i));
+  // Quarter-hour offset within the hour, for the radar only: forecast data is
+  // hourly, so the fused/UM columns and the meteogram seek line stay on the
+  // hour while the radar column steps its 15-min frames.
+  MV.q=Math.max(0,Math.min(3,q??MV.q??0));
   const iso=MV.hours[MV.idx];
   if(window.__seekTo) window.__seekTo(Date.parse(iso));   // move the seek line
-  const d=new Date(iso);
+  const d=new Date(Date.parse(iso)+MV.q*900e3);
   const label=`${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;  // 01.Aug. 11:00
   { const el=document.getElementById("mapTimeHead"); if(el) el.textContent=label; }
   // The seek bar under the maps: keep the thumb, the caption and the sun/moon
@@ -3026,7 +3034,8 @@ function mapShow(i){
   { const cap=`${fmtWd.format(d)} ${fmtDD.format(d)}.${fmtMon.format(d)}. ${fmtHM.format(d)}`;
     const ll=activeLatLon();
     const night = ll ? solarElev(Date.parse(iso)+1800e3, ll.lat, ll.lon) <= 0 : false;
-    document.querySelectorAll(".mapRange").forEach(rg=>{ if(+rg.value!==MV.idx) rg.value=MV.idx; });
+    const qv=MV.idx*4+MV.q;
+    document.querySelectorAll(".mapRange").forEach(rg=>{ if(+rg.value!==qv) rg.value=qv; });
     document.querySelectorAll(".mapSeekTime").forEach(el=>el.textContent=cap);
     document.querySelectorAll(".mapdn").forEach(el=>el.textContent=night?"🌙":"☀️"); }
   dayNightTrack();
@@ -3038,7 +3047,7 @@ function mapShow(i){
             u&&u.url, (u&&u.cap)||"", "0.12");
   // Red the run caption only for a stale current/future frame; not in history.
   document.getElementById("umTime").classList.toggle("stale", !!(u&&u.stale));
-  const rd=radarSrc(iso);
+  const rd=radarSrc(iso, MV.q*15);
   // The sweep time, not the hour it is filed under. Sources run on a ~10 min
   // cadence of their own, so the nearest frame to a given hour can be most
   // of an hour away — and if you are deciding when rain arrives, a caption
@@ -3095,16 +3104,18 @@ async function initMapsViewer(){
   // One seek bar under the maps drives all three columns together (and the
   // meteogram seek line, via mapShow's __seekTo call). The old per-column
   // ◀ ▶ ▶ buttons are gone.
-  document.querySelectorAll(".mapRange").forEach(rg=>rg.addEventListener("input",()=>mapShow(+rg.value)));
+  // Seek steps are quarter-hours: value = hour index * 4 + quarter. The radar
+  // column follows the quarter; everything else (forecast data) is hourly.
+  document.querySelectorAll(".mapRange").forEach(rg=>rg.addEventListener("input",()=>mapShow(Math.floor(+rg.value/4), +rg.value%4)));
   limSel("cb").addEventListener("change",()=>{mapShow(MV.idx);prefetchWeek();});
   setMapAxis();
   window.__setMapHour=ts=>{
     if(MV.playing) return;
     const i=MV.hours.findIndex(h=>Date.parse(h)===ts);
-    if(i>=0 && i!==MV.idx) mapShow(i);
+    if(i>=0 && (i!==MV.idx || MV.q)) mapShow(i, 0);
   };
   const diag=[
-    "page v147",
+    "page v148",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
@@ -3133,7 +3144,7 @@ function setMapAxis(){
   const t0=weekStart.getTime();
   for(let h=0;h<HOURS;h++)
     MV.hours.push(new Date(t0+h*3600e3).toISOString().slice(0,19)+"Z");
-  { const [lo,hi]=mapHourRange(); document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo; rg.max=hi; }); }
+  { const [lo,hi]=mapHourRange(); document.querySelectorAll(".mapRange").forEach(rg=>{ rg.min=lo*4; rg.max=hi*4+3; }); }
   let idx=prevSel!=null ? MV.hours.findIndex(h=>Date.parse(h)===prevSel) : -1;
   if(idx<0){                                  // no prior hour (first load, week change)
     const now=Date.now();
