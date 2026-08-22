@@ -11,6 +11,9 @@ on:
       se_overwrite:
         description: "Re-decode SE frames that are already stored (after an SMHI_DBZ_ADJ change)"
         default: "0"
+      fi_overwrite:
+        description: "Re-decode FI frames that are already stored (after an FMI calibration change)"
+        default: "0"
       render_hours:
         description: "Hours to force re-render after the backfill"
         default: "336"
@@ -35,6 +38,7 @@ jobs:
           NORDIC_SE_DAYS: ${{ github.event.inputs.se_days || '14' }}
           NORDIC_FI_DAYS: ${{ github.event.inputs.fi_days || '14' }}
           NORDIC_SE_OVERWRITE: ${{ github.event.inputs.se_overwrite || '0' }}
+          NORDIC_FI_OVERWRITE: ${{ github.event.inputs.fi_overwrite || '0' }}
         run: python jobs/run_nordic_backfill.py
       - name: Re-render composites with the new layers
         env:

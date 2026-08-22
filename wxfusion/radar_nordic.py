@@ -82,19 +82,27 @@ def _to_lev(rr_grid):
     return lev
 
 
-# Calibration against the neighbours, probe 22.08.2026 (co-wet pixels over
-# 14 days): SE ran x2.0 hot vs LT2 (150k px / 20 h, the largest close-range
-# overlap) and x6.8 vs EE — but FI, which ships real FMI rain rates, was
-# itself x4.5 vs EE, so EE reads cold against everyone and LT2/LV are the
-# anchor. SMHI's comp is a column-max reflectivity product, which overshoots
-# surface rate through Marshall-Palmer; -5 dB ~ halves the rate and centres
-# SE on the Baltic feeds' look (user report: "SE too orange").
-SMHI_DBZ_ADJ = 5.0
+# Cross-feed calibration, middle anchor chosen by the user 22.08.2026 from
+# test renders: everything sits at HALF of FMI's rr product. From the co-wet
+# probe medians (SE_raw/FI x0.60, SE_raw/LT2 x2.0, FI/EE x4.5):
+#   FI  /2      -> FMI_RATE_DIV = 2 (as dB through Marshall-Palmer: 4.8)
+#   SE  -1.3 dB -> SE_raw x0.83 = FI/2 through the direct SE-FI overlap
+#   EE/LT/LV lifted in scrape_maps.CAL_LEV_FACTOR (x2.25 / x1.67).
+# SMHI's comp is column-max reflectivity (runs hot through MP), hence SE still
+# gets a negative offset while the palette feeds get lifts.
+SMHI_DBZ_ADJ = 1.3
+FMI_DBZ_ADJ = 4.8
+FMI_RATE_DIV = 10.0 ** (FMI_DBZ_ADJ / 16.0)      # ~2.0
+# SMHI's product ends in a hard coverage wall; echo fades out over the last
+# stretch approaching it instead of stopping dead (user: "dampening to the
+# edge").
+SMHI_EDGE_FADE_KM = 70.0
 
 
 def _decode_smhi(body):
-    """SMHI GeoTIFF bytes -> level grid on our 3059 raster."""
+    """SMHI GeoTIFF bytes -> level grid on our 3059 raster, edge-faded."""
     import rasterio
+    from scipy.ndimage import distance_transform_edt
     with rasterio.open(io.BytesIO(body)) as ds:
         v = ds.read(1)
         # dBZ = 0.4*v - 30; 0 = clear, 255 = outside coverage
@@ -103,15 +111,20 @@ def _decode_smhi(body):
                        0.4 * v.astype(np.float32) - 30.0 - SMHI_DBZ_ADJ,
                        -100.0)
         rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
-        return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+        grid = _warp_rr_to_grid(rr, ds.transform, ds.crs)
+        cov = _warp_rr_to_grid((v != 255).astype(np.float32),
+                               ds.transform, ds.crs) > 0.5
+    grid *= np.clip(distance_transform_edt(cov) / SMHI_EDGE_FADE_KM, 0.0, 1.0)
+    return _to_lev(grid)
 
 
 def _decode_fmi(body):
-    """FMI rr GeoTIFF bytes -> level grid on our 3059 raster."""
+    """FMI rr GeoTIFF bytes -> level grid, on the FMI_RATE_DIV anchor."""
     import rasterio
     with rasterio.open(io.BytesIO(body)) as ds:
         v = ds.read(1).astype(np.float32)
-        rr = np.where((v > 0) & (v < 65000), v / 100.0, 0.0)   # value/100 = mm/h
+        rr = np.where((v > 0) & (v < 65000),
+                      v / 100.0 / FMI_RATE_DIV, 0.0)   # value/100 = mm/h
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
 
@@ -119,13 +132,15 @@ def _decode_fmi_dbzh(body):
     """finrad PCAPPI DBZH GeoTIFF from FMI's S3 mirror -> level grid.
 
     uint8 with the standard ODIM 8-bit scaling (dBZ = 0.5*v - 32, 255 =
-    nodata), converted through the same Marshall-Palmer as SMHI. No SE-style
-    damping: FMI's own rr product measures in the same range."""
+    nodata), through the same Marshall-Palmer with the FMI_DBZ_ADJ anchor so
+    both FI paths land on the same levels."""
     import rasterio
     with rasterio.open(io.BytesIO(body)) as ds:
         v = ds.read(1)
         mask = (v > 0) & (v < 255)
-        dbz = np.where(mask, 0.5 * v.astype(np.float32) - 32.0, -100.0)
+        dbz = np.where(mask,
+                       0.5 * v.astype(np.float32) - 32.0 - FMI_DBZ_ADJ,
+                       -100.0)
         rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
@@ -392,13 +407,14 @@ def reindex(s3, days=20):
     return added
 
 
-def backfill(s3, se_days=14, fi_days=14, se_overwrite=False):
+def backfill(s3, se_days=14, fi_days=14, se_overwrite=False,
+             fi_overwrite=False):
     """Pull past SE + FI sweeps onto the 15-min slot grid of the store.
 
     SMHI's dated listing reaches back years. FMI's WFS serves only about a
     week, so days it comes back empty for fall back to the S3 mirror's
     finrad DBZH composites. Only the warped level grids are stored (lossless
-    grayscale pngs), never the source GeoTIFFs. se_overwrite re-decodes SE
+    grayscale pngs), never the source GeoTIFFs. se_/fi_overwrite re-decode
     frames that are already stored (after an SMHI_DBZ_ADJ change)."""
     s = session()
     now = dt.datetime.now(dt.timezone.utc)
@@ -448,9 +464,9 @@ def backfill(s3, se_days=14, fi_days=14, se_overwrite=False):
             except Exception as e:
                 log.warning("backfill FI s3 listing %s: %s", day, e)
     n_fi = _backfill_slots(s3, s, "FI", wfs_entries, _decode_fmi,
-                           idx_cache, dirty)
+                           idx_cache, dirty, overwrite=fi_overwrite)
     n_fi += _backfill_slots(s3, s, "FI", s3_entries, _decode_fmi_dbzh,
-                            idx_cache, dirty)
+                            idx_cache, dirty, overwrite=fi_overwrite)
 
     for day in sorted(dirty):
         _save_day_idx(s3, day, idx_cache[day])

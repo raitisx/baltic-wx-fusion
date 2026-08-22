@@ -38,7 +38,7 @@ from PIL import Image
 from . import config
 from .http import session
 from .maps_meps import (RAIN_LEVELS, RAIN_ANCHORS, SNOW_ANCHORS,
-                        rain_pos as _ramp_pos, ramp_rgb)
+                        pos_rain, rain_pos as _ramp_pos, ramp_rgb)
 
 log = logging.getLogger(__name__)
 
@@ -1944,7 +1944,32 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
     return out, kept
 
 
+# Cross-feed calibration onto the shared ramp (probe 22.08.2026, middle
+# anchor chosen by the user from test renders = FMI's rain-rate product / 2).
+# Co-wet-pixel medians said the meteolapa palettes under-read against it:
+# FI/EE x4.5 and, chained through SE's overlaps, FI/LT2 x3.33. Halved to the
+# middle anchor. The nordic feeds carry their calibration in their decode
+# (radar_nordic: SMHI_DBZ_ADJ / FMI_RATE_DIV) — never scale them here.
+CAL_LEV_FACTOR = {"EE": 2.25, "LT2": 1.67, "LT": 1.67, "LV": 1.67}
+
+
+def _calibrate_lev(lev, feed):
+    k = CAL_LEV_FACTOR.get(feed or "", 1.0)
+    if k == 1.0:
+        return lev
+    out = lev.copy()
+    wet = lev > 0
+    out[wet] = rate_to_lev(
+        pos_rain((lev[wet].astype(np.float64) - 0.5) / LEV_MAX) * k)
+    return out
+
+
 def _prepare_source(arr: np.ndarray, feed: str | None, o: dict | None):
+    """The raw prepare + the per-feed level calibration every caller needs."""
+    return _calibrate_lev(_prepare_source_raw(arr, feed, o), feed)
+
+
+def _prepare_source_raw(arr: np.ndarray, feed: str | None, o: dict | None):
     """Everything that belongs in the radar's own frame, then classify.
 
     With one guard over the whole stage: if the beam work would take more than
