@@ -42,6 +42,10 @@ SMHI_LIST = ("https://opendata-download-radar.smhi.se/api/version/latest/"
              "area/sweden/product/comp/{d:%Y/%m/%d}")
 FMI_WFS = ("https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0"
            "&request=getFeature&storedquery_id=fmi::radar::composite::rr")
+# FMI's public S3 mirror. The WFS above serves only ~7 days; the bucket holds
+# 5-min national composites (finrad, PCAPPI 600 m DBZH, uint8, EPSG:3067,
+# 250 m, nodata 255) back to 2020 — probed 22.08.2026.
+FMI_S3 = "https://fmi-opendata-radar-geotiff.s3.eu-west-1.amazonaws.com"
 
 SRC_PREFIX = "maps/radar_src"          # same store the meteolapa originals use
 
@@ -109,6 +113,34 @@ def _decode_fmi(body):
         v = ds.read(1).astype(np.float32)
         rr = np.where((v > 0) & (v < 65000), v / 100.0, 0.0)   # value/100 = mm/h
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+
+
+def _decode_fmi_dbzh(body):
+    """finrad PCAPPI DBZH GeoTIFF from FMI's S3 mirror -> level grid.
+
+    uint8 with the standard ODIM 8-bit scaling (dBZ = 0.5*v - 32, 255 =
+    nodata), converted through the same Marshall-Palmer as SMHI. No SE-style
+    damping: FMI's own rr product measures in the same range."""
+    import rasterio
+    with rasterio.open(io.BytesIO(body)) as ds:
+        v = ds.read(1)
+        mask = (v > 0) & (v < 255)
+        dbz = np.where(mask, 0.5 * v.astype(np.float32) - 32.0, -100.0)
+        rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
+        return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+
+
+def _fmi_s3_entries(s, day):
+    """(stamp, url) pairs for one day's finrad composites on the S3 mirror."""
+    r = s.get(f"{FMI_S3}/?list-type=2&max-keys=1000"
+              f"&prefix={day:%Y/%m/%d}/finrad/", timeout=60)
+    out = []
+    for k in re.findall(r"<Key>([^<]+)</Key>", r.text):
+        m = re.search(r"/(\d{12})_composite_cappi_600_dbzh", k)
+        if m:
+            out.append((dt.datetime.strptime(m.group(1), "%Y%m%d%H%M")
+                        .replace(tzinfo=dt.timezone.utc), f"{FMI_S3}/{k}"))
+    return out
 
 
 def fetch_smhi():
@@ -348,14 +380,14 @@ def reindex(s3, days=20):
     return added
 
 
-def backfill(s3, se_days=14, fi_days=7, se_overwrite=False):
+def backfill(s3, se_days=14, fi_days=14, se_overwrite=False):
     """Pull past SE + FI sweeps onto the 15-min slot grid of the store.
 
-    SMHI's dated listing reaches back years; FMI's WFS serves only about a
-    week — both verified 22.08.2026. Only the warped level grids are stored
-    (lossless grayscale pngs), never the source GeoTIFFs. se_overwrite
-    re-decodes SE frames that are already stored (after an SMHI_DBZ_ADJ
-    change)."""
+    SMHI's dated listing reaches back years. FMI's WFS serves only about a
+    week, so days it comes back empty for fall back to the S3 mirror's
+    finrad DBZH composites. Only the warped level grids are stored (lossless
+    grayscale pngs), never the source GeoTIFFs. se_overwrite re-decodes SE
+    frames that are already stored (after an SMHI_DBZ_ADJ change)."""
     s = session()
     now = dt.datetime.now(dt.timezone.utc)
     idx_cache, dirty = {}, set()
@@ -377,29 +409,40 @@ def backfill(s3, se_days=14, fi_days=7, se_overwrite=False):
     n_se = _backfill_slots(s3, s, "SE", entries, _decode_smhi,
                            idx_cache, dirty, overwrite=se_overwrite)
 
-    entries = []
+    wfs_entries, s3_entries = [], []
     for back in range(fi_days, -1, -1):
         day = (now - dt.timedelta(days=back)).date()
-        q = (f"{FMI_WFS}&starttime={day:%Y-%m-%d}T00:00:00Z"
-             f"&endtime={day + dt.timedelta(days=1):%Y-%m-%d}T00:00:00Z")
+        day_entries = []
         try:
+            q = (f"{FMI_WFS}&starttime={day:%Y-%m-%d}T00:00:00Z"
+                 f"&endtime={day + dt.timedelta(days=1):%Y-%m-%d}T00:00:00Z")
             r = s.get(q, timeout=120)
             urls = re.findall(
                 r"<gml:fileReference>\s*([^<]+?)\s*</gml:fileReference>",
                 r.text)
             stamps = re.findall(
                 r"<gml:timePosition>([^<]+)</gml:timePosition>", r.text)
-            if len(urls) != len(stamps):
-                log.warning("backfill FI %s: %d urls vs %d stamps, skipped",
+            if len(urls) == len(stamps):
+                day_entries = [
+                    (dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
+                     u.replace("&amp;", "&"))
+                    for u, t in zip(urls, stamps)]
+            else:
+                log.warning("backfill FI %s: %d urls vs %d stamps, ignored",
                             day, len(urls), len(stamps))
-                continue
-            entries += [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
-                         u.replace("&amp;", "&"))
-                        for u, t in zip(urls, stamps)]
         except Exception as e:
             log.warning("backfill FI listing %s: %s", day, e)
-    n_fi = _backfill_slots(s3, s, "FI", entries, _decode_fmi,
+        if day_entries:
+            wfs_entries += day_entries
+        else:
+            try:
+                s3_entries += _fmi_s3_entries(s, day)
+            except Exception as e:
+                log.warning("backfill FI s3 listing %s: %s", day, e)
+    n_fi = _backfill_slots(s3, s, "FI", wfs_entries, _decode_fmi,
                            idx_cache, dirty)
+    n_fi += _backfill_slots(s3, s, "FI", s3_entries, _decode_fmi_dbzh,
+                            idx_cache, dirty)
 
     for day in sorted(dirty):
         _save_day_idx(s3, day, idx_cache[day])

@@ -6,8 +6,8 @@ on:
         description: "Days of SMHI history to backfill (0 = today only)"
         default: "14"
       fi_days:
-        description: "Days of FMI history to backfill (0 = today only; archive reaches ~7)"
-        default: "7"
+        description: "Days of FMI history to backfill (0 = today only; WFS ~7 d, S3 mirror beyond)"
+        default: "14"
       se_overwrite:
         description: "Re-decode SE frames that are already stored (after an SMHI_DBZ_ADJ change)"
         default: "0"
@@ -33,7 +33,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           NORDIC_SE_DAYS: ${{ github.event.inputs.se_days || '14' }}
-          NORDIC_FI_DAYS: ${{ github.event.inputs.fi_days || '7' }}
+          NORDIC_FI_DAYS: ${{ github.event.inputs.fi_days || '14' }}
           NORDIC_SE_OVERWRITE: ${{ github.event.inputs.se_overwrite || '0' }}
         run: python jobs/run_nordic_backfill.py
       - name: Re-render composites with the new layers
