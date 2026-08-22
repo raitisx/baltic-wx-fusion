@@ -29,44 +29,42 @@ def ls(bucket, prefix="", delim="/", keys=25):
     return r.status_code, pres, keys_
 
 
-for b in BUCKETS:
-    code, pres, keys = ls(b)
-    print(f"{b}: HTTP {code}, top prefixes {pres[:12]}, keys {keys[:5]}")
+import rasterio  # noqa: E402  (workflow installs it; fail fast if not)
 
 b = BUCKETS[0]
 old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=10)
-for probe in (f"{old:%Y/%m/%d}/", f"{old:%Y}/{old:%m}/{old:%d}/",
-              f"{old:%Y%m%d}/", f"{old:%Y}/"):
-    code, pres, keys = ls(b, probe)
-    print(f"  prefix {probe!r}: HTTP {code}, prefixes {pres[:10]}, "
-          f"keys {keys[:8]}")
-    if pres or keys:
-        # Drill one level further to see the products.
-        nxt = pres[0] if pres else None
-        if nxt:
-            code2, pres2, keys2 = ls(b, nxt)
-            print(f"    -> {nxt!r}: prefixes {pres2[:10]}, keys {keys2[:8]}")
-            if pres2:
-                code3, pres3, keys3 = ls(b, pres2[0], delim="")
-                print(f"       -> {pres2[0]!r}: keys {keys3[:12]}")
-        break
+# Known layout (probe v1): {Y}/{m}/{d}/{site|finrad|finradfast}/
+#   202608120000_fianj_cappi_600_dbzh_qc.tif etc., archive back to 2020.
+for comp in ("finrad", "finradfast"):
+    _, _, kk = ls(b, f"{old:%Y/%m/%d}/{comp}/2026", delim="", keys=60)
+    prods = sorted({re.sub(r"^.*?\d{12}_", "", k) for k in kk})
+    print(f"{comp}: {len(kk)} keys in first page, products {prods}")
+    if kk:
+        print("  first keys:", kk[:4])
 
-# If a composite rr key shows up anywhere above, fetch and describe it.
-found = []
-for prefix in (f"{old:%Y/%m/%d}/",):
-    _, pres, _ = ls(b, prefix)
-    for p in pres:
-        _, _, kk = ls(b, p, delim="", keys=40)
-        found += [k for k in kk if re.search(r"rr|RR", k)]
-if found:
-    import rasterio
-    key = found[len(found) // 2]
-    r = s.get(f"https://{b}.s3.eu-west-1.amazonaws.com/{key}", timeout=120)
-    print(f"sample {key}: HTTP {r.status_code}, {len(r.content)} bytes")
+# Describe one rr-looking composite (fall back to dbzh) from 10 days ago.
+_, _, kk = ls(b, f"{old:%Y/%m/%d}/finrad/{old:%Y%m%d}12", delim="", keys=40)
+pick = next((k for k in kk if re.search(r"_rr", k)), None) or \
+    next((k for k in kk if "dbz" in k), None)
+if pick:
+    r = s.get(f"https://{b}.s3.eu-west-1.amazonaws.com/{pick}", timeout=120)
+    print(f"sample {pick}: HTTP {r.status_code}, {len(r.content)} bytes")
     with rasterio.open(io.BytesIO(r.content)) as ds:
         v = ds.read(1)
+        import numpy as np
+        hi = np.iinfo(v.dtype).max if v.dtype.kind == "u" else np.inf
+        wet = v[(v > 0) & (v < hi)]
         print(f"  shape {v.shape}, dtype {v.dtype}, crs {ds.crs}, "
-              f"min/max {v.min()}/{v.max()}, "
-              f"nonzero {(v > 0).sum()}")
+              f"transform {ds.transform}, nodata {ds.nodata}")
+        print(f"  min/max {v.min()}/{v.max()}, nonzero {(v > 0).sum()}, "
+              f"wet percentiles "
+              f"{np.percentile(wet, [10, 50, 90]).round(1).tolist() if wet.size else '-'}")
+        print(f"  tags: {ds.tags()}")
 else:
-    print("no rr-looking keys found at the 10-day-old date")
+    print("no rr/dbz keys under finrad at 12Z, 10 days ago")
+
+# How deep does finrad go back? Spot-check a few ages.
+for back in (14, 30, 180, 365):
+    d = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=back)
+    _, _, kk = ls(b, f"{d:%Y/%m/%d}/finrad/{d:%Y%m%d}12", delim="", keys=10)
+    print(f"finrad -{back}d: {len(kk)} keys at 12Z")
