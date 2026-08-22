@@ -52,12 +52,20 @@ except Exception as e:
 
 # --- SMHI Sweden composite (open, key-free) --------------------------------
 try:
+    import datetime as dt
+    today = dt.datetime.now(dt.timezone.utc)
     r = s.get("https://opendata-download-radar.smhi.se/api/version/latest/"
-              "area/sweden/product/comp", timeout=60)
+              f"area/sweden/product/comp/{today:%Y/%m/%d}", timeout=60)
     r.raise_for_status()
-    files = r.json().get("files", [])
+    j = r.json()
+    print("smhi keys:", list(j)[:8])
+    files = j.get("files") or []
+    if not files:
+        print("smhi raw head:", json.dumps(j)[:400])
     latest = max(files, key=lambda f: f.get("valid", ""))
-    png = next(f for f in latest["formats"] if f["key"] == "png")
+    fmts = latest.get("formats", [])
+    print("smhi formats:", [f.get("key") for f in fmts])
+    png = next((f for f in fmts if f.get("key") == "png"), fmts[0] if fmts else None)
     print(f"smhi: valid {latest.get('valid')}, {png['link']}")
     img = s.get(png["link"], timeout=60)
     img.raise_for_status()
