@@ -78,6 +78,16 @@ def _to_lev(rr_grid):
     return lev
 
 
+# Calibration against the neighbours, probe 22.08.2026 (co-wet pixels over
+# 14 days): SE ran x2.0 hot vs LT2 (150k px / 20 h, the largest close-range
+# overlap) and x6.8 vs EE — but FI, which ships real FMI rain rates, was
+# itself x4.5 vs EE, so EE reads cold against everyone and LT2/LV are the
+# anchor. SMHI's comp is a column-max reflectivity product, which overshoots
+# surface rate through Marshall-Palmer; -5 dB ~ halves the rate and centres
+# SE on the Baltic feeds' look (user report: "SE too orange").
+SMHI_DBZ_ADJ = 5.0
+
+
 def _decode_smhi(body):
     """SMHI GeoTIFF bytes -> level grid on our 3059 raster."""
     import rasterio
@@ -85,7 +95,9 @@ def _decode_smhi(body):
         v = ds.read(1)
         # dBZ = 0.4*v - 30; 0 = clear, 255 = outside coverage
         mask = (v > 0) & (v < 255)
-        dbz = np.where(mask, 0.4 * v.astype(np.float32) - 30.0, -100.0)
+        dbz = np.where(mask,
+                       0.4 * v.astype(np.float32) - 30.0 - SMHI_DBZ_ADJ,
+                       -100.0)
         rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
@@ -199,21 +211,25 @@ def load_stored(s3, frame):
     return np.array(Image.open(io.BytesIO(body)).convert("L"), np.uint8)
 
 
-def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty):
+def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty,
+                    overwrite=False):
     """Store one sweep per 15-min slot from (stamp, url) entries.
 
     Slots that already hold a stored sweep for this code (within the slot
     tolerance) are skipped, so re-runs and overlap with the live feed cost
-    nothing. Returns the number of frames stored."""
+    nothing. overwrite ignores what is stored and re-decodes everything —
+    for when the decode itself changed (same stamps -> same keys, so the
+    stale pngs are replaced in place). Returns the number stored."""
     stored = 0
     by_day = {}
     for stamp, url in entries:
         by_day.setdefault(stamp.date(), []).append((stamp, url))
     for day, avail in sorted(by_day.items()):
         idx = _load_day_idx(s3, day, idx_cache)
-        have = [dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=dt.timezone.utc)
-                for f in idx["frames"] if f.get("code") == code]
+        have = [] if overwrite else [
+            dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=dt.timezone.utc)
+            for f in idx["frames"] if f.get("code") == code]
         day0 = dt.datetime.combine(day, dt.time(0), tzinfo=dt.timezone.utc)
         for n in range(24 * 60 // SLOT_MIN):
             slot = day0 + dt.timedelta(minutes=n * SLOT_MIN)
@@ -278,12 +294,14 @@ def reindex(s3, days=20):
     return added
 
 
-def backfill(s3, se_days=14, fi_days=7):
+def backfill(s3, se_days=14, fi_days=7, se_overwrite=False):
     """Pull past SE + FI sweeps onto the 15-min slot grid of the store.
 
     SMHI's dated listing reaches back years; FMI's WFS serves only about a
     week — both verified 22.08.2026. Only the warped level grids are stored
-    (lossless grayscale pngs), never the source GeoTIFFs."""
+    (lossless grayscale pngs), never the source GeoTIFFs. se_overwrite
+    re-decodes SE frames that are already stored (after an SMHI_DBZ_ADJ
+    change)."""
     s = session()
     now = dt.datetime.now(dt.timezone.utc)
     idx_cache, dirty = {}, set()
@@ -303,7 +321,7 @@ def backfill(s3, se_days=14, fi_days=7):
         except Exception as e:
             log.warning("backfill SE listing %s: %s", day, e)
     n_se = _backfill_slots(s3, s, "SE", entries, _decode_smhi,
-                           idx_cache, dirty)
+                           idx_cache, dirty, overwrite=se_overwrite)
 
     entries = []
     for back in range(fi_days, -1, -1):

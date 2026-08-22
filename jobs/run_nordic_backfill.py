@@ -17,8 +17,11 @@ logging.basicConfig(level=logging.INFO,
                     format="%(levelname)s %(name)s: %(message)s")
 SE_DAYS = int(os.environ.get("NORDIC_SE_DAYS", "14"))
 FI_DAYS = int(os.environ.get("NORDIC_FI_DAYS", "7"))
+SE_OVERWRITE = os.environ.get("NORDIC_SE_OVERWRITE", "0") == "1"
 
 if __name__ == "__main__":
-    n = radar_nordic.backfill(radar_store.r2_client(),
-                              se_days=SE_DAYS, fi_days=FI_DAYS)
+    s3 = radar_store.r2_client()
+    radar_nordic.reindex(s3)   # heal any cancelled-run orphans first
+    n = radar_nordic.backfill(s3, se_days=SE_DAYS, fi_days=FI_DAYS,
+                              se_overwrite=SE_OVERWRITE)
     print(f"{n} frames backfilled")
