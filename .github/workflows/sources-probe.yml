@@ -10,7 +10,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Dependencies
-        run: pip install requests pillow boto3
+        run: pip install requests pillow boto3 rasterio pyproj numpy
       - name: Current image from every radar source
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
