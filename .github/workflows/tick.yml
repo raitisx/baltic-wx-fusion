@@ -8,7 +8,7 @@ name: tick
 # models.yml on a 2x/day cadence — see that file.
 on:
   schedule:
-    - cron: "7 * * * *"   # hh:07 UTC — off the top-of-hour GH congestion
+    - cron: "7,37 * * * *"   # every half hour, off the top-of-hour GH congestion
   workflow_dispatch:
 
 concurrency:
@@ -82,6 +82,18 @@ jobs:
                                 # and 12 h means a throttled cron's gap is
                                 # repaired within the hour, not next sweep
         run: python jobs/run_radar_backfill.py
+
+      - name: Radar quarter-hour frames (stored originals)
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_RENDER_HOURS: "2"
+          RADAR_RENDER_PRUNE: "0"
+        run: python jobs/run_radar_render.py
 
       # Hours the page asked for that have no frames. Usually nothing to do.
       - name: Requested map hours

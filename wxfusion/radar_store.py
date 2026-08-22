@@ -137,20 +137,31 @@ def _save_index(s3, day: dt.date, idx: dict) -> None:
                   CacheControl="public, max-age=300")
 
 
+# The store keeps a sweep per 15-minute slot: fine enough for the seek bar to
+# step quarter-hours, and the round-hour sweeps are just the :00 slots. A
+# sweep counts for a slot only within this tolerance, or a lone 13:29 sweep
+# would be filed under both 13:15 and 13:30.
+SLOT_MIN = 15
+SLOT_TOL_MIN = 8
+# How long the quarter-hour detail is kept — sources and rendered frames both.
+# After this only the round-hour sweeps stay (for the year), which is all the
+# hourly archive ever needed.
+QUARTER_DAYS = 14
+
+
 def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
     """Pull the overlays for a window and keep them exactly as served.
 
-    The bounds come with the overlay listing, not with the image, so they are
-    written into the day index alongside it. Without them a stored PNG is an
-    unplaceable rectangle.
+    One sweep per feed per 15-minute slot. The bounds come with the overlay
+    listing, not with the image, so they are written into the day index
+    alongside it. Without them a stored PNG is an unplaceable rectangle.
     """
     s, s3 = session(), r2_client()
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
     stored = 0
-    # One listing for the whole window, not one per hour. The endpoint takes an
-    # epoch range and hands back everything inside it, so asking seven times
-    # for seven overlapping hours was seven requests where one does; the
-    # per-hour buckets are a groupby over the single answer.
+    # One listing for the whole window, not one per slot. The endpoint takes an
+    # epoch range and hands back everything inside it; the per-slot buckets are
+    # a groupby over the single answer.
     try:
         allov = fetch_overlays_window(
             now - dt.timedelta(hours=hours_back, minutes=NEAR_MIN),
@@ -158,18 +169,22 @@ def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
     except Exception:
         log.exception("store: overlay listing failed")
         return 0
-    for back in range(hours_back, -1, -1):
-        hour = now - dt.timedelta(hours=back)
+    idx_cache, dirty_days = {}, set()
+    n_slots = hours_back * (60 // SLOT_MIN) + 1
+    for back in range(n_slots - 1, -1, -1):
+        hour = now - dt.timedelta(minutes=back * SLOT_MIN)
         by = collections.defaultdict(list)
         for o in allov:
-            if abs((o["time"] - hour).total_seconds()) <= NEAR_MIN * 60:
+            if abs((o["time"] - hour).total_seconds()) <= SLOT_TOL_MIN * 60:
                 by[o["code"]].append(o)
-        idx = _load_index(s3, hour.date())
+        if hour.date() not in idx_cache:
+            idx_cache[hour.date()] = _load_index(s3, hour.date())
+        idx = idx_cache[hour.date()]
         have = {f["key"] for f in idx["frames"]}
         dirty = False
         for code, frames in by.items():
             frames.sort(key=lambda o: abs((o["time"] - hour).total_seconds()))
-            for o in frames[:per_hour]:
+            for o in frames[:1]:
                 key = _src_key(o)
                 if key in have:
                     continue
@@ -203,8 +218,10 @@ def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
                 stored += 1
                 dirty = True
         if dirty:
-            idx["frames"].sort(key=lambda f: f["time"])
-            _save_index(s3, hour.date(), idx)
+            dirty_days.add(hour.date())
+    for d in dirty_days:
+        idx_cache[d]["frames"].sort(key=lambda f: f["time"])
+        _save_index(s3, d, idx_cache[d])
     log.info("radar store: %d new source overlays", stored)
     return stored
 
@@ -267,69 +284,133 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
                 best[f["code"]] = (gap, t, f)
         if not best:
             continue
-        canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
-        cold = _freezing_mask(hour)
-        used = []
-        layers = []
-        # Neighbours first, LV last on top, as in the live composite. The
-        # nordic frames are stored as level grids already on the 3059 canvas
-        # (grid3059), so they skip the classify/resample/beam chain.
-        for code in ("SE", "FI", "EE", "LT2", "LT", "LV"):
-            if code not in best:
-                continue
-            _, t, f = best[code]
-            try:
-                if f.get("grid3059"):
-                    from .radar_nordic import load_stored
-                    grid = load_stored(s3, f)
-                else:
-                    cls = _classify_stored(s3, f)
-                    grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
-                    grid = _close_radial_spokes(_despeckle_intensity(
-                        _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
-            except Exception:
-                log.exception("render: %s unreadable", f["key"])
-                continue
-            layers.append((code, grid))
-            used.append(t)
-        if not used:
+        vtag = _render_slot(s3, best, hour)
+        if vtag is None:
             continue
-        # Recolor once every feed is in, so the weak-echo fade knows which
-        # radars are awake this hour (coverage-aware — see _weak_alpha_aware).
-        act = active_feeds(layers)
-        for code, grid in layers:
-            canvas.alpha_composite(_recolor(grid, cold, code, act))
-        canvas = _fade_edges(canvas)
-        draw_borders(canvas)
-        # Named after the sweep it came from, not the hour it is filed under.
-        stamp = max(used)
-        vtag = stamp.strftime("%Y%m%dT%H%M")
-        buf = io.BytesIO()
-        canvas.save(buf, "PNG", optimize=True)
-        s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FRAME_PREFIX}/{vtag}.png",
-                      Body=buf.getvalue(), ContentType="image/png",
-                      CacheControl="public, max-age=604800")
         arch["hours"][hour_key] = vtag
         arch.setdefault("rev", {})[hour_key] = rev   # see the note in radar_backfill
         done += 1
+    # Quarter-hour frames for the near past: every :15/:30/:45 slot of the
+    # last QUARTER_DAYS gets its own composite wherever the store holds sweeps
+    # within the slot tolerance. Days from before the 15-minute store simply
+    # have none and are skipped. Keyed separately (arch["quarters"]) so the
+    # hourly contract — and every consumer of it — is untouched; the page
+    # treats the quarters as extra candidates for its nearest-frame lookup.
+    quarters = arch.setdefault("quarters", {})
+    qcut = (now - dt.timedelta(days=QUARTER_DAYS)).strftime("%Y%m%dT%H%M")
+    for k in [k for k in quarters if k < qcut]:
+        del quarters[k]
+    q_done = 0
+    for back in range(QUARTER_DAYS * 24 * 4):
+        slot = now - dt.timedelta(minutes=SLOT_MIN * back)
+        if slot.minute == 0:
+            continue                                 # the hourly pass owns :00
+        qkey = slot.strftime("%Y%m%dT%H%M")
+        if not force and qkey in quarters:
+            continue
+        d = slot.date()
+        if d not in days:
+            days[d] = _load_index(s3, d)
+        best = {}
+        for f in days[d]["frames"]:
+            t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=dt.timezone.utc)
+            gap = abs((t - slot).total_seconds())
+            if gap > SLOT_TOL_MIN * 60:
+                continue
+            cur = best.get(f["code"])
+            if cur is None or gap < cur[0]:
+                best[f["code"]] = (gap, t, f)
+        if not best:
+            continue
+        vtag = _render_slot(s3, best, slot)
+        if vtag is None:
+            continue
+        quarters[qkey] = vtag
+        arch.setdefault("rev", {})[qkey] = rev
+        q_done += 1
     s3.put_object(Bucket=config.R2_BUCKET, Key=ARCHIVE_KEY,
                   Body=json.dumps(arch).encode(),
                   ContentType="application/json",
                   CacheControl="public, max-age=300")
-    log.info("radar render: %d composites from stored sources", done)
-    return done
+    log.info("radar render: %d hourly + %d quarter composites from stored sources",
+             done, q_done)
+    return done + q_done
+
+
+def _render_slot(s3, best, when):
+    """One slot's chosen sweeps -> a stored composite frame; returns its vtag.
+
+    Neighbours first, LV last on top, as in the live composite. The nordic
+    frames are stored as level grids already on the 3059 canvas (grid3059), so
+    they skip the classify/resample/beam chain. Recolor happens once every
+    feed is in, so the weak-echo fade knows which radars are awake
+    (coverage-aware — see _weak_alpha_aware)."""
+    from . import proj3059 as P
+    canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    cold = _freezing_mask(when)
+    used = []
+    layers = []
+    for code in ("SE", "FI", "EE", "LT2", "LT", "LV"):
+        if code not in best:
+            continue
+        _, t, f = best[code]
+        try:
+            if f.get("grid3059"):
+                from .radar_nordic import load_stored
+                grid = load_stored(s3, f)
+            else:
+                cls = _classify_stored(s3, f)
+                grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
+                grid = _close_radial_spokes(_despeckle_intensity(
+                    _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
+        except Exception:
+            log.exception("render: %s unreadable", f["key"])
+            continue
+        layers.append((code, grid))
+        used.append(t)
+    if not used:
+        return None
+    act = active_feeds(layers)
+    for code, grid in layers:
+        canvas.alpha_composite(_recolor(grid, cold, code, act))
+    canvas = _fade_edges(canvas)
+    draw_borders(canvas)
+    # Named after the sweep it came from, not the slot it is filed under.
+    vtag = max(used).strftime("%Y%m%dT%H%M")
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG", optimize=True)
+    s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FRAME_PREFIX}/{vtag}.png",
+                  Body=buf.getvalue(), ContentType="image/png",
+                  CacheControl="public, max-age=604800")
+    return vtag
 
 
 def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> dict:
-    """Originals for a year, pictures for a fortnight.
+    """Quarter-hour detail for a fortnight, round hours for a year.
 
-    The pictures are the disposable half now — anything inside the year
-    re-renders from what is kept, so holding old renders would only mean
-    holding renders made with old rules.
+    Two-phase, sources and rendered frames alike: inside QUARTER_DAYS
+    everything stays; between QUARTER_DAYS and the long limit only stamps
+    within the slot tolerance of a round hour survive (the sweeps the hourly
+    archive is built from); past the long limit everything goes. Anything
+    inside the year still re-renders hourly from what is kept.
     """
     s3 = r2_client()
     now = dt.datetime.now(dt.timezone.utc)
     out = {"sources": 0, "frames": 0}
+    q_cut = now - dt.timedelta(days=QUARTER_DAYS)
+    # Frames the hourly archive references are never minute-pruned: an hourly
+    # frame is NAMED by its sweep, which NEAR_MIN lets sit well off the hour.
+    try:
+        arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
+                                        Key=ARCHIVE_KEY)["Body"].read())
+        protected = {f"{FRAME_PREFIX}/{v}.png" for v in arch.get("hours", {}).values()}
+    except Exception:
+        protected = set()
+
+    def near_hour(t):
+        m = t.minute
+        return m <= SLOT_TOL_MIN or m >= 60 - SLOT_TOL_MIN
 
     def _sweep(prefix, older_than, stamp_of):
         n = 0
@@ -342,7 +423,9 @@ def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> d
             gone = []
             for obj in page.get("Contents", []):
                 t = stamp_of(obj["Key"])
-                if t is not None and t < older_than:
+                if t is None or obj["Key"] in protected:
+                    continue
+                if t < older_than or (t < q_cut and not near_hour(t)):
                     gone.append({"Key": obj["Key"]})
             for i in range(0, len(gone), 1000):
                 s3.delete_objects(Bucket=config.R2_BUCKET,
