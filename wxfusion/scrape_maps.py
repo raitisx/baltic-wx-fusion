@@ -841,6 +841,20 @@ BEAM_START_KM = 150
 BEAM_HAIR_DEG = 3.0
 BEAM_HAIR_ELONG = 15.0
 BEAM_HAIR_LEN = 20
+# The dashed ray that near-misses everything. On the 21.08 20:56 LV frame the
+# Riga beam arrived as five fragments on one bearing corridor — spans 10-25 km,
+# elongations 12-26 — each ONE number short of the hair gate (18<20 km, or
+# 13.3<15x), with dash gaps beyond BEAM_GAP_KM so the closing never joined
+# them; and the ridge test upstream was blind to it because the surrounding sky
+# was empty (flank reach 0, under REACH_MIN_FLANK_KM, the isolated-shower
+# guard). So a second detection pass re-closes with this much wider bridge —
+# along the ray and across the one-bin wobble — and judges the merged shape by
+# the NARROW gates only (needle/hair). The dashes above merge to a 75 km ray at
+# 1.5 deg, elongation 30+: unmistakable. Real weather cannot ride in on the
+# wide bridge because nothing meteorological is 3 deg wide over that length —
+# the wedge gate, which scattered convection could reach when bridged this far,
+# deliberately does not apply on this pass.
+BEAM_DASH_GAP_KM = 45
 # Smallest removal worth writing. Was BEAM_MIN_PX // 2 (75) inline. An isolated
 # beam in a low-res source frame is tiny — the 11.08 Riga ray was 28 px all
 # told — so the floor has to sit below that. The shape gates (a 20 km ray, 3
@@ -937,47 +951,50 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
 
         occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
         occ[az[keep], rb[keep]] = True
-        # Bridge the dashes, along the ray only.
-        closed = ndimage.binary_closing(
-            occ, structure=np.ones((1, BEAM_GAP_KM), bool))
-        lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
-        if n == 0:
-            continue
-
         kill_bins = np.zeros((N_AZ, R_MAX_KM + 1), bool)
-        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
-            a0, a1 = sl[0].start, sl[0].stop
-            r0, r1 = sl[1].start, sl[1].stop
-            r_span = r1 - r0
-            a_span = (a1 - a0) * 360.0 / N_AZ
-            width_km = (r0 + r1) / 2.0 * np.radians(a_span)
-            elong = r_span / width_km if width_km > 0 else 0.0
-            long_enough = r_span >= BEAM_MIN_LEN_KM
-            wedge = (long_enough and a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
-                     and r0 <= BEAM_START_KM)
-            needle = (long_enough and a_span <= BEAM_NARROW_DEG
-                      and elong >= BEAM_NARROW_ELONG)
-            hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
-                    and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
-            if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
-                log.info("beam_diag polar %s: comp r%d-%d span%d aspan%.1f "
-                         "elong%.1f start%d -> wedge=%s needle=%s hair=%s", name,
-                         r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
-            if not (wedge or needle or hair):
+        # Two detection passes: the ordinary close (all three gates), then the
+        # wide dash-bridging close (narrow gates only — see BEAM_DASH_GAP_KM).
+        for gap_struct, all_gates in (
+                (np.ones((1, BEAM_GAP_KM), bool), True),
+                (np.ones((3, BEAM_DASH_GAP_KM), bool), False)):
+            closed = ndimage.binary_closing(occ, structure=gap_struct)
+            lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
+            if n == 0:
                 continue
-            # Zero the ray only where a flank is clear; spare the ranges where
-            # it is buried in rain, so an over-reach loses its cone without a
-            # white gash being punched through the storm it started in.
-            comp = (lab == i)
-            comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
-            if not comp.any():
-                if os.environ.get("RADAR_BEAM_DEBUG"):
-                    log.info("beam_diag polar %s: comp r%d-%d fully embedded — "
-                             "kept, not gouged", name, r0, r1)
-                continue
-            kill_bins |= comp
-            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
-                           f"elong {elong:.1f}")
+            for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+                a0, a1 = sl[0].start, sl[0].stop
+                r0, r1 = sl[1].start, sl[1].stop
+                r_span = r1 - r0
+                a_span = (a1 - a0) * 360.0 / N_AZ
+                width_km = (r0 + r1) / 2.0 * np.radians(a_span)
+                elong = r_span / width_km if width_km > 0 else 0.0
+                long_enough = r_span >= BEAM_MIN_LEN_KM
+                wedge = (all_gates and long_enough and a_span <= BEAM_MAX_DEG
+                         and elong >= BEAM_ELONG and r0 <= BEAM_START_KM)
+                needle = (long_enough and a_span <= BEAM_NARROW_DEG
+                          and elong >= BEAM_NARROW_ELONG)
+                hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
+                        and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
+                if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
+                    log.info("beam_diag polar %s%s: comp r%d-%d span%d aspan%.1f "
+                             "elong%.1f start%d -> wedge=%s needle=%s hair=%s", name,
+                             "" if all_gates else " (dash)",
+                             r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
+                if not (wedge or needle or hair):
+                    continue
+                # Zero the ray only where a flank is clear; spare the ranges where
+                # it is buried in rain, so an over-reach loses its cone without a
+                # white gash being punched through the storm it started in.
+                comp = (lab == i)
+                comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
+                if not comp.any():
+                    if os.environ.get("RADAR_BEAM_DEBUG"):
+                        log.info("beam_diag polar %s: comp r%d-%d fully embedded — "
+                                 "kept, not gouged", name, r0, r1)
+                    continue
+                kill_bins |= comp
+                removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg "
+                               f"elong {elong:.1f}")
 
         if not kill_bins.any():
             continue
@@ -1549,42 +1566,48 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
         rb = np.clip(rng.astype(int), 0, R_MAX_KM)
         occ = np.zeros((N_AZ, R_MAX_KM + 1), bool)
         occ[az[keep], rb[keep]] = True
-        closed = ndimage.binary_closing(occ, structure=np.ones((1, BEAM_GAP_KM), bool))
-        lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
-        if n == 0:
-            continue
         kill = np.zeros((N_AZ, R_MAX_KM + 1), bool)
-        for i, sl in enumerate(ndimage.find_objects(lab), start=1):
-            a0, a1 = sl[0].start, sl[0].stop
-            r0, r1 = sl[1].start, sl[1].stop
-            r_span = r1 - r0
-            a_span = (a1 - a0) * 360.0 / N_AZ
-            width_km = (r0 + r1) / 2.0 * np.radians(a_span)
-            elong = r_span / width_km if width_km > 0 else 0.0
-            long_enough = r_span >= BEAM_MIN_LEN_KM
-            wedge = (long_enough and a_span <= BEAM_MAX_DEG and elong >= BEAM_ELONG
-                     and r0 <= BEAM_START_KM)
-            needle = (long_enough and a_span <= BEAM_NARROW_DEG
-                      and elong >= BEAM_NARROW_ELONG)
-            hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
-                    and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
-            # Log any component that even looks ray-ish, flagged or not, so a
-            # beam that fell just outside the shape gates is visible.
-            if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
-                log.info("beam_diag %s %s: comp r%d-%d span%d aspan%.1f elong%.1f "
-                         "start%d -> wedge=%s needle=%s hair=%s", feed, name, r0,
-                         r1, r_span, a_span, elong, r0, wedge, needle, hair)
-            if not (wedge or needle or hair):
+        # Two passes, as in _remove_beams_polar: ordinary close with all three
+        # gates, then the wide dash-bridge with the narrow gates only.
+        for gap_struct, all_gates in (
+                (np.ones((1, BEAM_GAP_KM), bool), True),
+                (np.ones((3, BEAM_DASH_GAP_KM), bool), False)):
+            closed = ndimage.binary_closing(occ, structure=gap_struct)
+            lab, n = ndimage.label(closed, structure=np.ones((3, 3)))
+            if n == 0:
                 continue
-            comp = (lab == i)
-            comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
-            if not comp.any():
-                if os.environ.get("RADAR_BEAM_DEBUG"):
-                    log.info("beam_diag %s %s: comp r%d-%d fully embedded — kept",
-                             feed, name, r0, r1)
-                continue
-            kill |= comp
-            removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
+            for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+                a0, a1 = sl[0].start, sl[0].stop
+                r0, r1 = sl[1].start, sl[1].stop
+                r_span = r1 - r0
+                a_span = (a1 - a0) * 360.0 / N_AZ
+                width_km = (r0 + r1) / 2.0 * np.radians(a_span)
+                elong = r_span / width_km if width_km > 0 else 0.0
+                long_enough = r_span >= BEAM_MIN_LEN_KM
+                wedge = (all_gates and long_enough and a_span <= BEAM_MAX_DEG
+                         and elong >= BEAM_ELONG and r0 <= BEAM_START_KM)
+                needle = (long_enough and a_span <= BEAM_NARROW_DEG
+                          and elong >= BEAM_NARROW_ELONG)
+                hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
+                        and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
+                # Log any component that even looks ray-ish, flagged or not, so a
+                # beam that fell just outside the shape gates is visible.
+                if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
+                    log.info("beam_diag %s %s%s: comp r%d-%d span%d aspan%.1f elong%.1f "
+                             "start%d -> wedge=%s needle=%s hair=%s", feed, name,
+                             "" if all_gates else " (dash)", r0,
+                             r1, r_span, a_span, elong, r0, wedge, needle, hair)
+                if not (wedge or needle or hair):
+                    continue
+                comp = (lab == i)
+                comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
+                if not comp.any():
+                    if os.environ.get("RADAR_BEAM_DEBUG"):
+                        log.info("beam_diag %s %s: comp r%d-%d fully embedded — kept",
+                                 feed, name, r0, r1)
+                    continue
+                kill |= comp
+                removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
         if not kill.any():
             continue
         gone = keep & kill[az, rb]
