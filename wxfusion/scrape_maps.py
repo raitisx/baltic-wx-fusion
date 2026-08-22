@@ -900,6 +900,36 @@ def _embedded_range_mask(closed, a0, a1) -> np.ndarray:
     return (lf >= BEAM_FLANK_ISO_FRAC) & (rf >= BEAM_FLANK_ISO_FRAC)
 
 
+def _sweep_dash_neighbours(occ, kill, ndimage):
+    """Once a beam is confirmed, collect the thin fragments right beside it.
+
+    A dashed ray never dies whole: on the 21.08 20:56 LV frame the dash pass
+    cleared three corridors and left fragments one number short of every gate —
+    spans 28 and 29 km against the 30 the dash bar asks, a 15 km hair at
+    elongation 20. Chasing them by lowering the bars would eventually reach
+    real weather; instead, use what is already known. These fragments sit
+    within a couple of bins of a corridor that WAS condemned, and a thin
+    ray-ish component that close to a confirmed beam is the same beam. The
+    shape bar here is deliberately low (elong >= 4) because the neighbourhood
+    test is doing the vouching."""
+    grown = ndimage.binary_dilation(kill, structure=np.ones((5, 41), bool))
+    lab, n = ndimage.label(occ, structure=np.ones((3, 3)))
+    extra = np.zeros_like(kill)
+    for i, sl in enumerate(ndimage.find_objects(lab), start=1):
+        a0, a1 = sl[0].start, sl[0].stop
+        r0, r1 = sl[1].start, sl[1].stop
+        a_span = (a1 - a0) * 360.0 / N_AZ
+        width_km = (r0 + r1) / 2.0 * np.radians(a_span)
+        elong = (r1 - r0) / width_km if width_km > 0 else 0.0
+        if a_span > BEAM_HAIR_DEG or elong < 4.0 or r0 > BEAM_START_KM:
+            continue
+        comp = (lab == i)
+        if (comp & kill).any() or not (comp & grown).any():
+            continue
+        extra |= comp
+    return extra
+
+
 def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
     """Remove interference cones by the shape that defines them.
 
@@ -1011,6 +1041,7 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
 
         if not kill_bins.any():
             continue
+        kill_bins |= _sweep_dash_neighbours(occ, kill_bins, ndimage)
         # Only ever clear pixels that were lit; the closing was for detection.
         gone = keep & kill_bins[az, rb]
         if os.environ.get("RADAR_BEAM_DEBUG"):
@@ -1626,6 +1657,7 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                 removed.append(f"{name} {r0}-{r1} km {a_span:.1f} deg elong {elong:.1f}")
         if not kill.any():
             continue
+        kill |= _sweep_dash_neighbours(occ, kill, ndimage)
         gone = keep & kill[az, rb]
         # An isolated beam lives in a near-empty frame, so its whole removal can
         # be well under the old 75 px "don't bother" floor and still be the only
