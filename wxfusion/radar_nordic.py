@@ -236,6 +236,48 @@ def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty):
     return stored
 
 
+def reindex(s3, days=20):
+    """Repair day indexes for stored SE/FI pngs that are missing from them.
+
+    The backfill flushes indexes at the end, so a cancelled run leaves stored
+    objects invisible. Lists the store and adds the missing entries; safe to
+    re-run any time."""
+    now = dt.datetime.now(dt.timezone.utc)
+    dirty, cache = set(), {}
+    added = 0
+    for back in range(days, -1, -1):
+        day = (now - dt.timedelta(days=back)).date()
+        idx = _load_day_idx(s3, day, cache)
+        known = {f["key"] for f in idx["frames"]}
+        token = None
+        while True:
+            kw = dict(Bucket=config.R2_BUCKET,
+                      Prefix=f"{SRC_PREFIX}/{day:%Y/%m/%d}/")
+            if token:
+                kw["ContinuationToken"] = token
+            r = s3.list_objects_v2(**kw)
+            for o in r.get("Contents", []):
+                m = re.search(r"/(\d{12})(SE|FI)\.png$", o["Key"])
+                if not m or o["Key"] in known:
+                    continue
+                stamp = dt.datetime.strptime(
+                    m.group(1), "%Y%m%d%H%M").replace(tzinfo=dt.timezone.utc)
+                idx["frames"].append(
+                    {"key": o["Key"], "code": m.group(2),
+                     "time": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "grid3059": True, "enc": "lev", "bytes": int(o["Size"])})
+                dirty.add(day)
+                added += 1
+            if not r.get("IsTruncated"):
+                break
+            token = r.get("NextContinuationToken")
+    for day in sorted(dirty):
+        _save_day_idx(s3, day, cache[day])
+    log.info("nordic reindex: %d entries restored over %d days",
+             added, len(dirty))
+    return added
+
+
 def backfill(s3, se_days=14, fi_days=7):
     """Pull past SE + FI sweeps onto the 15-min slot grid of the store.
 
