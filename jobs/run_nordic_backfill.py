@@ -16,7 +16,7 @@ from wxfusion import radar_nordic, radar_store  # noqa: E402
 logging.basicConfig(level=logging.INFO,
                     format="%(levelname)s %(name)s: %(message)s")
 SE_DAYS = int(os.environ.get("NORDIC_SE_DAYS", "14"))
-FI_DAYS = int(os.environ.get("NORDIC_FI_DAYS", "7"))
+FI_DAYS = int(os.environ.get("NORDIC_FI_DAYS", "14"))
 SE_OVERWRITE = os.environ.get("NORDIC_SE_OVERWRITE", "0") == "1"
 
 if __name__ == "__main__":
