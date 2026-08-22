@@ -1854,7 +1854,7 @@ function render(){
       svgEl("line",{x1:P.left,x2:P.width-P.right,y1:y(tv),y2:y(tv),
         stroke:tv===1000?css("--gridday"):css("--grid"),"stroke-width":1},svg);
       const t=svgEl("text",{x:P.left-6,y:Math.min(bot-2,Math.max(gTop+8,y(tv)+4)),"text-anchor":"end","font-size":fTick,"font-weight":"700",fill:css("--ink")},svg);
-      t.textContent=tv>=1000?(tv/1000)+"km":tv+"m";
+      t.textContent=tv>=CT_MAX?(tv/1000)+"km+":tv>=1000?(tv/1000)+"km":tv+"m";
     }
     const cbLimV=cbLimit();
     svgEl("rect",{x:P.left,y:y(cbLimV),width:P.width-P.left-P.right,height:y0-y(cbLimV),fill:css("--belowzone")},svg);
@@ -3104,7 +3104,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v145",
+    "page v146",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
