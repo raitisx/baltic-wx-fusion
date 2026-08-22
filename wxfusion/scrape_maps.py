@@ -1425,18 +1425,20 @@ def ramp_lut(cold: bool = False) -> np.ndarray:
 
 
 def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
-             feed: str | None = None) -> Image.Image:
+             feed: str | None = None,
+             active: frozenset | None = None) -> Image.Image:
     """Intensity levels -> RGBA, in green or, where the air is below freezing,
     in blue. Recoloured from the level array rather than from finished pixels:
     once the sources are composited the edges are blended and no longer sit on
-    a ramp colour."""
+    a ramp colour. With `active` (the frame's awake feeds, from active_feeds)
+    the weak-echo fade is coverage-aware; without it, the static per-feed one."""
     lev = np.clip(cls, 0, LEV_MAX).astype(np.uint8)
     out = ramp_lut(False)[lev]
     if cold is not None:
         out = np.where(cold[..., None], ramp_lut(True)[lev], out)
     if feed:
         out = out.copy()
-        w = _weak_alpha(feed)
+        w = _weak_alpha_aware(feed, active) if active is not None else _weak_alpha(feed)
         weak = (lev > 0) & (lev <= WEAK_CLASSES * SUB)
         out[..., 3] = np.where(weak, out[..., 3] * w, out[..., 3]).astype(np.uint8)
         # Fade out any coverage circle this frame is showing, here rather than
@@ -2126,6 +2128,65 @@ def _weak_alpha(feed: str) -> np.ndarray:
     return np.clip((lim - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
 
 
+# The per-feed limit assumes the neighbour whose territory the far echo sits
+# over is watching the same sky from closer. Usually true — but when that
+# radar is quiet, the far echo is the only witness there, and fading it erases
+# real rain. Seen 17.08 15-17 UTC: the LV frames held 403 / 1 / 37 echo px in
+# TOTAL, a cell in east Latvia lived only in Vilnius's sweep at ~240 km, and
+# the 180 km LT limit hid it (case book: jobs/check_beam_cases.py). So the
+# limit is coverage-AWARE: weak echo beyond a feed's own limit is faded only
+# where another feed that is demonstrably awake this frame covers the pixel
+# from inside its own limit; where nobody closer is awake, the limit relaxes
+# to the coverage range and the far echo survives.
+#
+# "Awake" is judged from the frame itself: a feed claims coverage only if it
+# painted a meaningful amount of echo — an absolute floor, and a fraction of
+# the busiest feed so a 1-px LV frame next to a 15,000-px LT2 storm does not
+# pass. A quiet-but-healthy radar on a locally dry day can be judged asleep,
+# which errs toward SHOWING a neighbour's far echo — the safe direction: real
+# rain kept beats an occasional far-range smear.
+ACTIVE_MIN_PX = 200
+ACTIVE_MIN_FRAC = 0.02
+
+
+def active_feeds(layers) -> frozenset:
+    """Which of this frame's feeds are awake enough to claim coverage.
+
+    layers: [(code, level grid), ...] as collected by a composite builder."""
+    counts = {code: int((g > 0).sum()) for code, g in layers}
+    busiest = max(counts.values(), default=0)
+    return frozenset(c for c, n in counts.items()
+                     if n >= ACTIVE_MIN_PX and n >= busiest * ACTIVE_MIN_FRAC)
+
+
+@functools.lru_cache(maxsize=32)
+def _weak_alpha_aware(feed: str, active: frozenset) -> np.ndarray:
+    """Coverage-aware weak-echo fade for one feed, given who is awake."""
+    from . import proj3059 as P
+    d = _feed_range_km(feed)
+    if d is None:
+        return np.ones((P.H, P.W), np.float32)
+    own = WEAK_RANGE_KM.get(feed or "", 250.0)
+    # How firmly some OTHER awake feed covers each pixel, 0..1 (smooth over
+    # the same 40 km the fade itself uses, so the handover has no seam).
+    cover = np.zeros((P.H, P.W), np.float32)
+    for other in active:
+        if (other or "")[:2] == (feed or "")[:2]:
+            continue                      # LT and LT2 share antennas
+        do = _feed_range_km(other)
+        if do is None:
+            continue
+        lim = WEAK_RANGE_KM.get(other, 250.0)
+        cover = np.maximum(cover, np.clip((lim - do) / WEAK_FADE_KM, 0.0, 1.0))
+    # Where nobody closer is awake, the weak-range limit steps aside entirely
+    # (relaxes to the 320 km backstop): the product's own rim fade and
+    # _fade_edges still handle the true edge of the data. The 17.08 cell sat
+    # ~245 km from Vilnius — a relax to the 250 km coverage radius would have
+    # left it at a tenth of its weight, which is invisible, not rescued.
+    lim_map = own + (BACKSTOP_RANGE_KM - own) * (1.0 - cover)
+    return np.clip((lim_map - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
+
+
 # A coverage edge is a circle centred on an antenna. Nothing else is.
 #
 # The reported arc on 02.08 01:00 turned out to be neither the product rim nor
@@ -2321,6 +2382,7 @@ def radar_composite(frames_back: int = 3) -> None:
     # echo from heavy. Taken from the classes, not read back off the canvas:
     # once four feeds are composited the pixels are blended.
     newest = None
+    layers = []
     for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
         use = frames[:frames_back]
         if not use:
@@ -2346,7 +2408,12 @@ def radar_composite(frames_back: int = 3) -> None:
         cur = P.resample_mercator_image(cur, f0["sw"], f0["ne"])
         cur = _close_radial_spokes(_despeckle_intensity(
             _remove_beam_lines(_remove_beams_polar(_despeckle(cur)))))
-        canvas.alpha_composite(_recolor(cur, cold, code))
+        layers.append((code, cur))
+    # Recolor once every feed is in, so the weak-echo fade knows which radars
+    # are awake this frame (coverage-aware — see _weak_alpha_aware).
+    act = active_feeds(layers)
+    for code, cur in layers:
+        canvas.alpha_composite(_recolor(cur, cold, code, act))
 
     if newest is None:
         raise RuntimeError("no radar frames fetched")
@@ -2549,8 +2616,8 @@ def radar_backfill(hours_back: int = 168) -> None:
                 continue
             canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
             cold = _freezing_mask(target)
-            got = False
             used = []
+            layers = []
             for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
                 cands = [o for o in overlays if o["code"] == code]
                 if not cands:
@@ -2566,12 +2633,14 @@ def radar_backfill(hours_back: int = 168) -> None:
                 grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
                 grid = _close_radial_spokes(_despeckle_intensity(
                     _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
-                canvas.alpha_composite(_recolor(grid, cold, code))
+                layers.append((code, grid))
                 used.append(best["time"])
-                got = True
-            if not got:
+            if not layers:
                 log.info("backfill %s: no frames in archive", hour_key)
                 continue
+            act = active_feeds(layers)
+            for code, grid in layers:
+                canvas.alpha_composite(_recolor(grid, cold, code, act))
             canvas = _fade_edges(canvas)
             draw_borders(canvas)
             # Name the frame after the sweep it actually came from, not after
@@ -2644,6 +2713,7 @@ def radar_render_one(ts_iso: str) -> None:
     canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
     cold = _freezing_mask(target)
     used = []
+    layers = []
     for code in ("EE", "LT2", "LT", "LV"):  # LV drawn last, on top
         cands = [o for o in overlays if o["code"] == code]
         if not cands:
@@ -2657,11 +2727,14 @@ def radar_render_one(ts_iso: str) -> None:
         grid = P.resample_mercator_image(cls, best["sw"], best["ne"])
         grid = _close_radial_spokes(_despeckle_intensity(
             _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
-        canvas.alpha_composite(_recolor(grid, cold, code))
+        layers.append((code, grid))
         used.append(best["time"])
     if not used:
         log.info("render-one %s: no source frames in window", hour_key)
         return
+    act = active_feeds(layers)
+    for code, grid in layers:
+        canvas.alpha_composite(_recolor(grid, cold, code, act))
     canvas = _fade_edges(canvas)
     draw_borders(canvas)
     stamp = max(used)

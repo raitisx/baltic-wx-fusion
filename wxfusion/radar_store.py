@@ -43,7 +43,8 @@ from .scrape_maps import (_classify_intensity, _close_radial_spokes,
                           _prepare_source,
                           _fade_edges,
                           _freezing_mask, _recolor, _remove_beam_lines,
-                          _remove_beams_polar, LT_MAXSIZE, draw_borders,
+                          _remove_beams_polar, LT_MAXSIZE, active_feeds,
+                          draw_borders,
                           fetch_overlays_window, overlay_bytes, r2_client)
 
 log = logging.getLogger(__name__)
@@ -269,6 +270,7 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
         canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
         cold = _freezing_mask(hour)
         used = []
+        layers = []
         # LV last so it lands on top, as in the live composite.
         for code in ("EE", "LT2", "LT", "LV"):
             if code not in best:
@@ -282,10 +284,15 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
             grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
             grid = _close_radial_spokes(_despeckle_intensity(
                 _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
-            canvas.alpha_composite(_recolor(grid, cold, code))
+            layers.append((code, grid))
             used.append(t)
         if not used:
             continue
+        # Recolor once every feed is in, so the weak-echo fade knows which
+        # radars are awake this hour (coverage-aware — see _weak_alpha_aware).
+        act = active_feeds(layers)
+        for code, grid in layers:
+            canvas.alpha_composite(_recolor(grid, cold, code, act))
         canvas = _fade_edges(canvas)
         draw_borders(canvas)
         # Named after the sweep it came from, not the hour it is filed under.
