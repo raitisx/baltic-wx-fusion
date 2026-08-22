@@ -15,7 +15,7 @@ from PIL import Image  # noqa: E402
 from wxfusion import radar_store as R  # noqa: E402
 from wxfusion.scrape_maps import _classify_intensity  # noqa: E402
 
-TARGET = dt.datetime(2026, 8, 22, 16, 37, tzinfo=dt.timezone.utc)
+TARGET = dt.datetime(2026, 8, 22, 13, 37, tzinfo=dt.timezone.utc)   # 16:37 Riga local
 BOXES = {"riga_sw": (56.6, 57.0, 23.5, 24.4),
          "zemgale": (56.1, 56.7, 25.0, 26.4)}
 
