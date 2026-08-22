@@ -14,6 +14,13 @@ HOURS = int(os.environ.get("RADAR_STORE_HOURS", "6"))
 
 def main() -> int:
     n = radar_store.store_sources(hours_back=HOURS)
+    # Same 15-min rules for the nordic feeds: the live fetch only stores the
+    # newest SE/FI sweep, so fill the recent quarter slots from the archives.
+    try:
+        from wxfusion import radar_nordic
+        n += radar_nordic.topup(radar_store.r2_client(), hours=3)
+    except Exception:
+        logging.getLogger(__name__).exception("nordic topup skipped")
     print(f"{n} source overlays stored")
     return 0
 

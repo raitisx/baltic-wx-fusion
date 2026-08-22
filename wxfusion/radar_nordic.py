@@ -252,6 +252,60 @@ def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty,
     return stored
 
 
+def topup(s3, hours=3):
+    """Fill the recent hours' 15-min slots for SE + FI from the archives.
+
+    The live fetch stores only the newest sweep per tick (a 30-min cadence),
+    which would leave half the quarter slots empty going forward. Both
+    archives serve the near past, so every tick tops up whatever slots the
+    live path missed — the nordic feeds then follow the same 15-min rules as
+    the meteolapa frames. Cheap: at most a handful of small downloads."""
+    s = session()
+    now = dt.datetime.now(dt.timezone.utc)
+    cut = now - dt.timedelta(hours=hours)
+    idx_cache, dirty = {}, set()
+    stored = 0
+
+    entries = []
+    for day in sorted({cut.date(), now.date()}):
+        try:
+            r = s.get(SMHI_LIST.format(d=day), timeout=45)
+            for f in (r.json().get("files") or []) if r.ok else []:
+                tif = next((x["link"] for x in f.get("formats", [])
+                            if x.get("key") == "tif"), None)
+                if not tif:
+                    continue
+                stamp = dt.datetime.strptime(
+                    f["valid"], "%Y-%m-%d %H:%M").replace(tzinfo=dt.timezone.utc)
+                if stamp >= cut:
+                    entries.append((stamp, tif))
+        except Exception as e:
+            log.warning("nordic topup SE listing: %s", e)
+    stored += _backfill_slots(s3, s, "SE", entries, _decode_smhi,
+                              idx_cache, dirty)
+
+    entries = []
+    try:
+        r = s.get(f"{FMI_WFS}&starttime={cut:%Y-%m-%dT%H:%M:00Z}", timeout=120)
+        urls = re.findall(
+            r"<gml:fileReference>\s*([^<]+?)\s*</gml:fileReference>", r.text)
+        stamps = re.findall(r"<gml:timePosition>([^<]+)</gml:timePosition>",
+                            r.text)
+        if urls and len(urls) == len(stamps):
+            entries = [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
+                        u.replace("&amp;", "&")) for u, t in zip(urls, stamps)]
+    except Exception as e:
+        log.warning("nordic topup FI listing: %s", e)
+    stored += _backfill_slots(s3, s, "FI", entries, _decode_fmi,
+                              idx_cache, dirty)
+
+    for day in sorted(dirty):
+        _save_day_idx(s3, day, idx_cache[day])
+    if stored:
+        log.info("nordic topup: %d frames stored", stored)
+    return stored
+
+
 def reindex(s3, days=20):
     """Repair day indexes for stored SE/FI pngs that are missing from them.
 
