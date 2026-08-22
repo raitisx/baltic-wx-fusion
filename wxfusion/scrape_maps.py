@@ -769,6 +769,15 @@ RADAR_SITES = [
     ("LV Riga", 56.918, 24.062),
     ("LT Laukuva", 55.613, 22.228),
     ("LT Vilnius", 54.652, 25.284),
+    # Neighbour feeds (radar_nordic): the Swedish and Finnish antennas whose
+    # range reaches the map. They join the coverage backstop and the per-feed
+    # weak-echo fade; the nordic grids skip the beam passes (their composites
+    # arrive quality-controlled), but the sites still matter for attribution.
+    ("SE Ase", 57.292, 18.396),          # Gotland
+    ("SE Karlskrona", 56.295, 15.610),
+    ("FI Korppoo", 60.129, 21.643),
+    ("FI Vantaa", 60.271, 24.869),
+    ("FI Anjalankoski", 60.904, 27.108),
 ]
 RADIAL_TOL_KM = 20      # how close the beam's line must pass to the antenna
 RADAR_RANGE_KM = 320    # beyond this a site cannot be the source
@@ -2067,7 +2076,8 @@ BACKSTOP_FADE_KM = 30
 # assumed: the hard-edge pixels in that frame cluster at 244-248 km from Harku,
 # 236-240 from Riga and 224-232 from the Lithuanian pair — the rims of the
 # products themselves — and not at 180. See FEED_RIM_KM.
-WEAK_RANGE_KM = {"EE": 180.0, "LT": 180.0, "LT2": 180.0, "LV": 250.0}
+WEAK_RANGE_KM = {"EE": 180.0, "LT": 180.0, "LT2": 180.0, "LV": 250.0,
+                 "SE": 180.0, "FI": 180.0}
 WEAK_FADE_KM = 40.0
 WEAK_CLASSES = 2
 
@@ -2386,6 +2396,13 @@ def radar_composite(frames_back: int = 3) -> None:
     # once four feeds are composited the pixels are blended.
     newest = None
     layers = []
+    # Neighbour feeds first, so the Baltic products draw over them where both
+    # have data. Best-effort: a neighbour outage never touches the composite.
+    try:
+        from . import radar_nordic
+        layers += radar_nordic.live_layers(s3)
+    except Exception:
+        log.exception("nordic feeds skipped")
     for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
         use = frames[:frames_back]
         if not use:

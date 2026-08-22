@@ -271,19 +271,25 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
         cold = _freezing_mask(hour)
         used = []
         layers = []
-        # LV last so it lands on top, as in the live composite.
-        for code in ("EE", "LT2", "LT", "LV"):
+        # Neighbours first, LV last on top, as in the live composite. The
+        # nordic frames are stored as level grids already on the 3059 canvas
+        # (grid3059), so they skip the classify/resample/beam chain.
+        for code in ("SE", "FI", "EE", "LT2", "LT", "LV"):
             if code not in best:
                 continue
             _, t, f = best[code]
             try:
-                cls = _classify_stored(s3, f)
+                if f.get("grid3059"):
+                    from .radar_nordic import load_stored
+                    grid = load_stored(s3, f)
+                else:
+                    cls = _classify_stored(s3, f)
+                    grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
+                    grid = _close_radial_spokes(_despeckle_intensity(
+                        _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
             except Exception:
                 log.exception("render: %s unreadable", f["key"])
                 continue
-            grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
-            grid = _close_radial_spokes(_despeckle_intensity(
-                _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
             layers.append((code, grid))
             used.append(t)
         if not used:
