@@ -62,14 +62,17 @@ CASES = [
     dict(kind="beam", t="2026-08-21T20:56", feed="LV", site="LV Riga",
          az=(105.0, 155.0), rng=(40, 200)),
     # --- real weather (must survive) ------------------------------------------
-    # 17.08 15:22/16:01/17:01 LV: rain cell E of Riga (~56.7N 26.5E) visible,
-    # gone, visible again across three consecutive frames. Whatever the cause,
-    # the cleaning chain must not delete it where the source has it.
-    dict(kind="weather", t="2026-08-17T15:22", feed="LV",
+    # 17.08 15-17 UTC: rain cell E of Riga (~56.7N 26.5E) visible, gone,
+    # visible again across three consecutive published frames. Diagnosed
+    # 22.08: NOT deleted by the cleaning. The LV radar was near-blank those
+    # hours (403 / 1 / 37 echo px in the whole frame), so the only witness was
+    # Vilnius (LT2) at ~240 km — beyond LT's 180 km weak-echo fade. The source
+    # itself weakened at 16:01 (66 px vs 234 at 15:01), and the fade finished
+    # the job. These cases pin the cleaning chain: where LT2 has the echo, the
+    # despeckle/beam passes must keep it.
+    dict(kind="weather", t="2026-08-17T15:01", feed="LT2",
          bbox=(56.4, 57.1, 25.9, 27.3)),
-    dict(kind="weather", t="2026-08-17T16:01", feed="LV",
-         bbox=(56.4, 57.1, 25.9, 27.3)),
-    dict(kind="weather", t="2026-08-17T17:01", feed="LV",
+    dict(kind="weather", t="2026-08-17T16:01", feed="LT2",
          bbox=(56.4, 57.1, 25.9, 27.3)),
 ]
 
