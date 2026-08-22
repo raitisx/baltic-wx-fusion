@@ -123,7 +123,9 @@ try:
          "&storedquery_id=fmi::radar::composite::rr")
     r = s.get(q, timeout=90)
     print(f"FMI wfs rr: HTTP {r.status_code} {len(r.content)} B")
-    urls = re.findall(r'href="(https://opendata\.fmi\.fi/download[^"]+)"', r.text)
+    urls = re.findall(r"<gml:fileReference>\s*([^<]+?)\s*</gml:fileReference>", r.text)
+    if not urls:
+        urls = re.findall(r'(https://opendata\.fmi\.fi/download[^"<\s]+)', r.text)
     stamps = re.findall(r"<gml:timePosition>([^<]+)</gml:timePosition>", r.text)
     print(f"FMI: {len(urls)} rr grids listed; last stamps {stamps[-3:]}")
     if stamps:
