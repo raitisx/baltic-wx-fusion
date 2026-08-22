@@ -102,32 +102,38 @@ except Exception as e:
     print(f"@@ERR:smhi: {type(e).__name__}: {e}")
 
 # --- IMGW (Poland, incl. Gdansk) — endpoint discovery ----------------------
-imgw_found = False
+# The datastore is an SPA; find its scripts and grep them for API routes.
+try:
+    r = s.get("https://danepubliczne.imgw.pl/datastore", timeout=45)
+    scripts = re.findall(r'<script[^>]+src="([^"]+)"', r.text)
+    print("imgw datastore scripts:", scripts[:6])
+    for sc in scripts[:4]:
+        if not sc.startswith("http"):
+            sc = "https://danepubliczne.imgw.pl" + (sc if sc.startswith("/") else "/" + sc)
+        try:
+            js = s.get(sc, timeout=45).text
+            hits = sorted(set(re.findall(
+                r'["\'](/[A-Za-z0-9_/.-]*(?:api|file|tree|list|data)[A-Za-z0-9_/.-]*)["\']',
+                js)))[:20]
+            print(f"imgw js {sc.split('/')[-1]}: routes {hits}")
+        except Exception as e:
+            print(f"imgw js {sc}: {type(e).__name__}")
+except Exception as e:
+    print(f"@@ERR:imgw_spa: {type(e).__name__}: {e}")
+# Direct product guesses (POLRAD composite paths seen in the wild).
 for url, tag in [
-    ("https://meteo.imgw.pl/api/map/radar,cmax", "api_map"),
-    ("https://meteo.imgw.pl/api/map/radar,cmax/latest", "api_map_latest"),
-    ("https://danepubliczne.imgw.pl/datastore", "datastore"),
+    ("https://danepubliczne.imgw.pl/datastore/getfiletree/1", "tree1"),
+    ("https://danepubliczne.imgw.pl/datastore/getfiletree", "tree"),
+    ("https://meteo.imgw.pl/dyn/data/RADAR_COMPO/latest.png", "dyn_compo"),
 ]:
     try:
-        r = s.get(url, timeout=45)
+        r = s.get(url, timeout=30)
         ct = r.headers.get("content-type", "")
         print(f"imgw {tag}: HTTP {r.status_code} {ct} {len(r.content)} B")
-        if "image" in ct:
+        if r.ok and "json" in ct:
+            print(f"imgw {tag} json: {r.text[:500]}")
+        if r.ok and "image" in ct:
             emit(f"imgw_{tag}", Image.open(io.BytesIO(r.content)))
-            imgw_found = True
-        elif r.ok:
-            head = r.text[:600].replace("\n", " ")
-            print(f"imgw {tag} head: {head}")
-            # If JSON listing with timestamps, try to fetch the newest image.
-            try:
-                j = r.json()
-                print(f"imgw {tag} json keys/sample: "
-                      + json.dumps(j)[:400])
-            except Exception:
-                # HTML: surface hrefs that mention radar/compo
-                links = re.findall(r'href="([^"]*(?:adar|ompo|POLCOMP|cmax)[^"]*)"',
-                                   r.text, re.I)[:10]
-                print(f"imgw {tag} links: {links}")
     except Exception as e:
         print(f"@@ERR:imgw_{tag}: {type(e).__name__}: {e}")
 
@@ -136,11 +142,14 @@ ORD = "https://api.meteogate.eu/eu-eumetnet-weather-radar"
 now = dt.datetime.now(dt.timezone.utc)
 t0 = (now - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:00:00Z")
 t1 = now.strftime("%Y-%m-%dT%H:%M:00Z")
+t6 = (now - dt.timedelta(hours=6)).strftime("%Y-%m-%dT%H:00:00Z")
 for url, tag in [
-    (f"{ORD}/collections/observations/cube?bbox=19,54,30,60"
-     f"&parameter-name=RATE:comp&datetime={t0}/{t1}", "cube"),
-    (f"{ORD}/collections/observations/area?coords=POLYGON((19 54,30 54,30 60,19 60,19 54))"
-     f"&parameter-name=RATE:comp&datetime={t0}/{t1}", "area"),
+    (f"{ORD}/collections/observations/area?coords=POLYGON((21 56,25 56,25 58,21 58,21 56))"
+     f"&parameter-name=DBZH:comp&datetime={t6}/{t1}", "area_dbzh"),
+    (f"{ORD}/collections/observations/area?coords=POLYGON((21 56,25 56,25 58,21 58,21 56))"
+     f"&parameter-name=ACRR:comp&datetime={t6}/{t1}", "area_acrr"),
+    (f"{ORD}/collections/observations/locations/0-20010-0-OPERA"
+     f"?parameter-name=ACRR:comp&datetime={t6}/{t1}", "loc_point"),
 ]:
     try:
         r = s.get(url, timeout=90)
