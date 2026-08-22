@@ -10,6 +10,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install numpy scipy scikit-image pillow pyproj boto3 requests
+        run: pip install -r requirements.txt && pip install numpy scipy scikit-image pillow pyproj boto3 requests rasterio
       - name: FMI S3 archive layout
         run: python jobs/probe_fmi_s3.py
