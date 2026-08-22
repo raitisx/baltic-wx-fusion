@@ -321,7 +321,11 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
             cur = best.get(f["code"])
             if cur is None or gap < cur[0]:
                 best[f["code"]] = (gap, t, f)
-        if not best:
+        # A quarter frame needs a Baltic sweep. Backfilled SE/FI history goes
+        # further back than the 15-min meteolapa store; an SE-only composite
+        # would paint the Baltic blank — worse than the page falling back to
+        # the round hour's frame.
+        if not any(c in best for c in ("EE", "LT", "LT2", "LV")):
             continue
         vtag = _render_slot(s3, best, slot)
         if vtag is None:

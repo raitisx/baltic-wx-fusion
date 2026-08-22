@@ -45,6 +45,10 @@ FMI_WFS = ("https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0"
 
 SRC_PREFIX = "maps/radar_src"          # same store the meteolapa originals use
 
+# Backfill slotting — mirrors radar_store's quarter grid (kept local so this
+# module never imports radar_store).
+SLOT_MIN, SLOT_TOL_MIN = 15, 8
+
 
 def _dst_transform():
     from rasterio.transform import from_origin
@@ -74,9 +78,29 @@ def _to_lev(rr_grid):
     return lev
 
 
+def _decode_smhi(body):
+    """SMHI GeoTIFF bytes -> level grid on our 3059 raster."""
+    import rasterio
+    with rasterio.open(io.BytesIO(body)) as ds:
+        v = ds.read(1)
+        # dBZ = 0.4*v - 30; 0 = clear, 255 = outside coverage
+        mask = (v > 0) & (v < 255)
+        dbz = np.where(mask, 0.4 * v.astype(np.float32) - 30.0, -100.0)
+        rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
+        return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+
+
+def _decode_fmi(body):
+    """FMI rr GeoTIFF bytes -> level grid on our 3059 raster."""
+    import rasterio
+    with rasterio.open(io.BytesIO(body)) as ds:
+        v = ds.read(1).astype(np.float32)
+        rr = np.where((v > 0) & (v < 65000), v / 100.0, 0.0)   # value/100 = mm/h
+        return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+
+
 def fetch_smhi():
     """Latest SMHI composite -> (stamp, level grid) or None."""
-    import rasterio
     s = session()
     now = dt.datetime.now(dt.timezone.utc)
     files = []
@@ -102,20 +126,11 @@ def fetch_smhi():
         return None
     stamp = dt.datetime.strptime(latest["valid"], "%Y-%m-%d %H:%M").replace(
         tzinfo=dt.timezone.utc)
-    body = s.get(tif, timeout=60).content
-    with rasterio.open(io.BytesIO(body)) as ds:
-        v = ds.read(1)
-        # dBZ = 0.4*v - 30; 0 = clear, 255 = outside coverage
-        mask = (v > 0) & (v < 255)
-        dbz = np.where(mask, 0.4 * v.astype(np.float32) - 30.0, -100.0)
-        rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
-        grid = _warp_rr_to_grid(rr, ds.transform, ds.crs)
-    return stamp, _to_lev(grid)
+    return stamp, _decode_smhi(s.get(tif, timeout=60).content)
 
 
 def fetch_fmi():
     """Latest FMI rr composite -> (stamp, level grid) or None."""
-    import rasterio
     s = session()
     r = s.get(FMI_WFS, timeout=60)
     r.raise_for_status()
@@ -126,40 +141,55 @@ def fetch_fmi():
         return None
     stamp = dt.datetime.fromisoformat(
         stamps[-1].replace("Z", "+00:00")) if stamps else dt.datetime.now(dt.timezone.utc)
-    body = s.get(urls[-1].replace("&amp;", "&"), timeout=120).content
-    with rasterio.open(io.BytesIO(body)) as ds:
-        v = ds.read(1).astype(np.float32)
-        rr = np.where((v > 0) & (v < 65000), v / 100.0, 0.0)   # value/100 = mm/h
-        grid = _warp_rr_to_grid(rr, ds.transform, ds.crs)
-    return stamp, _to_lev(grid)
+    return stamp, _decode_fmi(s.get(urls[-1].replace("&amp;", "&"),
+                                    timeout=120).content)
 
 
 def _index_key(day):
     return f"{SRC_PREFIX}/{day:%Y/%m/%d}/index.json"
 
 
-def _store_frame(s3, code, stamp, lev):
-    """Level grid -> grayscale png in the radar_src store + day index entry."""
+def _load_day_idx(s3, day, cache=None):
+    if cache is not None and day in cache:
+        return cache[day]
+    try:
+        idx = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
+                                       Key=_index_key(day))["Body"].read())
+    except Exception:
+        idx = {"frames": []}
+    if cache is not None:
+        cache[day] = idx
+    return idx
+
+
+def _save_day_idx(s3, day, idx):
+    s3.put_object(Bucket=config.R2_BUCKET, Key=_index_key(day),
+                  Body=json.dumps(idx).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+
+
+def _store_frame(s3, code, stamp, lev, idx_cache=None, dirty=None):
+    """Level grid -> grayscale png in the radar_src store + day index entry.
+
+    The GeoTIFF the grid came from is never stored — only this small lossless
+    png. With idx_cache/dirty the index write is deferred to the caller (the
+    backfill saves each touched day once instead of once per frame)."""
     key = f"{SRC_PREFIX}/{stamp:%Y/%m/%d}/{stamp:%Y%m%d%H%M}{code}.png"
     buf = io.BytesIO()
     Image.fromarray(lev, "L").save(buf, "PNG", optimize=True)
     s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=buf.getvalue(),
                   ContentType="image/png")
-    ikey = _index_key(stamp.date())
-    try:
-        idx = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
-                                       Key=ikey)["Body"].read())
-    except Exception:
-        idx = {"frames": []}
-    tstr = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    idx = _load_day_idx(s3, stamp.date(), idx_cache)
     if not any(f.get("key") == key for f in idx["frames"]):
-        idx["frames"].append({"key": key, "code": code, "time": tstr,
+        idx["frames"].append({"key": key, "code": code,
+                              "time": stamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
                               "grid3059": True, "enc": "lev",
                               "bytes": buf.getbuffer().nbytes})
-        s3.put_object(Bucket=config.R2_BUCKET, Key=ikey,
-                      Body=json.dumps(idx).encode(),
-                      ContentType="application/json",
-                      CacheControl="public, max-age=300")
+        if dirty is not None:
+            dirty.add(stamp.date())
+        else:
+            _save_day_idx(s3, stamp.date(), idx)
 
 
 def load_stored(s3, frame):
@@ -167,6 +197,101 @@ def load_stored(s3, frame):
     body = s3.get_object(Bucket=config.R2_BUCKET,
                          Key=frame["key"])["Body"].read()
     return np.array(Image.open(io.BytesIO(body)).convert("L"), np.uint8)
+
+
+def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty):
+    """Store one sweep per 15-min slot from (stamp, url) entries.
+
+    Slots that already hold a stored sweep for this code (within the slot
+    tolerance) are skipped, so re-runs and overlap with the live feed cost
+    nothing. Returns the number of frames stored."""
+    stored = 0
+    by_day = {}
+    for stamp, url in entries:
+        by_day.setdefault(stamp.date(), []).append((stamp, url))
+    for day, avail in sorted(by_day.items()):
+        idx = _load_day_idx(s3, day, idx_cache)
+        have = [dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=dt.timezone.utc)
+                for f in idx["frames"] if f.get("code") == code]
+        day0 = dt.datetime.combine(day, dt.time(0), tzinfo=dt.timezone.utc)
+        for n in range(24 * 60 // SLOT_MIN):
+            slot = day0 + dt.timedelta(minutes=n * SLOT_MIN)
+            if any(abs((t - slot).total_seconds()) <= SLOT_TOL_MIN * 60
+                   for t in have):
+                continue
+            best = min(avail, key=lambda e: abs((e[0] - slot).total_seconds()))
+            if abs((best[0] - slot).total_seconds()) > SLOT_TOL_MIN * 60:
+                continue
+            try:
+                lev = decode(s.get(best[1], timeout=120).content)
+            except Exception as e:
+                log.warning("backfill %s %s: %s", code, best[0], e)
+                continue
+            _store_frame(s3, code, best[0], lev, idx_cache, dirty)
+            have.append(best[0])
+            stored += 1
+        log.info("backfill %s %s: day done (%d stored so far)",
+                 code, day, stored)
+    return stored
+
+
+def backfill(s3, se_days=14, fi_days=7):
+    """Pull past SE + FI sweeps onto the 15-min slot grid of the store.
+
+    SMHI's dated listing reaches back years; FMI's WFS serves only about a
+    week — both verified 22.08.2026. Only the warped level grids are stored
+    (lossless grayscale pngs), never the source GeoTIFFs."""
+    s = session()
+    now = dt.datetime.now(dt.timezone.utc)
+    idx_cache, dirty = {}, set()
+
+    entries = []
+    for back in range(se_days, -1, -1):
+        day = (now - dt.timedelta(days=back)).date()
+        try:
+            r = s.get(SMHI_LIST.format(d=day), timeout=45)
+            for f in (r.json().get("files") or []) if r.ok else []:
+                tif = next((x["link"] for x in f.get("formats", [])
+                            if x.get("key") == "tif"), None)
+                if tif:
+                    entries.append((dt.datetime.strptime(
+                        f["valid"], "%Y-%m-%d %H:%M").replace(
+                            tzinfo=dt.timezone.utc), tif))
+        except Exception as e:
+            log.warning("backfill SE listing %s: %s", day, e)
+    n_se = _backfill_slots(s3, s, "SE", entries, _decode_smhi,
+                           idx_cache, dirty)
+
+    entries = []
+    for back in range(fi_days, -1, -1):
+        day = (now - dt.timedelta(days=back)).date()
+        q = (f"{FMI_WFS}&starttime={day:%Y-%m-%d}T00:00:00Z"
+             f"&endtime={day + dt.timedelta(days=1):%Y-%m-%d}T00:00:00Z")
+        try:
+            r = s.get(q, timeout=120)
+            urls = re.findall(
+                r"<gml:fileReference>\s*([^<]+?)\s*</gml:fileReference>",
+                r.text)
+            stamps = re.findall(
+                r"<gml:timePosition>([^<]+)</gml:timePosition>", r.text)
+            if len(urls) != len(stamps):
+                log.warning("backfill FI %s: %d urls vs %d stamps, skipped",
+                            day, len(urls), len(stamps))
+                continue
+            entries += [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
+                         u.replace("&amp;", "&"))
+                        for u, t in zip(urls, stamps)]
+        except Exception as e:
+            log.warning("backfill FI listing %s: %s", day, e)
+    n_fi = _backfill_slots(s3, s, "FI", entries, _decode_fmi,
+                           idx_cache, dirty)
+
+    for day in sorted(dirty):
+        _save_day_idx(s3, day, idx_cache[day])
+    log.info("nordic backfill: %d SE + %d FI frames stored, %d day "
+             "indexes updated", n_se, n_fi, len(dirty))
+    return n_se + n_fi
 
 
 def live_layers(s3):
