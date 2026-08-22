@@ -849,12 +849,22 @@ BEAM_HAIR_LEN = 20
 # was empty (flank reach 0, under REACH_MIN_FLANK_KM, the isolated-shower
 # guard). So a second detection pass re-closes with this much wider bridge —
 # along the ray and across the one-bin wobble — and judges the merged shape by
-# the NARROW gates only (needle/hair). The dashes above merge to a 75 km ray at
-# 1.5 deg, elongation 30+: unmistakable. Real weather cannot ride in on the
-# wide bridge because nothing meteorological is 3 deg wide over that length —
-# the wedge gate, which scattered convection could reach when bridged this far,
-# deliberately does not apply on this pass.
+# the NARROW gates only. The dashes above merge to rays 30-55 km long at
+# 1-3 deg: unmistakable. Real weather cannot ride in on the wide bridge because
+# nothing meteorological is 3 deg wide over that length — the wedge gate, which
+# scattered convection could reach when bridged this far, deliberately does not
+# apply on this pass.
+#
+# The dash pass carries its own elongation bar, below hair's 15: the (3, gap)
+# closing that joins the wobbling dashes also inflates the merged component's
+# azimuthal bounding box by up to a bin each side, which halves the measured
+# elongation — on the 21.08 frame the joined ray read aspan 2-3 deg, elong
+# 8-11, and hair's 15 missed every one. At <=3 deg over 30+ km the shape is
+# still nothing weather makes (the tightest real cell in the 27-frame sample
+# was under 5), so 8 with the width cap is as safe as 15 without the closing.
 BEAM_DASH_GAP_KM = 45
+BEAM_DASH_ELONG = 8.0
+BEAM_DASH_LEN = 30
 # Smallest removal worth writing. Was BEAM_MIN_PX // 2 (75) inline. An isolated
 # beam in a low-res source frame is tiny — the 11.08 Riga ray was 28 px all
 # told — so the floor has to sit below that. The shape gates (a 20 km ray, 3
@@ -975,12 +985,15 @@ def _remove_beams_polar(cls: np.ndarray) -> np.ndarray:
                           and elong >= BEAM_NARROW_ELONG)
                 hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
                         and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
+                dash = (not all_gates and r_span >= BEAM_DASH_LEN
+                        and a_span <= BEAM_HAIR_DEG and elong >= BEAM_DASH_ELONG
+                        and r0 <= BEAM_START_KM)
                 if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
                     log.info("beam_diag polar %s%s: comp r%d-%d span%d aspan%.1f "
-                             "elong%.1f start%d -> wedge=%s needle=%s hair=%s", name,
-                             "" if all_gates else " (dash)",
-                             r0, r1, r_span, a_span, elong, r0, wedge, needle, hair)
-                if not (wedge or needle or hair):
+                             "elong%.1f start%d -> wedge=%s needle=%s hair=%s dash=%s",
+                             name, "" if all_gates else " (dash)",
+                             r0, r1, r_span, a_span, elong, r0, wedge, needle, hair, dash)
+                if not (wedge or needle or hair or dash):
                     continue
                 # Zero the ray only where a flank is clear; spare the ranges where
                 # it is buried in rain, so an over-reach loses its cone without a
@@ -1590,14 +1603,17 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                           and elong >= BEAM_NARROW_ELONG)
                 hair = (r_span >= BEAM_HAIR_LEN and a_span <= BEAM_HAIR_DEG
                         and elong >= BEAM_HAIR_ELONG and r0 <= BEAM_START_KM)
+                dash = (not all_gates and r_span >= BEAM_DASH_LEN
+                        and a_span <= BEAM_HAIR_DEG and elong >= BEAM_DASH_ELONG
+                        and r0 <= BEAM_START_KM)
                 # Log any component that even looks ray-ish, flagged or not, so a
                 # beam that fell just outside the shape gates is visible.
                 if os.environ.get("RADAR_BEAM_DEBUG") and (r_span >= 40 or elong >= 3):
                     log.info("beam_diag %s %s%s: comp r%d-%d span%d aspan%.1f elong%.1f "
-                             "start%d -> wedge=%s needle=%s hair=%s", feed, name,
+                             "start%d -> wedge=%s needle=%s hair=%s dash=%s", feed, name,
                              "" if all_gates else " (dash)", r0,
-                             r1, r_span, a_span, elong, r0, wedge, needle, hair)
-                if not (wedge or needle or hair):
+                             r1, r_span, a_span, elong, r0, wedge, needle, hair, dash)
+                if not (wedge or needle or hair or dash):
                     continue
                 comp = (lab == i)
                 comp &= ~_embedded_range_mask(closed, a0, a1)[None, :]
