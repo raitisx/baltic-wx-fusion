@@ -89,10 +89,19 @@ def fetch_smhi():
             continue
     if not files:
         return None
-    latest = max(files, key=lambda f: f.get("valid", ""))
+    # Newest file that actually offers a GeoTIFF — the very latest entry can
+    # briefly list only the png while the tif is still being written.
+    latest = tif = None
+    for cand in sorted(files, key=lambda f: f.get("valid", ""), reverse=True):
+        t = next((f["link"] for f in cand.get("formats", [])
+                  if f.get("key") == "tif"), None)
+        if t:
+            latest, tif = cand, t
+            break
+    if latest is None:
+        return None
     stamp = dt.datetime.strptime(latest["valid"], "%Y-%m-%d %H:%M").replace(
         tzinfo=dt.timezone.utc)
-    tif = next(f["link"] for f in latest["formats"] if f["key"] == "tif")
     body = s.get(tif, timeout=60).content
     with rasterio.open(io.BytesIO(body)) as ds:
         v = ds.read(1)
