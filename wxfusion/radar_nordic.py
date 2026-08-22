@@ -130,6 +130,20 @@ def _decode_fmi_dbzh(body):
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
 
+def _pair_fmi(urls, stamps):
+    """WFS fileReference/timePosition lists -> (stamp, url) pairs, or None.
+
+    Time-window queries return a begin AND an end timePosition per member
+    (2N stamps for N urls) — the end is the frame's nominal time. The plain
+    latest-composite query returns one stamp each."""
+    if len(stamps) == 2 * len(urls):
+        stamps = stamps[1::2]
+    if not urls or len(stamps) != len(urls):
+        return None
+    return [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
+             u.replace("&amp;", "&")) for u, t in zip(urls, stamps)]
+
+
 def _fmi_s3_entries(s, day):
     """(stamp, url) pairs for one day's finrad composites on the S3 mirror."""
     r = s.get(f"{FMI_S3}/?list-type=2&max-keys=1000"
@@ -323,9 +337,7 @@ def topup(s3, hours=3):
             r"<gml:fileReference>\s*([^<]+?)\s*</gml:fileReference>", r.text)
         stamps = re.findall(r"<gml:timePosition>([^<]+)</gml:timePosition>",
                             r.text)
-        if urls and len(urls) == len(stamps):
-            entries = [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
-                        u.replace("&amp;", "&")) for u, t in zip(urls, stamps)]
+        entries = _pair_fmi(urls, stamps) or []
     except Exception as e:
         log.warning("nordic topup FI listing: %s", e)
     stored += _backfill_slots(s3, s, "FI", entries, _decode_fmi,
@@ -412,7 +424,7 @@ def backfill(s3, se_days=14, fi_days=14, se_overwrite=False):
     wfs_entries, s3_entries = [], []
     for back in range(fi_days, -1, -1):
         day = (now - dt.timedelta(days=back)).date()
-        day_entries = []
+        day_entries = None
         try:
             q = (f"{FMI_WFS}&starttime={day:%Y-%m-%d}T00:00:00Z"
                  f"&endtime={day + dt.timedelta(days=1):%Y-%m-%d}T00:00:00Z")
@@ -422,12 +434,8 @@ def backfill(s3, se_days=14, fi_days=14, se_overwrite=False):
                 r.text)
             stamps = re.findall(
                 r"<gml:timePosition>([^<]+)</gml:timePosition>", r.text)
-            if len(urls) == len(stamps):
-                day_entries = [
-                    (dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
-                     u.replace("&amp;", "&"))
-                    for u, t in zip(urls, stamps)]
-            else:
+            day_entries = _pair_fmi(urls, stamps)
+            if urls and day_entries is None:
                 log.warning("backfill FI %s: %d urls vs %d stamps, ignored",
                             day, len(urls), len(stamps))
         except Exception as e:
