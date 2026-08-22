@@ -1782,7 +1782,6 @@ function render(){
     const top=panelTop[p.id], bot=top+p.h;
     const bandH=44;                                   // cloudiness strips at the top
     const haveTop = FUSED.some(r=>r.cb_top!=null);    // fused deck-top line
-    const haveProf = FUSED.some(r=>r.cloudProf!=null);// fused vertical profile (grey)
     // One continuous height scale from the ground to 3 km, but NOT linear: the
     // 0-1 km detail keeps most of the pixels (a 200 m ceiling has to stay
     // legible) and 1-3 km is compressed above it. Everything drawn on this panel
@@ -1885,84 +1884,65 @@ function render(){
           fill:css("--cloud"),"fill-opacity":(0.08+0.72*cov/100).toFixed(2)},svg);
       }
     }
-    // Grey cloud layers as filled polygons: each deck is tracked across the
-    // hours (matched by height overlap) into a band, then filled between its
-    // base and top. Two decks with clear air between read as two grey shapes
-    // with a gap. Semi-transparent, drawn under the ceiling/top lines and the
-    // rain shafts. Hour centres carry the outline; the ends stretch half an
-    // hour so a lone hour still paints a slab.
-    if(haveProf){
-      const halfW=(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))/2;
-      let active=[]; const done=[];              // each track is a list of [x, base, top]
-      for(const r of ROWS){
-        const xc=xPos(r.ts+1800e3), ls=r._decks;
-        const used=new Array(ls.length).fill(false), cont=[];
-        for(const tr of active){
-          const last=tr[tr.length-1]; let bi=-1;
-          for(let li=0;li<ls.length;li++){ if(used[li]) continue;
-            if(ls[li][1]>last[1] && ls[li][0]<last[2]){ bi=li; break; } }   // height overlap
-          if(bi>=0){ used[bi]=true; tr.push([xc,ls[bi][0],ls[bi][1]]); cont.push(tr); }
-          else done.push(tr);
-        }
-        for(let li=0;li<ls.length;li++) if(!used[li]) cont.push([[xc,ls[li][0],ls[li][1]]]);
-        active=cont;
-      }
-      done.push(...active);
-      for(const tr of done){
-        if(!tr.length) continue;
-        const x0e=tr[0][0]-halfW, x1e=tr[tr.length-1][0]+halfW;
-        let d="M"+x0e.toFixed(1)+" "+y(tr[0][2]).toFixed(1);            // top edge, L→R
-        for(const p of tr) d+=" L"+p[0].toFixed(1)+" "+y(p[2]).toFixed(1);
-        d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][2]).toFixed(1);
-        d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][1]).toFixed(1);    // base edge, R→L
-        for(let i=tr.length-1;i>=0;i--) d+=" L"+tr[i][0].toFixed(1)+" "+y(tr[i][1]).toFixed(1);
-        d+=" L"+x0e.toFixed(1)+" "+y(tr[0][1]).toFixed(1)+" Z";
-        svgEl("path",{d,fill:"#555b64","fill-opacity":.34,stroke:"none"},svg);
-      }
-    }
-    // The ceiling line: the cloud base to draw each hour — the LCL where there
-    // is low cloud (precise near the ground), else the lowest deck's base, so an
-    // elevated deck lifts the line toward 3 km. A gap where there is no cloud in
-    // range; the grey below already says where the deck is.
-    let d="",pen=false;
+    // Grey cloud layers, and a ceiling (base) + top line for EACH deck. Every
+    // deck is tracked across the hours — matched by height overlap into a band —
+    // then filled between its base and top and outlined with a dark ceiling line
+    // at the base and an indigo top line at the top. Two decks with clear air
+    // between read as two grey shapes, each with its own pair of lines. Hour
+    // centres carry the outline; the ends stretch half an hour so a lone hour
+    // still paints a slab.
+    const halfW=(xPos(FUSED[0].ts+3600e3)-xPos(FUSED[0].ts))/2;
+    let active=[]; const done=[];                // each track is a list of [x, base, top]
     for(const r of ROWS){
-      if(r._cbShow==null){pen=false;continue;}
-      d+=(pen?"L":"M")+xPos(r.ts+1800e3).toFixed(1)+" "+y(r._cbShow).toFixed(1)+" ";
-      pen=true;
+      const xc=xPos(r.ts+1800e3), ls=r._decks;
+      const used=new Array(ls.length).fill(false), cont=[];
+      for(const tr of active){
+        const last=tr[tr.length-1]; let bi=-1;
+        for(let li=0;li<ls.length;li++){ if(used[li]) continue;
+          if(ls[li][1]>last[1] && ls[li][0]<last[2]){ bi=li; break; } }   // height overlap
+        if(bi>=0){ used[bi]=true; tr.push([xc,ls[bi][0],ls[bi][1]]); cont.push(tr); }
+        else done.push(tr);
+      }
+      for(let li=0;li<ls.length;li++) if(!used[li]) cont.push([[xc,ls[li][0],ls[li][1]]]);
+      active=cont;
     }
-    // Rain shafts: a dashed line from the cloud base down to the deck for every
-    // hour with rain in it. The ceiling trace on its own says where the cloud
-    // starts and implies clear air underneath, which is exactly wrong in rain —
-    // that is the part you would be flying through. Drawn under the ceiling
-    // trace so the trace stays the thing you read first.
-    for(let i=0;i<ROWS.length;i++){
-      const r=ROWS[i];
-      // Gate at the lidar rain limit (0.1 mm/h), not a trace: a shaft is a
-      // "you'd be flying through rain" mark, so it should agree with the lidar
-      // bar — no shaft on an hour the bar calls green. Opacity tracks agreement
-      // so an uncertain hour is faint and a wet, agreed one is bold.
-      const pr=r.prcp_1h ?? 0;
-      if(pr<LIDAR_RAIN_MMH) continue;
+    done.push(...active);
+    // Grey fills first, under everything.
+    for(const tr of done){
+      if(!tr.length) continue;
+      const x0e=tr[0][0]-halfW, x1e=tr[tr.length-1][0]+halfW;
+      let d="M"+x0e.toFixed(1)+" "+y(tr[0][2]).toFixed(1);            // top edge, L→R
+      for(const p of tr) d+=" L"+p[0].toFixed(1)+" "+y(p[2]).toFixed(1);
+      d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][2]).toFixed(1);
+      d+=" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][1]).toFixed(1);    // base edge, R→L
+      for(let i=tr.length-1;i>=0;i--) d+=" L"+tr[i][0].toFixed(1)+" "+y(tr[i][1]).toFixed(1);
+      d+=" L"+x0e.toFixed(1)+" "+y(tr[0][1]).toFixed(1)+" Z";
+      svgEl("path",{d,fill:"#555b64","fill-opacity":.34,stroke:"none"},svg);
+    }
+    // Rain shafts under the deck lines: a dashed line from the cloud base down
+    // to the deck for every hour with rain in it — the part you would be flying
+    // through. Gated at the lidar rain limit so it agrees with the lidar bar;
+    // opacity tracks model agreement.
+    for(const r of ROWS){
+      if((r.prcp_1h ?? 0)<LIDAR_RAIN_MMH) continue;
       const base=r._cbShow;
       if(base==null) continue;
-      const yTop=y(base);
       const op=(0.4+0.55*(r.prcp_prob??1)).toFixed(2);
-      svgEl("line",{x1:xPos(r.ts+1800e3),x2:xPos(r.ts+1800e3),y1:yTop,y2:y0,
+      svgEl("line",{x1:xPos(r.ts+1800e3),x2:xPos(r.ts+1800e3),y1:y(base),y2:y0,
                     stroke:css("--rainshaft"),"stroke-width":1.6,
                     "stroke-dasharray":"3 3","stroke-opacity":op},svg);
     }
-    svgEl("path",{d,fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
-    // Cloud-top line (indigo) for the lowest deck, over the grey layers and the
-    // ceiling trace. Drawn on the 0-3 km scale (a higher top pegs at 3 km); the
-    // tooltip carries the real figure to 5 km.
-    {
-      let dt="",pen=false;
-      for(const r of ROWS){
-        if(r._topShow==null){pen=false;continue;}
-        dt+=(pen?"L":"M")+xPos(r.ts+1800e3).toFixed(1)+" "+y(r._topShow).toFixed(1)+" ";
-        pen=true;
-      }
-      if(dt) svgEl("path",{d:dt,fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
+    // Then each deck's ceiling (dark, at its base) and top (indigo) line, on top.
+    const edge=(tr,idx)=>{
+      const x0e=tr[0][0]-halfW, x1e=tr[tr.length-1][0]+halfW;
+      let d="M"+x0e.toFixed(1)+" "+y(tr[0][idx]).toFixed(1);
+      for(const p of tr) d+=" L"+p[0].toFixed(1)+" "+y(p[idx]).toFixed(1);
+      return d+" L"+x1e.toFixed(1)+" "+y(tr[tr.length-1][idx]).toFixed(1);
+    };
+    for(const tr of done){
+      if(!tr.length) continue;
+      svgEl("path",{d:edge(tr,1),fill:"none",stroke:css("--cloud"),"stroke-width":2.2,"stroke-linejoin":"round"},svg);
+      svgEl("path",{d:edge(tr,2),fill:"none",stroke:"#6f4bd0","stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"},svg);
     }
     for(const o of (obsIdx.cb_ceiling||[])) if(vis(o.ts))
       svgEl("circle",{cx:xPos(o.ts),cy:ceilY(o.v),r:2.6,fill:css("--threshold"),stroke:"#fffdf4","stroke-width":1},svg);
@@ -3124,7 +3104,7 @@ async function initMapsViewer(){
     if(i>=0 && i!==MV.idx) mapShow(i);
   };
   const diag=[
-    "page v144",
+    "page v145",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
