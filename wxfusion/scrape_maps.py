@@ -2178,13 +2178,16 @@ def _weak_alpha_aware(feed: str, active: frozenset) -> np.ndarray:
             continue
         lim = WEAK_RANGE_KM.get(other, 250.0)
         cover = np.maximum(cover, np.clip((lim - do) / WEAK_FADE_KM, 0.0, 1.0))
-    # Where nobody closer is awake, the weak-range limit steps aside entirely
-    # (relaxes to the 320 km backstop): the product's own rim fade and
-    # _fade_edges still handle the true edge of the data. The 17.08 cell sat
-    # ~245 km from Vilnius — a relax to the 250 km coverage radius would have
-    # left it at a tenth of its weight, which is invisible, not rescued.
-    lim_map = own + (BACKSTOP_RANGE_KM - own) * (1.0 - cover)
-    return np.clip((lim_map - d) / WEAK_FADE_KM, 0.0, 1.0).astype(np.float32)
+    # Where somebody closer is awake: the original fade, unchanged. Where
+    # nobody is: the far echo is still shown but ALWAYS fades with range — a
+    # slow ramp from full weight at the feed's own limit down to nothing at
+    # the 320 km backstop, so rescued echo never presents a sharp edge and its
+    # weight is honest about how far away the radar was. The 17.08 cell at
+    # ~245 km from Vilnius renders at roughly half weight: visible, and
+    # visibly long-range.
+    a_near = np.clip((own - d) / WEAK_FADE_KM, 0.0, 1.0)
+    a_far = np.clip((BACKSTOP_RANGE_KM - d) / (BACKSTOP_RANGE_KM - own), 0.0, 1.0)
+    return np.maximum(a_near, (1.0 - cover) * a_far).astype(np.float32)
 
 
 # A coverage edge is a circle centred on an antenna. Nothing else is.
