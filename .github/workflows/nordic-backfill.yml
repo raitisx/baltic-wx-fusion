@@ -2,9 +2,18 @@ name: nordic-backfill
 on:
   workflow_dispatch:
     inputs:
+      se_days:
+        description: "Days of SMHI history to backfill (0 = today only)"
+        default: "14"
+      fi_days:
+        description: "Days of FMI history to backfill (0 = today only; archive reaches ~7)"
+        default: "7"
       se_overwrite:
         description: "Re-decode SE frames that are already stored (after an SMHI_DBZ_ADJ change)"
         default: "0"
+      render_hours:
+        description: "Hours to force re-render after the backfill"
+        default: "336"
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -23,7 +32,9 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          NORDIC_SE_OVERWRITE: ${{ github.event.inputs.se_overwrite }}
+          NORDIC_SE_DAYS: ${{ github.event.inputs.se_days || '14' }}
+          NORDIC_FI_DAYS: ${{ github.event.inputs.fi_days || '7' }}
+          NORDIC_SE_OVERWRITE: ${{ github.event.inputs.se_overwrite || '0' }}
         run: python jobs/run_nordic_backfill.py
       - name: Re-render composites with the new layers
         env:
@@ -31,6 +42,6 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
-          RADAR_RENDER_HOURS: "336"
+          RADAR_RENDER_HOURS: ${{ github.event.inputs.render_hours || '336' }}
           RADAR_RENDER_FORCE: "1"
         run: python jobs/run_radar_render.py
