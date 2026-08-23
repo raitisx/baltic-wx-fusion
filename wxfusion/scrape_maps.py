@@ -1444,6 +1444,43 @@ def ramp_lut(cold: bool = False) -> np.ndarray:
     return _LUT_RAIN
 
 
+# Sensitivity by range: the same rain reads brighter the further out it is
+# seen. At 200+ km the beam is a kilometre wide and a kilometre up, so it
+# fills with hydrometeors aloft and with whatever the ground clutter and the
+# melting layer add, while the drops that reach the ground are the same. The
+# palette products show it as bright arcs at the rim with clear air inside.
+#
+# The fades elsewhere only touch WEAK echo (_weak_alpha) or the last few km of
+# the rim (_rim_alpha); this grades the INTENSITY itself, over the whole disc,
+# by distance from the antenna that saw the pixel. Quadratic, so the near
+# field is left alone: at half range a feed keeps ~90% of its rate, at the
+# rim it keeps 1 - RANGE_DAMP of it.
+#
+# Composites are excluded on purpose: for SE and FI a pixel's distance to the
+# antennas we know about says nothing about how far away the radar that saw
+# it actually is.
+RANGE_DAMP = {"EE": 0.45, "LT2": 0.35, "LT": 0.35, "LV": 0.35}
+RANGE_DAMP_REF_KM = 250.0
+
+
+def _range_damp(lev: np.ndarray, feed: str | None) -> np.ndarray:
+    """Level grid with the far half of each disc read down (see RANGE_DAMP)."""
+    k = RANGE_DAMP.get(feed or "", 0.0)
+    if os.environ.get("RADAR_RANGE_DAMP"):        # test renders sweep this
+        k = float(os.environ["RADAR_RANGE_DAMP"]) if k else 0.0
+    if not k:
+        return lev
+    d = _feed_range_km(feed)
+    if d is None or d.shape != lev.shape:
+        return lev
+    f = 1.0 - k * np.clip(d / RANGE_DAMP_REF_KM, 0.0, 1.0) ** 2
+    out = lev.copy()
+    wet = lev > 0
+    out[wet] = rate_to_lev(
+        pos_rain((lev[wet].astype(np.float64) - 0.5) / LEV_MAX) * f[wet])
+    return out
+
+
 def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
              feed: str | None = None,
              active: frozenset | None = None) -> Image.Image:
@@ -1453,6 +1490,8 @@ def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
     a ramp colour. With `active` (the frame's awake feeds, from active_feeds)
     the weak-echo fade is coverage-aware; without it, the static per-feed one."""
     lev = np.clip(cls, 0, LEV_MAX).astype(np.uint8)
+    if feed:
+        lev = _range_damp(lev, feed)
     out = ramp_lut(False)[lev]
     if cold is not None:
         out = np.where(cold[..., None], ramp_lut(True)[lev], out)
