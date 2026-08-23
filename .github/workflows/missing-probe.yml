@@ -11,10 +11,5 @@ jobs:
           python-version: "3.11"
       - name: Dependencies
         run: pip install -r requirements.txt && pip install numpy scipy scikit-image pillow pyproj boto3 requests rasterio
-      - name: FI-scale test render
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: baltic-wx
-        run: python jobs/probe_fi_scale.py
+      - name: SE product-edge map
+        run: python jobs/probe_se_edge.py
