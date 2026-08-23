@@ -522,8 +522,19 @@ FEED_CODES = ("LV", "EE", "LT2", "SE", "FI")
 SPLIT_FEEDS = ("EE", "LT2", "SE")
 
 
-def _site_pixels_for(code):
-    """[(site name, x px, y px)] for the antennas belonging to one feed."""
+# How far a panel reaches from its own antenna. Fitting range arcs to the
+# products (jobs/probe_disc_centres.py) measured the real thing: Estonia's two
+# discs come out at 236-251 km, Lithuania's at 213-246, SMHI's at ~240.
+SPLIT_RANGE_KM = 250
+
+
+def _site_pixels_for(code, on_canvas=False):
+    """[(site name, x px, y px)] for the antennas belonging to one feed.
+
+    on_canvas drops the ones whose range cannot touch our raster at all —
+    SMHI's network runs the length of Sweden, and a panel for Karlskrona
+    would be a permanently empty box.
+    """
     from .scrape_maps import RADAR_SITES
     from . import proj3059 as P
     out = []
@@ -531,8 +542,14 @@ def _site_pixels_for(code):
         if not name.startswith(code[:2]):
             continue
         x, y = P.to_xy(lo, la)
-        out.append((name, (x - P.X0) / (P.X1 - P.X0) * P.W,
-                    (P.Y1 - y) / (P.Y1 - P.Y0) * P.H))
+        px = (x - P.X0) / (P.X1 - P.X0) * P.W
+        py = (P.Y1 - y) / (P.Y1 - P.Y0) * P.H
+        if on_canvas:
+            dx = max(0.0, px - P.W, -px)          # 1 px = 1 km
+            dy = max(0.0, py - P.H, -py)
+            if (dx * dx + dy * dy) ** 0.5 > SPLIT_RANGE_KM:
+                continue
+        out.append((name, px, py))
     return out
 
 
@@ -622,17 +639,19 @@ def _render_feed_slot(s3, code, t, f, when):
                   CacheControl="public, max-age=604800")
     out[f"{code} source"] = stag
 
-    sites = _site_pixels_for(code) if code in SPLIT_FEEDS else []
+    sites = _site_pixels_for(code, on_canvas=True) if code in SPLIT_FEEDS else []
     if len(sites) > 1:
+        # Each panel holds what lies within THAT antenna's range — not the
+        # half of the map it is nearest to. Nearest-antenna looks tidier but
+        # lies: Harku sees 240 km deep into Latvia, and a Voronoi split files
+        # that echo, range ring and all, under Surgavere. Panels therefore
+        # OVERLAP where the discs do, which is the truth about a composite —
+        # and a radar dropping out still empties the crescent only it covers.
         yy, xx = np.mgrid[0:P.H, 0:P.W]
-        d = np.stack([np.hypot(xx - sx, yy - sy) for _, sx, sy in sites])
-        nearest = d.argmin(0)
-        for i, (name, _, _) in enumerate(sites):
-            g = np.where(nearest == i, grid, 0).astype(grid.dtype)
-            if (g > 0).any():
-                out[name] = emit(g, name.replace(" ", "-"))
-            else:
-                out[name] = emit(g, name.replace(" ", "-"))
+        for name, sx, sy in sites:
+            g = np.where(np.hypot(xx - sx, yy - sy) <= SPLIT_RANGE_KM,
+                         grid, 0).astype(grid.dtype)
+            out[name] = emit(g, name.replace(" ", "-"))
     elif sites:
         out[sites[0][0]] = out[code]
     return out
@@ -662,7 +681,7 @@ def render_feeds(only_day: str, from_h: int | None = None,
         arch = {}
     panels = []
     for c in FEED_CODES:
-        sites = ([n for n, _, _ in _site_pixels_for(c)]
+        sites = ([n for n, _, _ in _site_pixels_for(c, on_canvas=True)]
                  if c in SPLIT_FEEDS else [])
         panels.append({"code": c, "sites": sites, "src": f"{c} source"})
     arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
