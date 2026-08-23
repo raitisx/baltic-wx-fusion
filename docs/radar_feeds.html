@@ -54,20 +54,38 @@ const MAPS_BASE = QS.get("maps") || (() => {
   if (/^meteo\./i.test(location.hostname)) return location.origin;
   return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
 })();
-const CODES = ["LV", "EE", "LT2", "LT", "SE", "FI"];
-const NAMES = {LV:"Latvia (LVGMC)", EE:"Estonia (KESKKONNAAGENTUUR)",
-               LT2:"Lithuania (2 radars)", LT:"Lithuania (legacy feed)",
-               SE:"Sweden (SMHI comp)", FI:"Finland (FMI comp)"};
-let ARCH = null, KEYS = [];
+const FEED = {LV:"Latvia (LVGMC)", EE:"Estonia (KESKKONNAAGENTUUR)",
+              LT2:"Lithuania", LT:"Lithuania (legacy feed)",
+              SE:"Sweden (SMHI)", FI:"Finland (FMI)"};
+// One panel per ANTENNA: a national product mixes several radars, and which
+// radar dropped is the question. The whole-product panel stays as the first
+// panel of each feed for comparison. ?whole=1 shows only the products.
+const WHOLE_ONLY = QS.get("whole") === "1";
+let ARCH = null, KEYS = [], PANELS = [];
 
-for (const c of CODES) {
-  const fig = document.createElement("figure");
-  fig.innerHTML =
-    `<figcaption><span class="code">${c}</span>` +
-    `<span class="stamp" id="s_${c}">—</span>` +
-    `<span style="margin-left:auto;color:#7a8395">${NAMES[c] || ""}</span>` +
-    `</figcaption><div class="wrap" id="w_${c}"></div>`;
-  document.getElementById("grid").appendChild(fig);
+function id(p) { return "p_" + p.replace(/[^A-Za-z0-9]/g, "_"); }
+
+function buildPanels(panels) {
+  PANELS = [];
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  for (const {code, sites} of panels) {
+    const list = WHOLE_ONLY || !sites.length ? [code]
+               : sites.length > 1 ? [code, ...sites] : [code];
+    for (const p of list) {
+      PANELS.push(p);
+      const whole = p === code;
+      const fig = document.createElement("figure");
+      if (whole) fig.style.outline = "1px solid #46506a";
+      fig.innerHTML =
+        `<figcaption><span class="code">${whole ? p : p.split(" ")[1]}` +
+        `</span><span class="stamp" id="s_${id(p)}">—</span>` +
+        `<span style="margin-left:auto;color:#7a8395">` +
+        `${whole ? (FEED[code] || code) + " · whole product" : FEED[code] || code}` +
+        `</span></figcaption><div class="wrap" id="w_${id(p)}"></div>`;
+      grid.appendChild(fig);
+    }
+  }
 }
 
 function fmt(key) {           // 20260822T1245 -> "Sat 22.08, 12:45 UTC"
@@ -84,9 +102,9 @@ function show(i) {
     "   ·   slot " + (i + 1) + " / " + KEYS.length;
   const slot = ARCH.slots[key] || {};
   const picked = (ARCH.picked || {})[key] || {};
-  for (const c of CODES) {
-    const wrap = document.getElementById("w_" + c);
-    const stamp = document.getElementById("s_" + c);
+  for (const c of PANELS) {
+    const wrap = document.getElementById("w_" + id(c));
+    const stamp = document.getElementById("s_" + id(c));
     const vtag = slot[c];
     if (!vtag) {
       wrap.innerHTML = '<div class="missing">NO FRAME</div>';
@@ -133,13 +151,18 @@ let POLL = null;
 function render(a) {
   {
     const first = ARCH === null;
+    if (first || !PANELS.length)
+      buildPanels(a.panels || [{code:"LV",sites:[]},{code:"EE",sites:[]},
+                               {code:"LT2",sites:[]},{code:"SE",sites:[]},
+                               {code:"FI",sites:[]}]);
     ARCH = a;
     const at0 = first ? null : KEYS[document.getElementById("seek").value];
     KEYS = Object.keys(a.slots || {}).sort();
     const seek = document.getElementById("seek");
     seek.max = Math.max(0, KEYS.length - 1);
     document.getElementById("meta").textContent =
-      `day ${a.day} · ${KEYS.length} slots · rendered ${a.generated_at}` +
+      `day ${a.day} ${a.window || ""} · ${KEYS.length} slots · ` +
+      `rendered ${a.generated_at}` +
       (a.complete ? "" : " · still rendering, reloading as slots land");
     if (first) {
       const want = QS.get("slot");

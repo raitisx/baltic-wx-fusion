@@ -516,34 +516,87 @@ FEED_ARCHIVE_KEY = "maps/radar/feeds.json"
 FEED_CODES = ("LV", "EE", "LT2", "LT", "SE", "FI")
 
 
+def _site_pixels_for(code):
+    """[(site name, x px, y px)] for the antennas belonging to one feed."""
+    from .scrape_maps import RADAR_SITES
+    from . import proj3059 as P
+    out = []
+    for name, la, lo in RADAR_SITES:
+        if not name.startswith(code[:2]):
+            continue
+        x, y = P.to_xy(lo, la)
+        out.append((name, (x - P.X0) / (P.X1 - P.X0) * P.W,
+                    (P.Y1 - y) / (P.Y1 - P.Y0) * P.H))
+    return out
+
+
+def _feed_grid(s3, code, f):
+    """The feed's cleaned level grid on our raster (the expensive part)."""
+    from . import proj3059 as P
+    if f.get("grid3059"):
+        from .radar_nordic import load_stored
+        return load_stored(s3, f)
+    cls = _classify_stored(s3, f)
+    grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
+    return _close_radial_spokes(_despeckle_intensity(
+        _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
+
+
 def _render_feed_slot(s3, code, t, f, when):
-    """One feed's sweep alone -> a stored frame; returns its vtag or None."""
+    """One sweep -> one stored frame PER ANTENNA of that feed.
+
+    A national product mixes several radars, and "which radar dropped out"
+    is the question the debug page exists to answer — so each pixel is
+    assigned to the NEAREST antenna of that feed and every antenna gets its
+    own frame. For the nordic composites our site list holds only the
+    antennas whose range reaches this map, so their panels read as "the part
+    of the product nearest this site", which is what makes one of SMHI's
+    eastern radars going missing visible on its own.
+
+    Returns {site name: vtag}; the whole feed also goes out as one frame
+    under the feed code, so the old whole-product view stays available.
+    """
+    import numpy as np
+
     from . import proj3059 as P
     try:
-        if f.get("grid3059"):
-            from .radar_nordic import load_stored
-            grid = load_stored(s3, f)
-        else:
-            cls = _classify_stored(s3, f)
-            grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
-            grid = _close_radial_spokes(_despeckle_intensity(
-                _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
+        grid = _feed_grid(s3, code, f)
     except Exception:
         log.exception("feed render: %s unreadable", f["key"])
-        return None
-    canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
-    # No active-feeds argument: each feed is judged on its own here, which is
-    # the point — the debug page shows the layer as the feed delivered it.
-    canvas.alpha_composite(_recolor(grid, _freezing_mask(when), code, None))
-    canvas = _fade_edges(canvas)
-    draw_borders(canvas)
-    vtag = f"{code}_{t:%Y%m%dT%H%M}"
-    buf = io.BytesIO()
-    canvas.save(buf, "PNG", optimize=True)
-    s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FEED_PREFIX}/{vtag}.png",
-                  Body=buf.getvalue(), ContentType="image/png",
-                  CacheControl="public, max-age=604800")
-    return vtag
+        return {}
+    cold = _freezing_mask(when)
+    out = {}
+
+    def emit(g, tag):
+        canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+        # No active-feeds argument: each layer is judged on its own here,
+        # which is the point — the page shows it as the radar delivered it.
+        canvas.alpha_composite(_recolor(g, cold, code, None))
+        canvas = _fade_edges(canvas)
+        draw_borders(canvas)
+        vtag = f"{tag}_{t:%Y%m%dT%H%M}"
+        buf = io.BytesIO()
+        canvas.save(buf, "PNG", optimize=True)
+        s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FEED_PREFIX}/{vtag}.png",
+                      Body=buf.getvalue(), ContentType="image/png",
+                      CacheControl="public, max-age=604800")
+        return vtag
+
+    out[code] = emit(grid, code)
+    sites = _site_pixels_for(code)
+    if len(sites) > 1:
+        yy, xx = np.mgrid[0:P.H, 0:P.W]
+        d = np.stack([np.hypot(xx - sx, yy - sy) for _, sx, sy in sites])
+        nearest = d.argmin(0)
+        for i, (name, _, _) in enumerate(sites):
+            g = np.where(nearest == i, grid, 0).astype(grid.dtype)
+            if (g > 0).any():
+                out[name] = emit(g, name.replace(" ", "-"))
+            else:
+                out[name] = emit(g, name.replace(" ", "-"))
+    elif sites:
+        out[sites[0][0]] = out[code]
+    return out
 
 
 def render_feeds(only_day: str, from_h: int | None = None,
@@ -568,7 +621,11 @@ def render_feeds(only_day: str, from_h: int | None = None,
                                         Key=FEED_ARCHIVE_KEY)["Body"].read())
     except Exception:
         arch = {}
-    arch.update({"path": FEED_PREFIX, "day": only_day,
+    panels = []
+    for c in FEED_CODES:
+        sites = [n for n, _, _ in _site_pixels_for(c)]
+        panels.append({"code": c, "sites": sites})
+    arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
                  "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
                  "generated_at": dt.datetime.now(dt.timezone.utc).strftime(
                      "%Y%m%dT%H%M")})
@@ -611,17 +668,16 @@ def render_feeds(only_day: str, from_h: int | None = None,
             gap, t, f = _pick(v, SLOT_TOL_MIN * 60)
             key = (code, t)
             if key in seen:
-                vtag = seen[key]
+                tags = seen[key]
             else:
-                vtag = _render_feed_slot(s3, code, t, f, slot)
-                seen[key] = vtag
-                if vtag is not None:
-                    done += 1
-            if vtag is None:
-                continue
-            slots.setdefault(skey, {})[code] = vtag
-            picked.setdefault(skey, {})[code] = (
-                t.strftime("%H:%M") + ("*" if gap > SLOT_TOL_MIN * 60 else ""))
+                tags = _render_feed_slot(s3, code, t, f, slot)
+                seen[key] = tags
+                done += len(tags)
+            stamp = t.strftime("%H:%M") + ("*" if gap > SLOT_TOL_MIN * 60
+                                           else "")
+            for panel, vtag in tags.items():
+                slots.setdefault(skey, {})[panel] = vtag
+                picked.setdefault(skey, {})[panel] = stamp
         if skey in slots:
             flush()          # the page can seek what is ready already
         slot += dt.timedelta(minutes=SLOT_MIN)
