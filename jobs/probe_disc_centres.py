@@ -1,72 +1,89 @@
-"""SMHI qcvol: what is inside one, and can we make a surface field from it?
+"""Does the polar-volume decoder put Sweden's radars in the right place?
 
-Both single-radar sources are now located. FMI's is a drop-in — the same
-uint8 DBZH GeoTIFF our composite decode already reads, one per site, 250 m,
-250 km range. SMHI's is an ODIM polar VOLUME (qcvol, h5, 257 a day per site),
-so it needs a decoder of our own: pick the lowest sweep, turn (range, azimuth)
-into ground coordinates about the antenna, and warp that onto our raster.
+The decoder is written (radar_nordic._decode_smhi_vol): read the 0.5 deg
+sweep of an ODIM volume, sample it by the bearing and distance of each of our
+pixels from the dish. Two things must be checked before it is trusted — where
+each SMHI radar actually is (their /where group, which is also what
+RADAR_SITES needs), and whether the sampled field lands where the national
+composite puts the same rain.
 
-This dumps one volume's structure — groups, elevations, quantities, the
-scaling attributes and the antenna position — so that decoder can be written
-against the real thing rather than against the ODIM spec.
+So: read every site's position, decode the ones that reach our raster, and
+send a picture of each beside the SE composite of the same minute.
 """
+import base64
 import datetime as dt
 import io
 import json
+import math
 import sys
 
 sys.path.insert(0, ".")
 
 import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 
+from wxfusion import proj3059 as P, radar_nordic as N  # noqa: E402
 from wxfusion.http import session  # noqa: E402
+from wxfusion.scrape_maps import draw_borders, ramp_lut  # noqa: E402
 
 s = session()
 API = "https://opendata-download-radar.smhi.se/api/version/latest"
-SITE = "hemse"          # Gotland: the one whose range covers our Baltic
 
-d = json.loads(s.get(f"{API}/area/{SITE}/product/qcvol.json", timeout=60).text)
-link = d["products"][0]["link"] if "products" in d else None
-day = json.loads(s.get(f"{API}/area/{SITE}/product/qcvol/"
-                       f"{dt.date.today():%Y/%m/%d}", timeout=60).text)
-files = day.get("files") or []
-print(f"{SITE}: {len(files)} files today; newest =",
-      files[-1].get("valid") if files else None)
-url = next(f["link"] for f in files[-1]["formats"] if f["key"] == "h5")
-body = s.get(url, timeout=120).content
-print(f"volume is {len(body):,} bytes")
 
-import h5py  # noqa: E402
+def reach_km(lat, lon, range_km=240.0):
+    x, y = P.to_xy(lon, lat)
+    dx = max(0.0, P.X0 - x, x - P.X1) / 1000.0
+    dy = max(0.0, P.Y0 - y, y - P.Y1) / 1000.0
+    return max(0.0, math.hypot(dx, dy) - range_km)
 
-with h5py.File(io.BytesIO(body), "r") as h:
-    def walk(name, obj):
-        if isinstance(obj, h5py.Dataset):
-            print(f"  DATA {name:38s} {obj.shape} {obj.dtype}")
-        elif name.count("/") < 2:
-            print(f"  GRP  {name}")
-        for k, v in obj.attrs.items():
-            if name.count("/") < 3:
-                v = v.decode() if isinstance(v, bytes) else v
-                print(f"       {name}/{k} = {str(v)[:90]}")
-    h.visititems(walk)
-    for k, v in h["/what"].attrs.items():
-        print("  what:", k, "=", (v.decode() if isinstance(v, bytes) else v))
-    for k, v in h["/where"].attrs.items():
-        print("  where:", k, "=", v)
-    ds1 = h["/dataset1"]
-    print("  dataset1/where:", dict(ds1["where"].attrs))
-    print("  dataset1/what :", {k: (v.decode() if isinstance(v, bytes) else v)
-                                for k, v in ds1["what"].attrs.items()})
-    for key in sorted(ds1):
-        if key.startswith("data"):
-            g = ds1[key]
-            q = g["what"].attrs.get("quantity")
-            print(f"   {key}: quantity={q.decode() if isinstance(q, bytes) else q}"
-                  f"  {dict(g['what'].attrs)}")
-    arr = ds1["data1"]["data"][:]
-    print("  data1 shape", arr.shape, arr.dtype, "min/max",
-          int(arr.min()), int(arr.max()),
-          "nonzero", int((arr > 0).sum()))
-    print("  elevations:", [float(h[f"/dataset{i}"]["where"].attrs["elangle"])
-                            for i in range(1, 1 + sum(1 for k in h
-                                                      if k.startswith("dataset")))])
+
+def picture(lev, title):
+    rgba = ramp_lut(False)[np.clip(lev, 0, 96).astype(np.uint8)]
+    im = Image.fromarray(np.ascontiguousarray(rgba, np.uint8), "RGBA")
+    draw_borders(im)
+    bg = Image.new("RGB", im.size, (247, 245, 239))
+    bg.paste(im, (0, 0), im)
+    buf = io.BytesIO()
+    bg.save(buf, "PNG", optimize=True)
+    print(f"@@IMG:{title}:{base64.b64encode(buf.getvalue()).decode()}")
+
+
+areas = [a["key"] for a in json.loads(s.get(f"{API}.json", timeout=60).text)
+         ["areas"] if a["key"] != "sweden"]
+print("SMHI sites:", ", ".join(areas))
+found = {}
+for site in areas:
+    try:
+        day = json.loads(s.get(f"{API}/area/{site}/product/qcvol/"
+                               f"{dt.date.today():%Y/%m/%d}", timeout=60).text)
+        files = day.get("files") or []
+        if not files:
+            print(f"  {site:14s} no files today")
+            continue
+        newest = max(files, key=lambda f: f.get("valid", ""))
+        url = next(f["link"] for f in newest["formats"] if f["key"] == "h5")
+        body = s.get(url, timeout=120).content
+        lev, (lat, lon), name = N._decode_smhi_vol(body)
+        short = reach_km(lat, lon)
+        echo = int((lev > 0).sum())
+        print(f"  {site:14s} {name:22s} {lat:.4f}N {lon:.4f}E  "
+              f"{len(body) / 1e6:.1f} MB  valid {newest['valid']}  "
+              f"echo on our raster={echo} px  "
+              + ("<== ON OUR MAP" if short == 0 else f"({short:.0f} km short)"))
+        if short == 0:
+            found[site] = (name, lat, lon)
+            picture(lev, f"site_{site}")
+    except Exception as e:
+        print(f"  {site:14s} FAILED {type(e).__name__}: {e}")
+
+print("\nSE_SITES entries to add:")
+for site, (name, lat, lon) in found.items():
+    code = "SE" + "".join(c for c in name.upper() if c.isalpha())[:3]
+    print(f'    "{code}": ("{site}", "SE {name.split("(")[0]}", '
+          f'{lat:.3f}, {lon:.3f}),')
+
+got = N.fetch_smhi()
+if got:
+    print(f"\nSE composite for comparison, {got[0]:%H:%M}Z, "
+          f"{int((got[1] > 0).sum())} px echo on our raster")
+    picture(got[1], "se_composite")

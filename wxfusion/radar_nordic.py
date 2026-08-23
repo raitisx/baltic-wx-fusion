@@ -161,6 +161,117 @@ def _decode_fmi_dbzh(body):
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
 
+# SMHI publishes each radar as an ODIM polar VOLUME (qcvol, h5, ~5 min):
+#   /where            lat, lon, height of the dish
+#   /what/source      ...PLC:Hemse(Ase),NOD:sehem...  — one antenna, named
+#   /dataset1         the 0.5 deg sweep: 360 rays x 480 bins at 500 m = 240 km
+#   /dataset1/data1   quantity DBZH, int16, dBZ = gain*v + offset (gain 0.01),
+#                     nodata -32768, undetect -32767
+# Verified on a live hemse volume 23.08.2026. Turning that into a surface
+# field is ours to do — read the lowest sweep and sample it by the bearing and
+# distance of each of our pixels from the dish.
+# Filled from the volumes themselves (their /where group), not a published
+# list. Only the radars whose 240 km reach touches our raster are fetched.
+SE_SITES = {
+    "SEHEM": ("hemse", "SE Hemse", 57.303, 18.400),      # PLC:Hemse(Ase)
+}
+
+SMHI_SITE_API = ("https://opendata-download-radar.smhi.se/api/version/latest"
+                 "/area/{site}/product/qcvol")
+
+
+def _polar_from_site(lat0, lon0):
+    """(range km, azimuth deg) of every pixel of our raster from one dish."""
+    from . import proj3059 as P
+    plat, plon = P.pixel_latlon()
+    la0, lo0 = np.radians(lat0), np.radians(lon0)
+    la, lo = np.radians(plat), np.radians(plon)
+    dlo = lo - lo0
+    # great circle: haversine for distance, forward azimuth for bearing
+    a = (np.sin((la - la0) / 2) ** 2
+         + np.cos(la0) * np.cos(la) * np.sin(dlo / 2) ** 2)
+    rng = 6371.0 * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    az = np.degrees(np.arctan2(np.sin(dlo) * np.cos(la),
+                               np.cos(la0) * np.sin(la)
+                               - np.sin(la0) * np.cos(la) * np.cos(dlo))) % 360.0
+    return rng.astype(np.float32), az.astype(np.float32)
+
+
+def _decode_smhi_vol(body, dbz_adj=None):
+    """qcvol bytes -> (level grid, (lat, lon), name) for that ONE radar."""
+    import h5py
+    with h5py.File(io.BytesIO(body), "r") as h:
+        lat = float(h["/where"].attrs["lat"])
+        lon = float(h["/where"].attrs["lon"])
+        src = h["/what"].attrs["source"]
+        src = src.decode() if isinstance(src, bytes) else str(src)
+        name = next((p.split(":", 1)[1] for p in src.split(",")
+                     if p.startswith("PLC:")), src)
+        ds = h["/dataset1"]
+        w = ds["where"].attrs
+        nbins, rscale = int(w["nbins"]), float(w["rscale"])
+        rstart = float(w.get("rstart", 0.0)) * 1000.0
+        grp = next((ds[k] for k in ds if k.startswith("data")
+                    and bytes(ds[k]["what"].attrs["quantity"]) == b"DBZH"), None)
+        if grp is None:
+            raise ValueError("no DBZH in dataset1")
+        gain = float(grp["what"].attrs["gain"])
+        offset = float(grp["what"].attrs["offset"])
+        nodata = float(grp["what"].attrs["nodata"])
+        undetect = float(grp["what"].attrs["undetect"])
+        raw = grp["data"][:]
+        # Ray i covers azimuth i*360/nrays unless the file says otherwise.
+        nrays = raw.shape[0]
+        startaz = ds["how"].attrs.get("startazA") if "how" in ds else None
+    dbz = np.where((raw == nodata) | (raw == undetect), np.nan,
+                   raw.astype(np.float32) * gain + offset)
+    rng, az = _polar_from_site(lat, lon)
+    if startaz is not None and len(np.asarray(startaz)) == nrays:
+        # rays are stored in acquisition order: map azimuth -> row
+        order = np.argsort(np.asarray(startaz, np.float32) % 360.0)
+        ray = order[np.clip((az / (360.0 / nrays)).astype(int), 0, nrays - 1)]
+    else:
+        ray = np.clip((az / (360.0 / nrays)).astype(int), 0, nrays - 1)
+    bin_ = ((rng * 1000.0 - rstart) / rscale).astype(np.int32)
+    inside = (bin_ >= 0) & (bin_ < nbins)
+    v = np.full(rng.shape, np.nan, np.float32)
+    v[inside] = dbz[ray[inside], bin_[inside]]
+    adj = SMHI_DBZ_ADJ if dbz_adj is None else dbz_adj
+    wet = np.isfinite(v)
+    rr = np.zeros(v.shape, np.float32)
+    rr[wet] = (10.0 ** ((v[wet] - adj) / 10.0) / 200.0) ** (1.0 / 1.6)
+    return _to_lev(rr), (lat, lon), name
+
+
+def fetch_smhi_site(code):
+    """Latest volume of one SMHI radar -> (stamp, level grid) or None."""
+    site = SE_SITES[code][0]
+    s = session()
+    now = dt.datetime.now(dt.timezone.utc)
+    files = []
+    for day in (now.date(), (now - dt.timedelta(days=1)).date()):
+        try:
+            r = s.get(f"{SMHI_SITE_API.format(site=site)}/{day:%Y/%m/%d}",
+                      timeout=45)
+            if r.ok:
+                files += r.json().get("files") or []
+        except Exception:
+            continue
+        if files:
+            break
+    if not files:
+        return None
+    newest = max(files, key=lambda f: f.get("valid", ""))
+    url = next((f["link"] for f in newest.get("formats", [])
+                if f.get("key") == "h5"), None)
+    if not url:
+        return None
+    stamp = dt.datetime.strptime(newest["valid"], "%Y-%m-%d %H:%M").replace(
+        tzinfo=dt.timezone.utc)
+    lev, _, _ = _decode_smhi_vol(s.get(url, timeout=120).content)
+    return stamp, lev
+
+
 def _pair_fmi(urls, stamps):
     """WFS fileReference/timePosition lists -> (stamp, url) pairs, or None.
 
