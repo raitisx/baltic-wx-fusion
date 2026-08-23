@@ -17,6 +17,9 @@ on:
       render_hours:
         description: "Hours to force re-render after the backfill"
         default: "336"
+      render_day:
+        description: "Optional YYYYMMDD (UTC): re-render only this day (+3 h lead-in)"
+        default: ""
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -47,5 +50,6 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           RADAR_RENDER_HOURS: ${{ github.event.inputs.render_hours || '336' }}
+          RADAR_RENDER_DAY: ${{ github.event.inputs.render_day }}
           RADAR_RENDER_FORCE: "1"
         run: python jobs/run_radar_render.py

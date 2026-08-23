@@ -1447,7 +1447,8 @@ def _recolor(cls: np.ndarray, cold: np.ndarray | None = None,
         out = np.where(cold[..., None], ramp_lut(True)[lev], out)
     if feed:
         out = out.copy()
-        w = _weak_alpha_aware(feed, active) if active is not None else _weak_alpha(feed)
+        w = (_weak_alpha_aware(feed, active)
+             if active is not None and ADAPTIVE_FADE else _weak_alpha(feed))
         weak = (lev > 0) & (lev <= WEAK_CLASSES * SUB)
         out[..., 3] = np.where(weak, out[..., 3] * w, out[..., 3]).astype(np.uint8)
         # Fade out any coverage circle this frame is showing, here rather than
@@ -2060,6 +2061,13 @@ EDGE_FADE_KM = 25
 # product reaches, so it cannot second-guess a rim that has already been
 # handled and can still catch a layer drawn with no feed name.
 BACKSTOP_RANGE_KM = 320
+# The coverage-aware fade makes a feed's rendered weight depend on WHICH
+# OTHER feeds are in the frame. On days with mixed sweep cadence the active
+# set fluctuates between adjacent frames, so the fade pattern pulses when
+# seeking — the user turned it off 23.08 in favour of the deterministic
+# per-feed static fades (_weak_alpha; SE uses its product-edge solo ramp).
+# The aware machinery stays for a possible re-enable.
+ADAPTIVE_FADE = False
 BACKSTOP_FADE_KM = 30
 # Weak echo fades much earlier than the coverage edge, and this is why.
 #
