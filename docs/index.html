@@ -2901,6 +2901,21 @@ function radarSrc(iso, qMin){
   for(const k in archHours) cands.add(archHours[k]);
   const archQ=MV.loaded.radarArchive?.quarters||{};
   for(const k in archQ) cands.add(archQ[k]);
+  // The archive says which frame belongs to which slot, so ASK IT before
+  // hunting for the nearest name. A frame is named after the newest sweep in
+  // it, which the fill ring can pull up to half an hour past the slot, so
+  // nearest-by-name put two neighbouring slots on the same file (13:00 and
+  // 13:15 both landed on 1301) and then jumped 29 minutes to the next —
+  // seeking looked like frames repeating and layers blinking.
+  const d0=new Date(ts);
+  const p2=n=>String(n).padStart(2,"0");
+  const slotKey=`${d0.getUTCFullYear()}${p2(d0.getUTCMonth()+1)}`
+    +`${p2(d0.getUTCDate())}T${p2(d0.getUTCHours())}${p2(d0.getUTCMinutes())}`;
+  const exact=d0.getUTCMinutes()===0 ? archHours[slotKey.slice(0,11)]
+                                     : archQ[slotKey];
+  if(exact) return {url:`${MAPS_BASE}/${rad.path}/${exact}.png?v=${radarRev(exact)}`,
+                    time:frameTime(exact),
+                    off:Math.round((frameTime(exact).getTime()-ts)/60e3)};
   let best=null, bd=1e15;
   for(const f of cands){
     const d=Math.abs(frameTime(f).getTime()-ts);
@@ -3115,7 +3130,7 @@ async function initMapsViewer(){
     if(i>=0 && (i!==MV.idx || MV.q)) mapShow(i, 0);
   };
   const diag=[
-    "page v148",
+    "page v149",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
