@@ -10,8 +10,13 @@
            flex-wrap:wrap; }
   h1 { font-size:15px; margin:0; font-weight:600; }
   .hint { color:#98a0b0; font-size:12px; }
-  .grid { display:grid; gap:10px; padding:0 14px 10px;
-          grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); }
+  .grid { padding:0 14px 10px; }
+  .row { margin:0 0 14px; }
+  .row h2 { font-size:12px; font-weight:600; color:#9aa3b5; margin:0 0 5px;
+            padding:0 2px; text-transform:uppercase; letter-spacing:.07em; }
+  .strip { display:flex; gap:8px; overflow-x:auto; padding-bottom:3px; }
+  .strip figure { flex:0 0 300px; }
+  figure.src { outline:1px solid #55607a; }
   figure { margin:0; background:#171a21; border-radius:6px; overflow:hidden;
            position:relative; }
   figcaption { padding:5px 8px; font-size:12px; display:flex; gap:8px;
@@ -35,10 +40,11 @@
 </style>
 <header>
   <h1>Per-radar debug</h1>
-  <span class="hint">Each map is one feed rendered alone, same slot, same
-    picker as the composite. <span class="none">NO FRAME</span> = that feed
-    had no sweep for the slot; <span class="held">amber time</span> = sweep
-    held over from the fill ring (&gt;8 min from the slot).</span>
+  <span class="hint">One row per country: the product as served (SOURCE,
+    untouched), then our render of it, then each antenna.
+    <span class="none">NO FRAME</span> = no sweep for the slot;
+    <span class="held">amber time</span> = sweep held over from the fill ring
+    (&gt;8 min away). <a href="?whole=1">products only</a></span>
   <span class="hint" id="meta"></span>
 </header>
 <div class="grid" id="grid"></div>
@@ -69,22 +75,35 @@ function buildPanels(panels) {
   PANELS = [];
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
-  for (const {code, sites} of panels) {
-    const list = WHOLE_ONLY || !sites.length ? [code]
-               : sites.length > 1 ? [code, ...sites] : [code];
-    for (const p of list) {
+  // One ROW per country: the source as served, then our render of the whole
+  // product, then each antenna of it.
+  for (const {code, sites, src} of panels) {
+    const row = document.createElement("section");
+    row.className = "row";
+    row.innerHTML = `<h2>${FEED[code] || code}</h2>`;
+    const strip = document.createElement("div");
+    strip.className = "strip";
+    row.appendChild(strip);
+    const list = [];
+    if (src) list.push([src, "source, as served"]);
+    list.push([code, "our render \u00b7 whole product"]);
+    if (!WHOLE_ONLY && sites.length > 1)
+      for (const st of sites) list.push([st, "antenna"]);
+    for (const pair of list) {
+      const p = pair[0], what = pair[1];
       PANELS.push(p);
-      const whole = p === code;
       const fig = document.createElement("figure");
-      if (whole) fig.style.outline = "1px solid #46506a";
+      if (p === src) fig.className = "src";
+      const short = p === src ? "SOURCE"
+                  : p === code ? code : p.split(" ").slice(1).join(" ");
       fig.innerHTML =
-        `<figcaption><span class="code">${whole ? p : p.split(" ")[1]}` +
-        `</span><span class="stamp" id="s_${id(p)}">—</span>` +
-        `<span style="margin-left:auto;color:#7a8395">` +
-        `${whole ? (FEED[code] || code) + " · whole product" : FEED[code] || code}` +
-        `</span></figcaption><div class="wrap" id="w_${id(p)}"></div>`;
-      grid.appendChild(fig);
+        `<figcaption><span class="code">${short}</span>` +
+        `<span class="stamp" id="s_${id(p)}">\u2014</span>` +
+        `<span style="margin-left:auto;color:#7a8395">${what}</span>` +
+        `</figcaption><div class="wrap" id="w_${id(p)}"></div>`;
+      strip.appendChild(fig);
     }
+    grid.appendChild(row);
   }
 }
 
