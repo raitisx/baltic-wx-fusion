@@ -566,6 +566,12 @@ def render_feeds(only_day: str, hours_back: int = 336) -> int:
                      "%Y%m%dT%H%M")})
     slots, picked = {}, {}
     days, done = {}, 0
+    # A sweep is usually picked by two or three neighbouring slots (and by the
+    # fill ring beyond that). The frame is named after the sweep, so render
+    # each distinct one ONCE and let the later slots point at it — this is
+    # most of the run's cost on the meteolapa feeds, which go through the
+    # whole classify/beam/polar chain.
+    seen = {}
 
     def flush():
         arch["slots"], arch["picked"] = slots, picked
@@ -595,13 +601,19 @@ def render_feeds(only_day: str, hours_back: int = 336) -> int:
         skey = slot.strftime("%Y%m%dT%H%M")
         for code, v in cands.items():
             gap, t, f = _pick(v, SLOT_TOL_MIN * 60)
-            vtag = _render_feed_slot(s3, code, t, f, slot)
+            key = (code, t)
+            if key in seen:
+                vtag = seen[key]
+            else:
+                vtag = _render_feed_slot(s3, code, t, f, slot)
+                seen[key] = vtag
+                if vtag is not None:
+                    done += 1
             if vtag is None:
                 continue
             slots.setdefault(skey, {})[code] = vtag
             picked.setdefault(skey, {})[code] = (
                 t.strftime("%H:%M") + ("*" if gap > SLOT_TOL_MIN * 60 else ""))
-            done += 1
         if skey in slots:
             flush()          # the page can seek what is ready already
         slot += dt.timedelta(minutes=SLOT_MIN)
