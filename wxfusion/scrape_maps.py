@@ -2104,6 +2104,9 @@ BACKSTOP_FADE_KM = 30
 WEAK_RANGE_KM = {"EE": 180.0, "LT": 180.0, "LT2": 180.0, "LV": 250.0,
                  "SE": 180.0, "FI": 180.0}
 WEAK_FADE_KM = 40.0
+# Sole-witness weight cap for rescued far echo, per feed (see the a_far note
+# in _weak_alpha_aware).
+FAR_WEIGHT = {"EE": 0.5}
 WEAK_CLASSES = 2
 
 
@@ -2156,6 +2159,11 @@ def _feed_range_km(feed: str) -> np.ndarray | None:
 def _weak_alpha(feed: str) -> np.ndarray:
     """Multiplier for this feed's weak echo: 1 in close, 0 past its limit."""
     from . import proj3059 as P
+    if feed == "SE":                # product-edge geometry, see below
+        e = _se_edge_km()
+        if e is None:
+            return np.ones((P.H, P.W), np.float32)
+        return np.clip(e / SE_EDGE_SOLO_KM, 0.0, 1.0).astype(np.float32)
     d = _feed_range_km(feed)
     if d is None:
         return np.ones((P.H, P.W), np.float32)
@@ -2194,25 +2202,71 @@ def active_feeds(layers) -> frozenset:
                      if n >= ACTIVE_MIN_PX and n >= busiest * ACTIVE_MIN_FRAC)
 
 
+# SE is a ~12-radar national composite, not the two antennas we list for it —
+# judging it by antenna distance zeroed real echo over the Baltic wherever LV
+# claimed coverage (user report 22.08, hole west of the Estonian islands).
+# Its honest geometry is distance to the PRODUCT's coverage edge, bundled as
+# a km map generated from the footprint itself (0 = outside coverage).
+SE_EDGE_FADE_KM = 70.0     # full fade depth where another awake feed covers
+SE_EDGE_SOLO_KM = 20.0     # sole witness: only a soft melt at the very edge
+
+
+SE_EDGE_KEY = "maps/radar_src/se_edge_km.png"
+
+
+@functools.lru_cache(maxsize=1)
+def _se_edge_km() -> np.ndarray | None:
+    """km-to-product-edge map, written to R2 by the SE decode itself
+    (radar_nordic.store_edge_map) so the footprint stays current."""
+    try:
+        body = r2_client().get_object(Bucket=config.R2_BUCKET,
+                                      Key=SE_EDGE_KEY)["Body"].read()
+        return np.array(Image.open(io.BytesIO(body)), np.float32)
+    except Exception:
+        log.warning("SE edge map missing — SE gets no weak fade")
+        return None
+
+
+def _feed_cover_alpha(feed: str) -> np.ndarray | None:
+    """How firmly this feed covers each pixel from within its own limit."""
+    if feed == "SE":
+        e = _se_edge_km()
+        return None if e is None else np.clip(e / WEAK_FADE_KM, 0.0, 1.0)
+    d = _feed_range_km(feed)
+    if d is None:
+        return None
+    lim = WEAK_RANGE_KM.get(feed or "", 250.0)
+    return np.clip((lim - d) / WEAK_FADE_KM, 0.0, 1.0)
+
+
 @functools.lru_cache(maxsize=32)
 def _weak_alpha_aware(feed: str, active: frozenset) -> np.ndarray:
     """Coverage-aware weak-echo fade for one feed, given who is awake."""
     from . import proj3059 as P
-    d = _feed_range_km(feed)
-    if d is None:
-        return np.ones((P.H, P.W), np.float32)
-    own = WEAK_RANGE_KM.get(feed or "", 250.0)
     # How firmly some OTHER awake feed covers each pixel, 0..1 (smooth over
     # the same 40 km the fade itself uses, so the handover has no seam).
     cover = np.zeros((P.H, P.W), np.float32)
     for other in active:
         if (other or "")[:2] == (feed or "")[:2]:
             continue                      # LT and LT2 share antennas
-        do = _feed_range_km(other)
-        if do is None:
-            continue
-        lim = WEAK_RANGE_KM.get(other, 250.0)
-        cover = np.maximum(cover, np.clip((lim - do) / WEAK_FADE_KM, 0.0, 1.0))
+        co = _feed_cover_alpha(other)
+        if co is not None:
+            cover = np.maximum(cover, co)
+    if feed == "SE":
+        e = _se_edge_km()
+        if e is None:
+            return np.ones((P.H, P.W), np.float32)
+        # Where another awake feed covers: fade out over the last
+        # SE_EDGE_FADE_KM inside the product edge. Where SE is the only
+        # witness the echo is real and stays — with just a soft melt over the
+        # final SE_EDGE_SOLO_KM so the product wall never shows sharp.
+        a_covered = np.clip(e / SE_EDGE_FADE_KM, 0.0, 1.0)
+        a_solo = np.clip(e / SE_EDGE_SOLO_KM, 0.0, 1.0)
+        return np.maximum(a_covered, (1.0 - cover) * a_solo).astype(np.float32)
+    d = _feed_range_km(feed)
+    if d is None:
+        return np.ones((P.H, P.W), np.float32)
+    own = WEAK_RANGE_KM.get(feed or "", 250.0)
     # Where somebody closer is awake: the original fade, unchanged. Where
     # nobody is: the far echo is still shown but ALWAYS fades with range — a
     # slow ramp from full weight at the feed's own limit down to nothing at
@@ -2222,6 +2276,11 @@ def _weak_alpha_aware(feed: str, active: frozenset) -> np.ndarray:
     # visibly long-range.
     a_near = np.clip((own - d) / WEAK_FADE_KM, 0.0, 1.0)
     a_far = np.clip((BACKSTOP_RANGE_KM - d) / (BACKSTOP_RANGE_KM - own), 0.0, 1.0)
+    # Per-feed cap on the rescued far echo. EE's rim paints a broad pale wash
+    # at its range border (user report 22.08 09:00, arc over the gulf) —
+    # bright-band overshoot, not surface rain, so its sole-witness weight is
+    # halved on top of the range ramp.
+    a_far = a_far * FAR_WEIGHT.get(feed or "", 1.0)
     return np.maximum(a_near, (1.0 - cover) * a_far).astype(np.float32)
 
 

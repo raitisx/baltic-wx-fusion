@@ -93,16 +93,19 @@ def _to_lev(rr_grid):
 SMHI_DBZ_ADJ = 1.3
 FMI_DBZ_ADJ = 4.8
 FMI_RATE_DIV = 10.0 ** (FMI_DBZ_ADJ / 16.0)      # ~2.0
-# SMHI's product ends in a hard coverage wall; echo fades out over the last
-# stretch approaching it instead of stopping dead (user: "dampening to the
-# edge").
-SMHI_EDGE_FADE_KM = 70.0
+# The edge softening lives in the COMPOSITE (scrape_maps SE_EDGE_*), never
+# here: a decode-time fade cannot know whether another feed covers the pixel,
+# and on 22.08 it erased a real storm west of the Estonian islands where SE
+# was the only witness. Stored SE frames carry the full product.
+
+
+_last_se_cov = None       # coverage of the most recently decoded SMHI frame
 
 
 def _decode_smhi(body):
-    """SMHI GeoTIFF bytes -> level grid on our 3059 raster, edge-faded."""
+    """SMHI GeoTIFF bytes -> level grid on our 3059 raster."""
+    global _last_se_cov
     import rasterio
-    from scipy.ndimage import distance_transform_edt
     with rasterio.open(io.BytesIO(body)) as ds:
         v = ds.read(1)
         # dBZ = 0.4*v - 30; 0 = clear, 255 = outside coverage
@@ -111,11 +114,23 @@ def _decode_smhi(body):
                        0.4 * v.astype(np.float32) - 30.0 - SMHI_DBZ_ADJ,
                        -100.0)
         rr = np.where(mask, (10.0 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6), 0.0)
-        grid = _warp_rr_to_grid(rr, ds.transform, ds.crs)
-        cov = _warp_rr_to_grid((v != 255).astype(np.float32),
-                               ds.transform, ds.crs) > 0.5
-    grid *= np.clip(distance_transform_edt(cov) / SMHI_EDGE_FADE_KM, 0.0, 1.0)
-    return _to_lev(grid)
+        _last_se_cov = _warp_rr_to_grid((v != 255).astype(np.float32),
+                                        ds.transform, ds.crs) > 0.5
+        return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
+
+
+def store_edge_map(s3):
+    """km-to-edge map of the SE product footprint -> R2, for the composite's
+    SE fade (scrape_maps SE_EDGE_KEY). Called after an SE decode; cheap
+    (~20 kB), so it simply overwrites and the footprint stays current."""
+    if _last_se_cov is None:
+        return
+    from scipy.ndimage import distance_transform_edt
+    edge = np.clip(distance_transform_edt(_last_se_cov), 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(edge, "L").save(buf, "PNG", optimize=True)
+    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar_src/se_edge_km.png",
+                  Body=buf.getvalue(), ContentType="image/png")
 
 
 def _decode_fmi(body):
@@ -344,6 +359,10 @@ def topup(s3, hours=3):
             log.warning("nordic topup SE listing: %s", e)
     stored += _backfill_slots(s3, s, "SE", entries, _decode_smhi,
                               idx_cache, dirty)
+    try:
+        store_edge_map(s3)
+    except Exception:
+        log.exception("SE edge map not stored")
 
     entries = []
     try:
@@ -436,6 +455,10 @@ def backfill(s3, se_days=14, fi_days=14, se_overwrite=False,
             log.warning("backfill SE listing %s: %s", day, e)
     n_se = _backfill_slots(s3, s, "SE", entries, _decode_smhi,
                            idx_cache, dirty, overwrite=se_overwrite)
+    try:
+        store_edge_map(s3)
+    except Exception:
+        log.exception("SE edge map not stored")
 
     wfs_entries, s3_entries = [], []
     for back in range(fi_days, -1, -1):
@@ -495,6 +518,11 @@ def live_layers(s3):
                 _store_frame(s3, code, stamp, lev)
             except Exception:
                 log.exception("nordic %s: frame not stored (still drawn)", code)
+            if code == "SE":
+                try:
+                    store_edge_map(s3)
+                except Exception:
+                    log.exception("SE edge map not stored")
             out.append((code, lev))
             log.info("nordic %s: sweep %s, %d px echo", code, stamp,
                      int((lev > 0).sum()))

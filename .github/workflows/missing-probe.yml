@@ -11,5 +11,5 @@ jobs:
           python-version: "3.11"
       - name: Dependencies
         run: pip install -r requirements.txt && pip install numpy scipy scikit-image pillow pyproj boto3 requests rasterio
-      - name: SE product-edge map
-        run: python jobs/probe_se_edge.py
+      - name: Placeholder (edit jobs/ + this step for the next probe)
+        run: python -c "print('no probe configured')" 
