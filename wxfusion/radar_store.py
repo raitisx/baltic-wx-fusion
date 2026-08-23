@@ -546,8 +546,12 @@ def _render_feed_slot(s3, code, t, f, when):
     return vtag
 
 
-def render_feeds(only_day: str, hours_back: int = 336) -> int:
-    """Per-feed debug frames for one UTC day (+3 h lead-in), every 15-min slot.
+def render_feeds(only_day: str, from_h: int | None = None,
+                 to_h: int | None = None) -> int:
+    """Per-feed debug frames for one UTC day, every 15-min slot.
+
+    from_h/to_h narrow it to a UTC hour window (e.g. 9..16) so a stretch
+    under investigation renders in minutes instead of the whole day.
 
     Writes FEED_ARCHIVE_KEY as {"path", "slots": {slotkey: {code: vtag}},
     "picked": {slotkey: {code: "HH:MM(*)"}}} — the star marks a sweep taken
@@ -555,13 +559,17 @@ def render_feeds(only_day: str, hours_back: int = 336) -> int:
     rather than freshly observed."""
     s3 = r2_client()
     d0 = dt.datetime.strptime(only_day, "%Y%m%d").replace(tzinfo=dt.timezone.utc)
-    lo, hi = d0 - dt.timedelta(hours=3), d0 + dt.timedelta(hours=24)
+    lo = d0 + dt.timedelta(hours=from_h) if from_h is not None \
+        else d0 - dt.timedelta(hours=3)
+    hi = d0 + dt.timedelta(hours=to_h) if to_h is not None \
+        else d0 + dt.timedelta(hours=24)
     try:
         arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
                                         Key=FEED_ARCHIVE_KEY)["Body"].read())
     except Exception:
         arch = {}
     arch.update({"path": FEED_PREFIX, "day": only_day,
+                 "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
                  "generated_at": dt.datetime.now(dt.timezone.utc).strftime(
                      "%Y%m%dT%H%M")})
     slots, picked = {}, {}
