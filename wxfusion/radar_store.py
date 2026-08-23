@@ -143,6 +143,10 @@ def _save_index(s3, day: dt.date, idx: dict) -> None:
 # would be filed under both 13:15 and 13:30.
 SLOT_MIN = 15
 SLOT_TOL_MIN = 8
+# Quarter frames borrow a feed's nearest sweep this far out when nothing sits
+# within SLOT_TOL_MIN — wide enough to bridge the ~hourly sweeps of the days
+# before the 15-min store, so no layer blinks out between its updates.
+QUARTER_FILL_MIN = 31
 # How long the quarter-hour detail is kept — sources and rendered frames both.
 # After this only the round-hour sweeps stay (for the year), which is all the
 # hourly archive ever needed.
@@ -292,10 +296,17 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
         done += 1
     # Quarter-hour frames for the near past: every :15/:30/:45 slot of the
     # last QUARTER_DAYS gets its own composite wherever the store holds sweeps
-    # within the slot tolerance. Days from before the 15-minute store simply
-    # have none and are skipped. Keyed separately (arch["quarters"]) so the
+    # within the slot tolerance. Keyed separately (arch["quarters"]) so the
     # hourly contract — and every consumer of it — is untouched; the page
     # treats the quarters as extra candidates for its nearest-frame lookup.
+    #
+    # Feeds are matched in two rings: fresh sweeps within SLOT_TOL_MIN win,
+    # and a feed with nothing that close borrows its nearest sweep within
+    # QUARTER_FILL_MIN instead of dropping out. Days from before the 15-min
+    # store hold only ~hourly sweeps per feed; without the fill their quarter
+    # frames were built from whichever feeds happened to sit near each slot,
+    # and seeking blinked layers in and out (user report 23.08, EE on 22.08).
+    # A borrowed layer just persists between its updates — no blink.
     quarters = arch.setdefault("quarters", {})
     qcut = (now - dt.timedelta(days=QUARTER_DAYS)).strftime("%Y%m%dT%H%M")
     for k in [k for k in quarters if k < qcut]:
@@ -311,16 +322,23 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
         d = slot.date()
         if d not in days:
             days[d] = _load_index(s3, d)
+        pool = days[d]["frames"]
+        if slot.hour == 0:                 # the fill ring reaches yesterday
+            prev = (slot - dt.timedelta(hours=1)).date()
+            if prev not in days:
+                days[prev] = _load_index(s3, prev)
+            pool = pool + days[prev]["frames"]
         best = {}
-        for f in days[d]["frames"]:
+        for f in pool:
             t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
                 tzinfo=dt.timezone.utc)
             gap = abs((t - slot).total_seconds())
-            if gap > SLOT_TOL_MIN * 60:
+            if gap > QUARTER_FILL_MIN * 60:
                 continue
+            rank = (gap > SLOT_TOL_MIN * 60, gap)
             cur = best.get(f["code"])
-            if cur is None or gap < cur[0]:
-                best[f["code"]] = (gap, t, f)
+            if cur is None or rank < cur[0]:
+                best[f["code"]] = (rank, t, f)
         # A quarter frame needs a Baltic sweep. Backfilled SE/FI history goes
         # further back than the 15-min meteolapa store; an SE-only composite
         # would paint the Baltic blank — worse than the page falling back to
