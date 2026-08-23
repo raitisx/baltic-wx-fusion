@@ -773,8 +773,19 @@ RADAR_SITES = [
     # range reaches the map. They join the coverage backstop and the per-feed
     # weak-echo fade; the nordic grids skip the beam passes (their composites
     # arrive quality-controlled), but the sites still matter for attribution.
+    #
+    # SMHI's comp is a TWELVE-radar national composite, not two radars. Fitting
+    # circles to its coverage footprint (jobs/probe_disc_centres.py, 23.08.2026)
+    # recovers the network as a union of ~240 km discs — Kiruna, Lulea,
+    # Ornskoldsvik, Ostersund, Hudiksvall, Arlanda, Vara, Vilebo, Angelholm,
+    # Karlskrona, Ase. Listed here are the ones whose range actually touches
+    # our canvas; without them everything SMHI draws over the northern Baltic
+    # was attributed to Ase, hundreds of km from the antenna that saw it.
     ("SE Ase", 57.292, 18.396),          # Gotland
     ("SE Karlskrona", 56.295, 15.610),
+    ("SE Arlanda", 59.654, 17.947),      # fitted arc 59.62N 18.17E, r=208 km
+    ("SE Hudiksvall", 61.577, 16.716),   # fitted arc 61.52N 16.71E, r=241 km
+    ("SE Vilebo", 58.106, 15.943),       # interior to the union: no outer arc
     ("FI Korppoo", 60.129, 21.643),
     ("FI Vantaa", 60.271, 24.869),
     ("FI Anjalankoski", 60.904, 27.108),
