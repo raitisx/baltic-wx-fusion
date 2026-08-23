@@ -107,30 +107,73 @@ function show(i) {
     (QS.get("maps") ? "&maps=" + encodeURIComponent(QS.get("maps")) : ""));
 }
 
-fetch(`${MAPS_BASE}/maps/radar/feeds.json?v=${Date.now()}`)
-  .then(r => r.json())
-  .then(a => {
+// Bases to try in order: whatever the host implies, then the public bucket.
+// A missing key can come back as the app page (HTML) rather than a 404 from
+// some hosts, so a response that is not JSON counts as "not here, try next".
+const BASES = [...new Set([MAPS_BASE,
+  "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev"])];
+async function loadArch() {
+  let lastErr = "";
+  for (const base of BASES) {
+    try {
+      const r = await fetch(`${base}/maps/radar/feeds.json?v=${Date.now()}`);
+      if (!r.ok) { lastErr = `${base} -> HTTP ${r.status}`; continue; }
+      const txt = await r.text();
+      if (!txt.trim().startsWith("{")) {
+        lastErr = `${base} -> not JSON (page returned instead of the key)`;
+        continue;
+      }
+      return JSON.parse(txt);
+    } catch (e) { lastErr = `${base} -> ${e}`; }
+  }
+  throw new Error(lastErr);
+}
+
+let POLL = null;
+function render(a) {
+  {
+    const first = ARCH === null;
     ARCH = a;
+    const at0 = first ? null : KEYS[document.getElementById("seek").value];
     KEYS = Object.keys(a.slots || {}).sort();
     const seek = document.getElementById("seek");
     seek.max = Math.max(0, KEYS.length - 1);
     document.getElementById("meta").textContent =
-      `day ${a.day} · ${KEYS.length} slots · rendered ${a.generated_at}`;
-    const want = QS.get("slot");
-    const at = want && KEYS.indexOf(want) >= 0 ? KEYS.indexOf(want) : 0;
-    seek.value = at;
-    seek.addEventListener("input", () => show(+seek.value));
-    addEventListener("keydown", e => {
-      if (e.key === "ArrowLeft")  { seek.value = Math.max(0, +seek.value - 1);
-                                    show(+seek.value); }
-      if (e.key === "ArrowRight") { seek.value = Math.min(+seek.max,
-                                    +seek.value + 1); show(+seek.value); }
-    });
-    show(at);
-  })
-  .catch(e => {
-    document.getElementById("now").textContent =
-      "feeds.json not found — run the radar-feeds workflow for a day first (" +
-      e + ")";
-  });
+      `day ${a.day} · ${KEYS.length} slots · rendered ${a.generated_at}` +
+      (a.complete ? "" : " · still rendering, reloading as slots land");
+    if (first) {
+      const want = QS.get("slot");
+      const at = want && KEYS.indexOf(want) >= 0 ? KEYS.indexOf(want) : 0;
+      seek.value = at;
+      seek.addEventListener("input", () => show(+seek.value));
+      addEventListener("keydown", e => {
+        if (e.key === "ArrowLeft")  { seek.value = Math.max(0, +seek.value - 1);
+                                      show(+seek.value); }
+        if (e.key === "ArrowRight") { seek.value = Math.min(+seek.max,
+                                      +seek.value + 1); show(+seek.value); }
+      });
+      show(at);
+    } else {
+      // Keep the slot the user is looking at while more of the day arrives.
+      const keep = KEYS.indexOf(at0);
+      seek.value = keep >= 0 ? keep : Math.min(+seek.value, +seek.max);
+      show(+seek.value);
+    }
+    // While the render is still running, pick up the slots as they appear.
+    if (!a.complete && !POLL)
+      POLL = setInterval(() => loadArch().then(x => {
+        render(x);
+        if (x.complete) { clearInterval(POLL); POLL = null; }
+      }).catch(() => {}), 20000);
+  }
+}
+
+loadArch().then(render).catch(e => {
+  document.getElementById("now").textContent =
+    "feeds.json not readable yet — the radar-feeds workflow writes it as it " +
+    "renders; retrying every 20 s. (" + e.message + ")";
+  POLL = setInterval(() => loadArch().then(a => {
+    clearInterval(POLL); POLL = null; render(a);
+  }).catch(() => {}), 20000);
+});
 </script>

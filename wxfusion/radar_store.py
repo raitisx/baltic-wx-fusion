@@ -566,6 +566,17 @@ def render_feeds(only_day: str, hours_back: int = 336) -> int:
                      "%Y%m%dT%H%M")})
     slots, picked = {}, {}
     days, done = {}, 0
+
+    def flush():
+        arch["slots"], arch["picked"] = slots, picked
+        s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_ARCHIVE_KEY,
+                      Body=json.dumps(arch).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=30")
+
+    # An empty index up front, so the page has something to read while the
+    # rest of the day renders rather than failing on a missing key.
+    flush()
     slot = lo
     while slot < hi:
         d = slot.date()
@@ -591,12 +602,11 @@ def render_feeds(only_day: str, hours_back: int = 336) -> int:
             picked.setdefault(skey, {})[code] = (
                 t.strftime("%H:%M") + ("*" if gap > SLOT_TOL_MIN * 60 else ""))
             done += 1
+        if skey in slots:
+            flush()          # the page can seek what is ready already
         slot += dt.timedelta(minutes=SLOT_MIN)
-    arch["slots"], arch["picked"] = slots, picked
-    s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_ARCHIVE_KEY,
-                  Body=json.dumps(arch).encode(),
-                  ContentType="application/json",
-                  CacheControl="public, max-age=60")
+    arch["complete"] = True
+    flush()
     log.info("radar feeds: %d per-feed frames over %d slots (%s)",
              done, len(slots), only_day)
     return done
