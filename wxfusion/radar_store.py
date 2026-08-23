@@ -537,15 +537,28 @@ def _site_pixels_for(code):
 
 
 def _feed_grid(s3, code, f):
-    """The feed's cleaned level grid on our raster (the expensive part)."""
+    """(cleaned level grid, source as served on our raster or None).
+
+    The second value is the product placed on our canvas with NOTHING done to
+    it — no classify, no cleaning, no recolour — so the debug page can put the
+    original beside the render. The nordic feeds have no original to show:
+    their GeoTIFF is discarded at decode and only the level grid is kept.
+    """
+    import numpy as np
+
     from . import proj3059 as P
     if f.get("grid3059"):
         from .radar_nordic import load_stored
-        return load_stored(s3, f)
-    cls = _classify_stored(s3, f)
-    grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
-    return _close_radial_spokes(_despeckle_intensity(
+        return load_stored(s3, f), None
+    body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
+    arr = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
+    sw, ne = tuple(f["sw"]), tuple(f["ne"])
+    raw = P.resample_mercator_image(arr, sw, ne)
+    cls = _prepare_source(arr, f["code"], f)
+    grid = P.resample_mercator_image(cls, sw, ne)
+    grid = _close_radial_spokes(_despeckle_intensity(
         _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
+    return grid, raw
 
 
 def _render_feed_slot(s3, code, t, f, when):
@@ -566,7 +579,7 @@ def _render_feed_slot(s3, code, t, f, when):
 
     from . import proj3059 as P
     try:
-        grid = _feed_grid(s3, code, f)
+        grid, raw = _feed_grid(s3, code, f)
     except Exception:
         log.exception("feed render: %s unreadable", f["key"])
         return {}
@@ -589,6 +602,26 @@ def _render_feed_slot(s3, code, t, f, when):
         return vtag
 
     out[code] = emit(grid, code)
+
+    # The product as served, warped onto our canvas and otherwise untouched.
+    src = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    if raw is not None:
+        src.alpha_composite(Image.fromarray(raw, "RGBA"))
+    else:
+        # Nordic: no original kept, so show the stored level grid as gray.
+        g = (np.clip(grid.astype(np.float32) / 96.0, 0, 1) * 255).astype("uint8")
+        rgba = np.dstack([255 - g, 255 - g, 255 - g,
+                          np.where(grid > 0, 255, 0).astype("uint8")])
+        src.alpha_composite(Image.fromarray(rgba, "RGBA"))
+    draw_borders(src)
+    buf = io.BytesIO()
+    src.save(buf, "PNG", optimize=True)
+    stag = f"{code}-src_{t:%Y%m%dT%H%M}"
+    s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FEED_PREFIX}/{stag}.png",
+                  Body=buf.getvalue(), ContentType="image/png",
+                  CacheControl="public, max-age=604800")
+    out[f"{code} source"] = stag
+
     sites = _site_pixels_for(code) if code in SPLIT_FEEDS else []
     if len(sites) > 1:
         yy, xx = np.mgrid[0:P.H, 0:P.W]
@@ -631,7 +664,7 @@ def render_feeds(only_day: str, from_h: int | None = None,
     for c in FEED_CODES:
         sites = ([n for n, _, _ in _site_pixels_for(c)]
                  if c in SPLIT_FEEDS else [])
-        panels.append({"code": c, "sites": sites})
+        panels.append({"code": c, "sites": sites, "src": f"{c} source"})
     arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
                  "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
                  "generated_at": dt.datetime.now(dt.timezone.utc).strftime(
