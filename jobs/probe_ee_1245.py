@@ -40,9 +40,13 @@ def bbox_mask():
 
 M = bbox_mask()
 idx = R._load_index(s3, dt.date(2026, 8, 22))
-for stamp in ("2026-08-22T12:29:00Z", "2026-08-22T12:47:00Z"):
-    f = next(x for x in idx["frames"]
-             if x["code"] == "EE" and x["time"] == stamp)
+ee = [(dt.datetime.strptime(x["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=dt.timezone.utc), x)
+      for x in idx["frames"] if x["code"] == "EE"]
+for hh, mm in ((12, 29), (12, 47)):
+    want = dt.datetime(2026, 8, 22, hh, mm, tzinfo=dt.timezone.utc)
+    t0, f = min(ee, key=lambda e: abs((e[0] - want).total_seconds()))
+    stamp = t0.strftime("%Y-%m-%dT%H:%M")
     body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
     arr = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
     plain = _classify_intensity(arr, "EE")
