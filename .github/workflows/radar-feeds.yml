@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio h5py
       - name: Per-feed debug frames
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

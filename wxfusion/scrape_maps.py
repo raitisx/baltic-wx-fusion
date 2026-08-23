@@ -781,11 +781,15 @@ RADAR_SITES = [
     # Karlskrona, Ase. Listed here are the ones whose range actually touches
     # our canvas; without them everything SMHI draws over the northern Baltic
     # was attributed to Ase, hundreds of km from the antenna that saw it.
-    ("SE Ase", 57.292, 18.396),          # Gotland
-    ("SE Karlskrona", 56.295, 15.610),
-    ("SE Arlanda", 59.654, 17.947),      # fitted arc 59.62N 18.17E, r=208 km
-    ("SE Hudiksvall", 61.577, 16.716),   # fitted arc 61.52N 16.71E, r=241 km
-    ("SE Vilebo", 58.106, 15.943),       # interior to the union: no outer arc
+    # Positions now come from the radars themselves — SMHI's per-site volumes
+    # carry /where and name the dish in /what/source, which is also how "Ase"
+    # and "Hemse" turned out to be one antenna and how Balsta replaced the
+    # Arlanda guess (22 km out) that the arc fit had suggested.
+    ("SE Ase", 57.3035, 18.4001),        # PLC:Hemse(Ase), Gotland
+    ("SE Karlskrona", 56.2955, 15.6102),
+    ("SE Balsta", 59.6110, 17.5833),
+    ("SE Hudiksvall", 61.5771, 16.7144),
+    ("SE Vilebo", 58.1059, 15.9365),     # PLC:Atvidaberg(Vilebo)
     # Read off FMI's per-radar grids (their centre pixel IS the antenna), not
     # from a published list — which is how "FI Vantaa" turned out not to be a
     # radar at all: the Helsinki-area antenna is Vihti, 35 km north-west of
@@ -803,6 +807,10 @@ RADAR_SITES = [
 # passes, the range-graded sensitivity) asks _feed_site_names, so a site feed
 # measures distance from its own dish and nothing else.
 SITE_FEEDS = {
+    "SEHEM": "SE Ase",
+    "SEBAL": "SE Balsta",
+    "SEATV": "SE Vilebo",
+    "SEHUD": "SE Hudiksvall",
     "FIKOR": "FI Korppoo",
     "FIVIH": "FI Vihti",
     "FIANJ": "FI Anjalankoski",

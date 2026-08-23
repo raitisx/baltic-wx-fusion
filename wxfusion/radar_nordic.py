@@ -173,8 +173,16 @@ def _decode_fmi_dbzh(body):
 # Filled from the volumes themselves (their /where group), not a published
 # list. Only the radars whose 240 km reach touches our raster are fetched.
 SE_SITES = {
-    "SEHEM": ("hemse", "SE Hemse", 57.303, 18.400),      # PLC:Hemse(Ase)
+    # code            area          site name          lat        lon
+    "SEHEM": ("hemse", "SE Ase", 57.3035, 18.4001),        # PLC:Hemse(Ase)
+    "SEBAL": ("balsta", "SE Balsta", 59.6110, 17.5833),
+    "SEATV": ("atvidaberg", "SE Vilebo", 58.1059, 15.9365),  # PLC:Atvidaberg
+    "SEHUD": ("hudiksvall", "SE Hudiksvall", 61.5771, 16.7144),
 }
+# Karlskrona is 14 km short of our raster and the rest of the network is
+# hundreds of km away, so those volumes are never fetched. Positions and
+# names are the ones the volumes carry in /where and /what/source; a volume
+# is 15-20 MB, which is why only the four that reach us are pulled.
 
 SMHI_SITE_API = ("https://opendata-download-radar.smhi.se/api/version/latest"
                  "/area/{site}/product/qcvol")
@@ -660,9 +668,12 @@ def backfill(s3, se_days=14, fi_days=14, se_overwrite=False,
 
 
 def live_layers(s3):
-    """Fetch SE + FI now, store the frames, return [(code, level grid)].
+    """Fetch the neighbours now, store every frame, return what to DRAW.
 
-    Best-effort per feed; an unreachable or stale neighbour is skipped."""
+    The national composites (SE, FI) are drawn; the single radars are stored
+    only — they exist so the debug page can judge one antenna against another,
+    and drawing them as well would paint Finland and Sweden twice. Best-effort
+    per feed; an unreachable or stale neighbour is skipped."""
     out = []
     now = dt.datetime.now(dt.timezone.utc)
     fetches = [("SE", fetch_smhi), ("FI", fetch_fmi)]
@@ -672,6 +683,7 @@ def live_layers(s3):
     # composite still draws the national products until the sites are
     # calibrated against them.
     fetches += [(c, functools.partial(fetch_fmi_site, c)) for c in FI_SITES]
+    fetches += [(c, functools.partial(fetch_smhi_site, c)) for c in SE_SITES]
     for code, fetch in fetches:
         try:
             got = fetch()
@@ -691,7 +703,8 @@ def live_layers(s3):
                     store_edge_map(s3)
                 except Exception:
                     log.exception("SE edge map not stored")
-            out.append((code, lev))
+            if code in ("SE", "FI"):
+                out.append((code, lev))      # site feeds are STORED, not drawn
             log.info("nordic %s: sweep %s, %d px echo", code, stamp,
                      int((lev > 0).sum()))
         except Exception:
