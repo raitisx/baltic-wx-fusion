@@ -1,16 +1,10 @@
-"""Estonia and Latvia: is there a per-radar source anywhere?
+"""Estonia's own radar volumes: where does KAIA actually serve them?
 
-Sweden and Finland are separated now. Estonia's product is still a two-radar
-composite (Harku + Surgavere) and Latvia's is a single radar already, so what
-is left is to find whether Estonia publishes its radars individually — and,
-while we are there, what Latvia actually serves, since meteolapa's LV frame
-is a suspiciously small disc.
-
-The Estonian weather service draws its radar from a tile server
-(tiles.envir.ee, layer ilmateenistus-radar) and that layer is a composite, so
-this looks past it: the open-data portals, the site's own API, and the
-national open-data catalogues, for anything shaped like a single-site
-product.
+The open-data catalogue lists "Meteoroloogiliste radarite andmestik" with a
+"Radari toorandmed (VOL)" resource — raw polar volumes, which is exactly the
+per-radar source Estonia was missing, and the same ODIM shape the SMHI
+decoder already reads. This walks the dataset page for the download or
+service URL behind it, then tries to list and open one volume.
 """
 import re
 import sys
@@ -20,54 +14,44 @@ sys.path.insert(0, ".")
 from wxfusion.http import session  # noqa: E402
 
 s = session()
+PAGE = ("https://keskkonnaportaal.ee/et/avaandmed/"
+        "meteoroloogiliste-radarite-andmestik")
 
 
-def get(tag, url, want=None):
+def get(tag, url, pat=None, limit=25):
     try:
-        r = s.get(url, timeout=45)
-        ct = r.headers.get("content-type", "?")[:30]
-        print(f"  {tag:26s} {r.status_code} {len(r.content):>9,d}B  {ct}  {url[:95]}")
-        if r.ok and want:
-            hits = sorted({m for m in re.findall(want, r.text, re.I)})[:20]
-            for h in hits:
-                print("      ", (h if isinstance(h, str) else " ".join(h))[:120])
+        r = s.get(url, timeout=60)
+        print(f"  {tag:24s} {r.status_code} {len(r.content):>9,d}B  "
+              f"{r.headers.get('content-type', '?')[:28]}  {url[:95]}")
+        if r.ok and pat:
+            for h in sorted({m if isinstance(m, str) else " ".join(m)
+                             for m in re.findall(pat, r.text, re.I)})[:limit]:
+                print("      ", h[:140])
         return r
     except Exception as e:
-        print(f"  {tag:26s} FAIL {type(e).__name__}  {url[:95]}")
+        print(f"  {tag:24s} FAIL {type(e).__name__}  {url[:95]}")
         return None
 
 
-RADARISH = r'["\']([^"\']*(?:radar|sadu|surgavere|harku|s%C3%BCrgavere)[^"\']{0,70})'
+print("=== the dataset page ===")
+r = get("radar dataset", PAGE, r'href="([^"]{6,160})"')
 
-print("=== EE: open data portals and the service's own API ===")
-get("envir opendata", "https://opendata.envir.ee/", RADARISH)
-get("keskkonnaportaal", "https://avaandmed.keskkonnaportaal.ee/", RADARISH)
-get("avaandmed.eesti.ee api",
-    "https://avaandmed.eesti.ee/api/datasets/search?query=radar")
-get("ilmateenistus wp-json", "https://www.ilmateenistus.ee/wp-json/")
-get("ilmateenistus radar api",
-    "https://www.ilmateenistus.ee/wp-json/ilm/v1/radar")
-get("tms resource",
-    "https://tiles.envir.ee/tm/tms/1.0.0/ilmateenistus-radar@LEST",
-    r"<(?:BoundingBox|TileSet|Title)[^>]*>")
-get("wms capabilities",
-    "https://tiles.envir.ee/geoserver/wms?service=WMS&request=GetCapabilities",
-    r"<Name>([^<]*radar[^<]*)</Name>")
-
-print("\n=== LV: what LVGMC actually serves ===")
-for tag, url in (
-        ("videscentrs root", "https://videscentrs.lvgmc.lv/"),
-        ("videscentrs radar page",
-         "https://videscentrs.lvgmc.lv/karte/meteorologiska-radara-informacija"),
-        ("videscentrs api", "https://videscentrs.lvgmc.lv/api/radar"),
-        ("data.gov.lv search",
-         "https://data.gov.lv/dati/api/3/action/package_search?q=radar"),
-):
-    get(tag, url, RADARISH)
-
-print("\n=== meteolapa: how does IT get the Estonian frames? ===")
-r = get("meteolapa radars page", "https://www.meteolapa.lv/radars",
-        r'(?:code|title|name)"\s*:\s*"([^"]{2,30})"')
+print("\n=== anything that looks like a file service ===")
 if r is not None and r.ok:
-    for m in sorted({m for m in re.findall(r'"([A-Z]{2}\d?)"\s*[,:}]', r.text)}):
-        print("       code token:", m)
+    urls = {u for u in re.findall(r'https?://[^"\'\s<>]{10,150}', r.text)
+            if re.search(r"radar|vol|kaia|opendata|avaandmed|s3|ftp|thredds",
+                         u, re.I)}
+    for u in sorted(urls)[:30]:
+        print("      candidate:", u[:140])
+
+print("\n=== likely hosts, probed directly ===")
+for tag, url in (
+        ("kaia", "https://kaia.envir.ee/"),
+        ("kaia opendata", "https://kaia.envir.ee/opendata/"),
+        ("kaia radar", "https://kaia.envir.ee/opendata/radar/"),
+        ("opendata.envir list", "https://opendata.envir.ee/?list-type=2"),
+        ("envir s3", "https://s3.envir.ee/"),
+        ("ilmateenistus opendata", "https://opendata.ilmateenistus.ee/"),
+        ("ftp-ish", "https://www.ilmateenistus.ee/wp-json/wp/v2/pages?search=radar"),
+):
+    get(tag, url, r'(?:href|Key|title)[">=]{1,3}([^"<,]{4,120})', limit=15)
