@@ -243,16 +243,24 @@ def _classify_stored(s3, frame: dict):
                            {"sw": tuple(frame["sw"]), "ne": tuple(frame["ne"])})
 
 
-def render_stored(hours_back: int = 336, force: bool = False) -> int:
+def render_stored(hours_back: int = 336, force: bool = False,
+                  only_day: str | None = None) -> int:
     """Build hourly composites from the stored originals. No upstream traffic.
 
     This is the function a styling change should call. It reads only R2, so
     re-rendering a fortnight costs seconds and nothing on meteolapa's side.
+    only_day ("YYYYMMDD", UTC) limits both passes to that day plus a 3-hour
+    lead-in, so the Riga-local day is fully covered — for targeted re-renders.
     """
     import numpy as np
 
     from . import proj3059 as P
 
+    day_lo = day_hi = None
+    if only_day:
+        d0 = dt.datetime.strptime(only_day, "%Y%m%d").replace(
+            tzinfo=dt.timezone.utc)
+        day_lo, day_hi = d0 - dt.timedelta(hours=3), d0 + dt.timedelta(hours=24)
     s3 = r2_client()
     try:
         arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
@@ -265,6 +273,8 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
     done = 0
     for back in range(hours_back, -1, -1):
         hour = now - dt.timedelta(hours=back)
+        if day_lo is not None and not (day_lo <= hour < day_hi):
+            continue
         hour_key = hour.strftime("%Y%m%dT%H")
         if not force and hour_key in arch["hours"]:
             continue
@@ -316,6 +326,8 @@ def render_stored(hours_back: int = 336, force: bool = False) -> int:
         slot = now - dt.timedelta(minutes=SLOT_MIN * back)
         if slot.minute == 0:
             continue                                 # the hourly pass owns :00
+        if day_lo is not None and not (day_lo <= slot < day_hi):
+            continue
         qkey = slot.strftime("%Y%m%dT%H%M")
         if not force and qkey in quarters:
             continue

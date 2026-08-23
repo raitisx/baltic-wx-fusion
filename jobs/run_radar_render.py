@@ -11,6 +11,7 @@ from wxfusion import radar_store  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 HOURS = int(os.environ.get("RADAR_RENDER_HOURS", "336"))
+DAY = os.environ.get("RADAR_RENDER_DAY") or None   # "YYYYMMDD" UTC, targeted
 FORCE = os.environ.get("RADAR_RENDER_FORCE", "") == "1"
 # The tick runs this every half hour for the quarter top-up; pruning lists
 # every stored object and does not belong on that cadence.
@@ -18,7 +19,7 @@ PRUNE = os.environ.get("RADAR_RENDER_PRUNE", "1") == "1"
 
 
 def main() -> int:
-    n = radar_store.render_stored(hours_back=HOURS, force=FORCE)
+    n = radar_store.render_stored(hours_back=HOURS, force=FORCE, only_day=DAY)
     if PRUNE:
         p = radar_store.prune()
         print(f"{n} composites rendered; pruned {p['sources']} originals, "
