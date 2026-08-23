@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Radar feeds — per-radar debug</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#20242c; color:#e6e8ee;
+         font:14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding:10px 14px; display:flex; gap:14px; align-items:baseline;
+           flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .hint { color:#98a0b0; font-size:12px; }
+  .grid { display:grid; gap:10px; padding:0 14px 10px;
+          grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); }
+  figure { margin:0; background:#171a21; border-radius:6px; overflow:hidden;
+           position:relative; }
+  figcaption { padding:5px 8px; font-size:12px; display:flex; gap:8px;
+               align-items:baseline; background:#11141a; }
+  .code { font-weight:700; letter-spacing:.03em; }
+  .stamp { color:#9aa3b2; }
+  .held { color:#e8b064; }   /* sweep taken from the fill ring */
+  .none { color:#ff6b6b; font-weight:700; }
+  .wrap { position:relative; aspect-ratio:570/690; background:#f7f5ef; }
+  .wrap img { position:absolute; inset:0; width:100%; height:100%;
+              object-fit:contain; }
+  .missing { position:absolute; inset:0; display:flex; align-items:center;
+             justify-content:center; color:#c0392b; font-weight:700;
+             background:repeating-linear-gradient(45deg,#f7f5ef,#f7f5ef 8px,
+                        #ecd9d6 8px,#ecd9d6 16px); }
+  footer { position:sticky; bottom:0; background:#171a21; padding:10px 14px 14px;
+           border-top:1px solid #2a2f3a; }
+  input[type=range] { width:100%; }
+  .now { text-align:center; padding-top:6px; font-weight:600; }
+  a { color:#7fb2ee; }
+</style>
+<header>
+  <h1>Per-radar debug</h1>
+  <span class="hint">Each map is one feed rendered alone, same slot, same
+    picker as the composite. <span class="none">NO FRAME</span> = that feed
+    had no sweep for the slot; <span class="held">amber time</span> = sweep
+    held over from the fill ring (&gt;8 min from the slot).</span>
+  <span class="hint" id="meta"></span>
+</header>
+<div class="grid" id="grid"></div>
+<footer>
+  <input type="range" id="seek" min="0" max="0" value="0" step="1">
+  <div class="now" id="now">loading…</div>
+</footer>
+<script>
+const QS = new URLSearchParams(location.search);
+const MAPS_BASE = QS.get("maps") || (() => {
+  const p = location.pathname.replace(/\/[^\/]*$/, "").replace(/\/+$/, "");
+  if (p.endsWith("/meteo")) return location.origin + p;
+  if (/^meteo\./i.test(location.hostname)) return location.origin;
+  return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
+})();
+const CODES = ["LV", "EE", "LT2", "LT", "SE", "FI"];
+const NAMES = {LV:"Latvia (LVGMC)", EE:"Estonia (KESKKONNAAGENTUUR)",
+               LT2:"Lithuania (2 radars)", LT:"Lithuania (legacy feed)",
+               SE:"Sweden (SMHI comp)", FI:"Finland (FMI comp)"};
+let ARCH = null, KEYS = [];
+
+for (const c of CODES) {
+  const fig = document.createElement("figure");
+  fig.innerHTML =
+    `<figcaption><span class="code">${c}</span>` +
+    `<span class="stamp" id="s_${c}">—</span>` +
+    `<span style="margin-left:auto;color:#7a8395">${NAMES[c] || ""}</span>` +
+    `</figcaption><div class="wrap" id="w_${c}"></div>`;
+  document.getElementById("grid").appendChild(fig);
+}
+
+function fmt(key) {           // 20260822T1245 -> "Sat 22.08, 12:45 UTC"
+  const y = +key.slice(0,4), mo = +key.slice(4,6)-1, d = +key.slice(6,8);
+  const h = +key.slice(9,11), mi = +key.slice(11,13);
+  const dt = new Date(Date.UTC(y, mo, d, h, mi));
+  return dt.toUTCString().slice(0, 22) + " UTC";
+}
+
+function show(i) {
+  const key = KEYS[i];
+  if (!key) return;
+  document.getElementById("now").textContent = fmt(key) +
+    "   ·   slot " + (i + 1) + " / " + KEYS.length;
+  const slot = ARCH.slots[key] || {};
+  const picked = (ARCH.picked || {})[key] || {};
+  for (const c of CODES) {
+    const wrap = document.getElementById("w_" + c);
+    const stamp = document.getElementById("s_" + c);
+    const vtag = slot[c];
+    if (!vtag) {
+      wrap.innerHTML = '<div class="missing">NO FRAME</div>';
+      stamp.textContent = "no sweep";
+      stamp.className = "none";
+      continue;
+    }
+    const p = picked[c] || "";
+    stamp.textContent = p.replace("*", " (held)");
+    stamp.className = p.endsWith("*") ? "held" : "stamp";
+    const url = `${MAPS_BASE}/${ARCH.path}/${vtag}.png?v=${ARCH.generated_at}`;
+    let img = wrap.querySelector("img");
+    if (!img) { wrap.innerHTML = ""; img = document.createElement("img");
+                wrap.appendChild(img); }
+    if (img.getAttribute("src") !== url) img.src = url;
+  }
+  history.replaceState(null, "", "?slot=" + key +
+    (QS.get("maps") ? "&maps=" + encodeURIComponent(QS.get("maps")) : ""));
+}
+
+fetch(`${MAPS_BASE}/maps/radar/feeds.json?v=${Date.now()}`)
+  .then(r => r.json())
+  .then(a => {
+    ARCH = a;
+    KEYS = Object.keys(a.slots || {}).sort();
+    const seek = document.getElementById("seek");
+    seek.max = Math.max(0, KEYS.length - 1);
+    document.getElementById("meta").textContent =
+      `day ${a.day} · ${KEYS.length} slots · rendered ${a.generated_at}`;
+    const want = QS.get("slot");
+    const at = want && KEYS.indexOf(want) >= 0 ? KEYS.indexOf(want) : 0;
+    seek.value = at;
+    seek.addEventListener("input", () => show(+seek.value));
+    addEventListener("keydown", e => {
+      if (e.key === "ArrowLeft")  { seek.value = Math.max(0, +seek.value - 1);
+                                    show(+seek.value); }
+      if (e.key === "ArrowRight") { seek.value = Math.min(+seek.max,
+                                    +seek.value + 1); show(+seek.value); }
+    });
+    show(at);
+  })
+  .catch(e => {
+    document.getElementById("now").textContent =
+      "feeds.json not found — run the radar-feeds workflow for a day first (" +
+      e + ")";
+  });
+</script>
