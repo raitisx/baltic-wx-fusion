@@ -786,10 +786,38 @@ RADAR_SITES = [
     ("SE Arlanda", 59.654, 17.947),      # fitted arc 59.62N 18.17E, r=208 km
     ("SE Hudiksvall", 61.577, 16.716),   # fitted arc 61.52N 16.71E, r=241 km
     ("SE Vilebo", 58.106, 15.943),       # interior to the union: no outer arc
-    ("FI Korppoo", 60.129, 21.643),
-    ("FI Vantaa", 60.271, 24.869),
+    # Read off FMI's per-radar grids (their centre pixel IS the antenna), not
+    # from a published list — which is how "FI Vantaa" turned out not to be a
+    # radar at all: the Helsinki-area antenna is Vihti, 35 km north-west of
+    # where we had it.
+    ("FI Korppoo", 60.129, 21.639),
+    ("FI Vihti", 60.556, 24.494),
     ("FI Anjalankoski", 60.904, 27.108),
+    ("FI Kankaanpaa", 61.811, 22.500),
+    ("FI Kesalahti", 61.907, 29.799),
 ]
+# Feeds that ARE a single radar. The national products mix several antennas,
+# so "which sites belong to this feed" has to be matched by country prefix —
+# but FMI publishes one product per radar, and for those the feed IS the
+# antenna. Everything that reasons about range (the weak-echo fade, the beam
+# passes, the range-graded sensitivity) asks _feed_site_names, so a site feed
+# measures distance from its own dish and nothing else.
+SITE_FEEDS = {
+    "FIKOR": "FI Korppoo",
+    "FIVIH": "FI Vihti",
+    "FIANJ": "FI Anjalankoski",
+    "FIKAN": "FI Kankaanpaa",
+    "FIKES": "FI Kesalahti",
+}
+
+
+def _feed_site_names(feed: str | None) -> tuple[str, ...]:
+    """Which RADAR_SITES entries belong to this feed."""
+    if feed in SITE_FEEDS:
+        return (SITE_FEEDS[feed],)
+    return tuple(n for n, _, _ in RADAR_SITES if n.startswith((feed or "")[:2]))
+
+
 RADIAL_TOL_KM = 20      # how close the beam's line must pass to the antenna
 RADAR_RANGE_KM = 320    # beyond this a site cannot be the source
 
@@ -1658,8 +1686,9 @@ def _remove_beams_source(arr: np.ndarray, feed: str | None, sw, ne) -> np.ndarra
                      "skipped", feed, int(echo.sum()), BEAM_MIN_PX)
         return arr
     out, removed = arr, []
+    names = _feed_site_names(feed)
     for name, la, lo in RADAR_SITES:
-        if not name.startswith((feed or "")[:2]):
+        if name not in names:
             continue
         rng, azdeg = _source_polar(arr.shape, sw, ne, la, lo)
         keep = echo & (rng <= R_MAX_KM)
@@ -1822,8 +1851,8 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
                      int((lev > 0).sum()), BEAM_MIN_PX)
         return lev, 0
     out, notes, kept = lev, [], 0
-    mine = [(n, la, lo) for n, la, lo in RADAR_SITES
-            if n.startswith((feed or "")[:2])]
+    names = _feed_site_names(feed)
+    mine = [(n, la, lo) for n, la, lo in RADAR_SITES if n in names]
     if not mine:
         if os.environ.get("RADAR_BEAM_DEBUG"):
             log.info("beam_diag %s: no radar sites match this feed prefix", feed)
@@ -2202,8 +2231,8 @@ def _range_km() -> np.ndarray:
 def _feed_range_km(feed: str) -> np.ndarray | None:
     """Distance to the nearest antenna OF THIS FEED, in km. None if unknown."""
     from . import proj3059 as P
-    sites = [(sx, sy) for n, sx, sy in _site_pixels()
-             if n.startswith((feed or "")[:2])]
+    mine = _feed_site_names(feed)
+    sites = [(sx, sy) for n, sx, sy in _site_pixels() if n in mine]
     if not sites:
         return None
     yy, xx = np.mgrid[0:P.H, 0:P.W]

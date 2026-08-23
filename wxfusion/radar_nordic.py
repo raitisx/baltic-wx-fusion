@@ -25,6 +25,7 @@ Credit lines for the map: SMHI Öppna Data and FMI open data, both CC BY 4.0.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import io
 import json
 import logging
@@ -172,6 +173,55 @@ def _pair_fmi(urls, stamps):
         return None
     return [(dt.datetime.fromisoformat(t.replace("Z", "+00:00")),
              u.replace("&amp;", "&")) for u, t in zip(urls, stamps)]
+
+
+# FMI's twelve radars are published individually on the same S3 mirror, as
+# {Y/m/d}/{site}/{stamp}_{site}_cappi_600_dbzh_qc.tif — 2000x2000 at 250 m,
+# so the grid is a 250 km box centred on the antenna and its CENTRE PIXEL IS
+# THE ANTENNA (verified 23.08.2026: fikor's centre lands on Korppoo to 400 m).
+# Only the five whose range reaches our raster are worth fetching; the
+# coordinates below are read off those grids, not from a published list.
+FI_SITES = {
+    "FIKOR": ("fikor", "FI Korppoo", 60.129, 21.639),
+    "FIVIH": ("fivih", "FI Vihti", 60.556, 24.494),
+    "FIANJ": ("fianj", "FI Anjalankoski", 60.904, 27.108),
+    "FIKAN": ("fikan", "FI Kankaanpaa", 61.811, 22.500),
+    "FIKES": ("fikes", "FI Kesalahti", 61.907, 29.799),
+}
+
+
+def _fmi_site_entries(s, day, site):
+    """(stamp, url) pairs for one day of ONE FMI radar's cappi product."""
+    r = s.get(f"{FMI_S3}/?list-type=2&max-keys=1000"
+              f"&prefix={day:%Y/%m/%d}/{site}/", timeout=60)
+    out = []
+    for k in re.findall(r"<Key>([^<]+)</Key>", r.text):
+        m = re.search(rf"/(\d{{12}})_{site}_cappi_600_dbzh", k)
+        if m:
+            out.append((dt.datetime.strptime(m.group(1), "%Y%m%d%H%M")
+                        .replace(tzinfo=dt.timezone.utc), f"{FMI_S3}/{k}"))
+    return sorted(out)
+
+
+def fetch_fmi_site(code):
+    """Latest sweep of one FMI radar -> (stamp, level grid) or None.
+
+    Same product family as the national composite (uint8 DBZH, ODIM 8-bit
+    scaling, 255 nodata), so it goes through the same decode and lands on the
+    same calibrated levels — the difference is that this one is ONE radar.
+    """
+    site = FI_SITES[code][0]
+    s = session()
+    now = dt.datetime.now(dt.timezone.utc)
+    ent = []
+    for day in (now.date(), (now - dt.timedelta(days=1)).date()):
+        ent += _fmi_site_entries(s, day, site)
+        if ent:
+            break
+    if not ent:
+        return None
+    stamp, url = max(ent)
+    return stamp, _decode_fmi_dbzh(s.get(url, timeout=120).content)
 
 
 def _fmi_s3_entries(s, day):
@@ -504,7 +554,14 @@ def live_layers(s3):
     Best-effort per feed; an unreachable or stale neighbour is skipped."""
     out = []
     now = dt.datetime.now(dt.timezone.utc)
-    for code, fetch in (("SE", fetch_smhi), ("FI", fetch_fmi)):
+    fetches = [("SE", fetch_smhi), ("FI", fetch_fmi)]
+    # The single radars ride alongside the composites: they are what the
+    # debug page needs to judge one antenna against another, and what a
+    # range-graded correction needs to know a real distance from. The main
+    # composite still draws the national products until the sites are
+    # calibrated against them.
+    fetches += [(c, functools.partial(fetch_fmi_site, c)) for c in FI_SITES]
+    for code, fetch in fetches:
         try:
             got = fetch()
             if not got:

@@ -513,7 +513,11 @@ def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> d
 # debug page shows exactly which layer blinks and when (docs/radar_feeds.html).
 FEED_PREFIX = "maps/radar/feeds3059"
 FEED_ARCHIVE_KEY = "maps/radar/feeds.json"
-FEED_CODES = ("LV", "EE", "LT2", "SE", "FI")
+FEED_CODES = ("LV", "EE", "LT2", "SE", "FI",
+              # Single radars, stored beside the national products:
+              # FMI publishes one cappi per antenna, so Finland can be
+              # judged radar by radar instead of as one composite.
+              "FIKOR", "FIVIH", "FIANJ", "FIKAN", "FIKES")
 # Only the products whose antennas are worth separating get split. Finland
 # tracks the composite cleanly (user check 23.08), and Latvia is one antenna
 # anyway — splitting those just adds panels that say nothing. The legacy LT
@@ -535,11 +539,12 @@ def _site_pixels_for(code, on_canvas=False):
     SMHI's network runs the length of Sweden, and a panel for Karlskrona
     would be a permanently empty box.
     """
-    from .scrape_maps import RADAR_SITES
+    from .scrape_maps import RADAR_SITES, _feed_site_names
     from . import proj3059 as P
+    names = _feed_site_names(code)
     out = []
     for name, la, lo in RADAR_SITES:
-        if not name.startswith(code[:2]):
+        if name not in names:
             continue
         x, y = P.to_xy(lo, la)
         px = (x - P.X0) / (P.X1 - P.X0) * P.W
