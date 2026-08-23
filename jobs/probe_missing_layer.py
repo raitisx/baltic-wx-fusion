@@ -17,8 +17,8 @@ from wxfusion import config, radar_store as R  # noqa: E402
 s3 = R.r2_client()
 DAY = dt.date(2026, 8, 22)
 idx = R._load_index(s3, DAY)
-lo = dt.datetime(2026, 8, 22, 8, 50, tzinfo=dt.timezone.utc)
-hi = dt.datetime(2026, 8, 22, 10, 10, tzinfo=dt.timezone.utc)
+lo = dt.datetime(2026, 8, 22, 11, 40, tzinfo=dt.timezone.utc)
+hi = dt.datetime(2026, 8, 22, 13, 40, tzinfo=dt.timezone.utc)
 
 by_code = {}
 for f in idx.get("frames", []):
@@ -50,7 +50,7 @@ for code in ("SE", "FI", "EE", "LT", "LT2", "LV"):
         print(f"{code:4s}: NOTHING in window")
 
 print("\n=== slot matching (two-ring) ===")
-for hh, mm in ((9, 15), (9, 30), (9, 45), (10, 0)):
+for hh, mm in ((12, 15), (12, 30), (12, 45), (13, 0), (13, 15)):
     slot = dt.datetime(2026, 8, 22, hh, mm, tzinfo=dt.timezone.utc)
     best = {}
     for f in idx["frames"]:
@@ -78,7 +78,7 @@ print("\n=== archive entries ===")
 arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
                                 Key=R.ARCHIVE_KEY)["Body"].read())
 for k in sorted(arch.get("quarters", {})):
-    if k.startswith("20260822T09"):
+    if k.startswith("20260822T12") or k.startswith("20260822T13"):
         print("quarters", k, "->", arch["quarters"][k])
-for k in ("20260822T09", "20260822T10"):
+for k in ("20260822T12", "20260822T13"):
     print("hours", k, "->", arch.get("hours", {}).get(k))
