@@ -147,6 +147,26 @@ SLOT_TOL_MIN = 8
 # within SLOT_TOL_MIN — wide enough to bridge the ~hourly sweeps of the days
 # before the 15-min store, so no layer blinks out between its updates.
 QUARTER_FILL_MIN = 31
+# Upstream products ship single sweeps with a radar missing: on 22.08
+# 09:00-10:00 the SMHI composite held 49k echo px at 09:15 but 13k at
+# 09:30/09:45 (the eastern radars gone), and Estonia's 09:29 sweep painted
+# 272k px against 448k at 09:47 (one antenna out). At 15-min cadence every
+# such dropout used to blink a whole layer off for one frame. A partial
+# product compresses far smaller, so a sweep whose stored size falls below
+# this fraction of the best candidate in the window is passed over for the
+# nearest complete one (and only used when nothing complete is in reach).
+DEGRADED_FRAC = 0.7
+
+
+def _pick(cands, tol_s):
+    """One feed's [(gap_s, t, frame)] -> the sweep to use for a slot.
+
+    Complete sweeps beat degraded ones, the fresh ring beats the fill ring,
+    then the smallest gap wins."""
+    ref = max(f.get("bytes", 0) for _, _, f in cands)
+    return min(cands, key=lambda c: (ref and c[2].get("bytes", 0)
+                                     < DEGRADED_FRAC * ref,
+                                     c[0] > tol_s, c[0]))
 # How long the quarter-hour detail is kept — sources and rendered frames both.
 # After this only the round-hour sweeps stay (for the year), which is all the
 # hourly archive ever needed.
@@ -286,18 +306,17 @@ def render_stored(hours_back: int = 336, force: bool = False,
         if prev not in days:
             days[prev] = _load_index(s3, prev)
         pool = days[d]["frames"] + days[prev]["frames"]
-        best = {}
+        cands = {}
         for f in pool:
             t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
                 tzinfo=dt.timezone.utc)
             gap = abs((t - hour).total_seconds())
             if gap > NEAR_MIN * 60:
                 continue
-            cur = best.get(f["code"])
-            if cur is None or gap < cur[0]:
-                best[f["code"]] = (gap, t, f)
-        if not best:
+            cands.setdefault(f["code"], []).append((gap, t, f))
+        if not cands:
             continue
+        best = {c: _pick(v, NEAR_MIN * 60) for c, v in cands.items()}
         vtag = _render_slot(s3, best, hour)
         if vtag is None:
             continue
@@ -340,17 +359,15 @@ def render_stored(hours_back: int = 336, force: bool = False,
             if prev not in days:
                 days[prev] = _load_index(s3, prev)
             pool = pool + days[prev]["frames"]
-        best = {}
+        cands = {}
         for f in pool:
             t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
                 tzinfo=dt.timezone.utc)
             gap = abs((t - slot).total_seconds())
             if gap > QUARTER_FILL_MIN * 60:
                 continue
-            rank = (gap > SLOT_TOL_MIN * 60, gap)
-            cur = best.get(f["code"])
-            if cur is None or rank < cur[0]:
-                best[f["code"]] = (rank, t, f)
+            cands.setdefault(f["code"], []).append((gap, t, f))
+        best = {c: _pick(v, SLOT_TOL_MIN * 60) for c, v in cands.items()}
         # A quarter frame needs a Baltic sweep. Backfilled SE/FI history goes
         # further back than the 15-min meteolapa store; an SE-only composite
         # would paint the Baltic blank — worse than the page falling back to
