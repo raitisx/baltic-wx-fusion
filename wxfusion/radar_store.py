@@ -517,7 +517,9 @@ FEED_CODES = ("LV", "EE", "LT2", "SE", "FI",
               # Single radars, stored beside the national products:
               # FMI publishes one cappi per antenna, so Finland can be
               # judged radar by radar instead of as one composite.
-              "FIKOR", "FIVIH", "FIANJ", "FIKAN", "FIKES")
+              "FIKOR", "FIVIH", "FIANJ", "FIKAN", "FIKES",
+              # SMHI publishes polar volumes per antenna; these four reach us.
+              "SEHEM", "SEBAL", "SEATV", "SEHUD")
 # Only the products whose antennas are worth separating get split. Finland
 # tracks the composite cleanly (user check 23.08), and Latvia is one antenna
 # anyway — splitting those just adds panels that say nothing. The legacy LT

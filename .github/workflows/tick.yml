@@ -28,7 +28,7 @@ jobs:
       - name: Dependencies
         # Deliberately no netCDF4/matplotlib here — those are only needed for
         # map rendering and would add ~30 s to every hourly run.
-        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio h5py
 
       # GitHub delays scheduled runs heavily on this repo — the twice-daily
       # models workflow has fired as much as 90 min late, and a missed pass
