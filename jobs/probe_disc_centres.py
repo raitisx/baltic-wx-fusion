@@ -1,11 +1,13 @@
-"""How many radars are actually in each product, and where are they?
+"""How many radars are in each product, and where? RANSAC on the disc edges.
 
-Our RADAR_SITES list is an assumption; the Voronoi split and the beam
-attribution both lean on it. A radar composite is the union of per-antenna
-coverage discs, so the discs can be found in the picture itself: the
-distance transform of the painted area peaks at each disc centre, with the
-peak value ~ the disc radius. This reports the peaks per feed in lat/lon,
-next to the sites we currently list, and marks them on the image.
+The first attempt took distance-transform peaks, which cannot work: two
+overlapping discs merge into one region with a single interior maximum, and
+what it actually found was a rain blob. A coverage disc leaves a circular
+ARC on the boundary of the painted area instead, so this samples boundary
+points, fits circumcircles through random triples, keeps the ones whose
+radius is radar-like and that many boundary points agree with, and reports
+the distinct circles found. Circles are then named against RADAR_SITES so a
+missing antenna shows up as a good fit with nothing listed near it.
 """
 import base64
 import datetime as dt
@@ -17,8 +19,7 @@ sys.path.insert(0, ".")
 
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
-from scipy.ndimage import distance_transform_edt  # noqa: E402
-from skimage.feature import peak_local_max  # noqa: E402
+from scipy.ndimage import binary_erosion  # noqa: E402
 
 from wxfusion import config, radar_store as R  # noqa: E402
 from wxfusion.scrape_maps import RADAR_SITES  # noqa: E402
@@ -26,48 +27,82 @@ from wxfusion.scrape_maps import RADAR_SITES  # noqa: E402
 s3 = R.r2_client()
 WHEN = dt.datetime(2026, 8, 22, 12, 47, tzinfo=dt.timezone.utc)
 idx = R._load_index(s3, WHEN.date())
+rng = np.random.default_rng(7)
+
+
+def circum(p1, p2, p3):
+    (x1, y1), (x2, y2), (x3, y3) = p1, p2, p3
+    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    if abs(d) < 1e-6:
+        return None
+    ux = ((x1 ** 2 + y1 ** 2) * (y2 - y3) + (x2 ** 2 + y2 ** 2) * (y3 - y1)
+          + (x3 ** 2 + y3 ** 2) * (y1 - y2)) / d
+    uy = ((x1 ** 2 + y1 ** 2) * (x3 - x2) + (x2 ** 2 + y2 ** 2) * (x1 - x3)
+          + (x3 ** 2 + y3 ** 2) * (x2 - x1)) / d
+    return ux, uy, math.hypot(x1 - ux, y1 - uy)
+
 
 for code in ("EE", "LT2", "LV"):
-    cands = []
-    for f in idx.get("frames", []):
-        if f.get("code") != code or f.get("grid3059"):
-            continue
-        t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=dt.timezone.utc)
-        cands.append((abs((t - WHEN).total_seconds()), t, f))
+    cands = [(abs((dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=dt.timezone.utc) - WHEN).total_seconds()), f)
+             for f in idx.get("frames", [])
+             if f.get("code") == code and not f.get("grid3059")]
     if not cands:
         print(f"--- {code}: nothing stored ---")
         continue
-    _, t, f = min(cands)
+    _, f = min(cands, key=lambda c: c[0])
     body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
     im = Image.open(io.BytesIO(body)).convert("RGBA")
     W, H = im.size
     (s_lat, s_lon), (n_lat, n_lon) = tuple(f["sw"]), tuple(f["ne"])
-    painted = np.array(im)[..., 3] > 60
-    km_per_px_x = (n_lon - s_lon) * 111.32 * math.cos(
+    kmx = (n_lon - s_lon) * 111.32 * math.cos(
         math.radians((s_lat + n_lat) / 2)) / W
-    dist = distance_transform_edt(painted)
-    # A radar disc is 100-300 km across, so peaks must be that far apart and
-    # deep enough to be a disc centre rather than a rain blob.
-    min_km = 60.0
-    peaks = peak_local_max(dist, min_distance=int(min_km / km_per_px_x),
-                           threshold_abs=int(80 / km_per_px_x))
-    print(f"--- {code} {t:%H:%M}Z  {W}x{H}  {km_per_px_x:.2f} km/px ---")
-    print("   listed sites:", ", ".join(
-        n for n, _, _ in RADAR_SITES if n.startswith(code[:2])))
+    kmy = (n_lat - s_lat) * 111.32 / H
+    painted = np.array(im)[..., 3] > 60
+    edge = painted & ~binary_erosion(painted, np.ones((3, 3), bool))
+    ys, xs = np.nonzero(edge)
+    print(f"--- {code} {W}x{H}  {kmx:.2f} km/px  boundary={len(xs)} px ---")
+    print("   listed:", ", ".join(n for n, _, _ in RADAR_SITES
+                                  if n.startswith(code[:2])))
+    if len(xs) < 200:
+        print("   too little boundary to fit")
+        continue
+    pts = np.stack([xs * kmx, ys * kmy], 1)          # km space
+    found = []
+    for _ in range(30000):
+        i, j, k = rng.integers(0, len(pts), 3)
+        c = circum(pts[i], pts[j], pts[k])
+        if not c or not (150 <= c[2] <= 290):
+            continue
+        cx, cy, r = c
+        d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
+        inl = int((d < 4.0).sum())
+        if inl < 250:
+            continue
+        # distinct from what we already have?
+        if any(math.hypot(cx - a, cy - b) < 60 for a, b, _, _ in found):
+            for n2, (a, b, rr, ii) in enumerate(found):
+                if math.hypot(cx - a, cy - b) < 60 and inl > ii:
+                    found[n2] = (cx, cy, r, inl)
+            continue
+        found.append((cx, cy, r, inl))
+    found.sort(key=lambda t: -t[3])
     dr = ImageDraw.Draw(im)
-    for y, x in peaks[:8]:
-        lo = s_lon + (x / W) * (n_lon - s_lon)
-        la = n_lat - (y / H) * (n_lat - s_lat)
-        rad_km = dist[y, x] * km_per_px_x
-        near = min(((n, la0, lo0) for n, la0, lo0 in RADAR_SITES),
-                   key=lambda s: (s[1] - la) ** 2 + (s[2] - lo) ** 2)
-        d_km = math.hypot((near[1] - la) * 111.32,
-                          (near[2] - lo) * 111.32 * math.cos(math.radians(la)))
-        print(f"   disc centre {la:.3f}N {lo:.3f}E  radius~{rad_km:.0f} km"
-              f"   nearest listed: {near[0]} ({d_km:.0f} km away)")
-        r = 10
-        dr.ellipse([x - r, y - r, x + r, y + r], outline=(255, 0, 0), width=4)
+    for cx, cy, r, inl in found[:5]:
+        lo = s_lon + (cx / kmx / W) * (n_lon - s_lon)
+        la = n_lat - (cy / kmy / H) * (n_lat - s_lat)
+        near = min(RADAR_SITES, key=lambda s: (s[1] - la) ** 2 + (s[2] - lo) ** 2)
+        dkm = math.hypot((near[1] - la) * 111.32,
+                         (near[2] - lo) * 111.32 * math.cos(math.radians(la)))
+        print(f"   circle {la:.3f}N {lo:.3f}E  r={r:.0f} km  fit={inl} px"
+              f"   nearest listed: {near[0]} ({dkm:.0f} km)")
+        px, py = cx / kmx, cy / kmy
+        dr.ellipse([px - 9, py - 9, px + 9, py + 9], outline=(255, 0, 0), width=5)
+        rp = r / kmx
+        dr.ellipse([px - rp, py - rp, px + rp, py + rp],
+                   outline=(255, 0, 0), width=2)
+    if not found:
+        print("   no radar-sized circle fits the boundary")
     bg = Image.new("RGB", im.size, (247, 245, 239))
     bg.paste(im, (0, 0), im)
     if max(bg.size) > 900:
