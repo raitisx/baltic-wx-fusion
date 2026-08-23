@@ -504,3 +504,99 @@ def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> d
                            now - dt.timedelta(days=frame_days), frame_stamp)
     log.info("radar prune: %d originals, %d rendered frames", *out.values())
     return out
+
+
+# --- per-feed debug frames -------------------------------------------------
+# The composite hides WHICH feed lost an area: a gap can be an upstream
+# dropout, a cleaning pass, a fade, or the slot picking a different sweep.
+# These render every feed alone on the same canvas, per slot, so seeking the
+# debug page shows exactly which layer blinks and when (docs/radar_feeds.html).
+FEED_PREFIX = "maps/radar/feeds3059"
+FEED_ARCHIVE_KEY = "maps/radar/feeds.json"
+FEED_CODES = ("LV", "EE", "LT2", "LT", "SE", "FI")
+
+
+def _render_feed_slot(s3, code, t, f, when):
+    """One feed's sweep alone -> a stored frame; returns its vtag or None."""
+    from . import proj3059 as P
+    try:
+        if f.get("grid3059"):
+            from .radar_nordic import load_stored
+            grid = load_stored(s3, f)
+        else:
+            cls = _classify_stored(s3, f)
+            grid = P.resample_mercator_image(cls, tuple(f["sw"]), tuple(f["ne"]))
+            grid = _close_radial_spokes(_despeckle_intensity(
+                _remove_beam_lines(_remove_beams_polar(_despeckle(grid)))))
+    except Exception:
+        log.exception("feed render: %s unreadable", f["key"])
+        return None
+    canvas = Image.new("RGBA", (P.W, P.H), (0, 0, 0, 0))
+    # No active-feeds argument: each feed is judged on its own here, which is
+    # the point — the debug page shows the layer as the feed delivered it.
+    canvas.alpha_composite(_recolor(grid, _freezing_mask(when), code, None))
+    canvas = _fade_edges(canvas)
+    draw_borders(canvas)
+    vtag = f"{code}_{t:%Y%m%dT%H%M}"
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG", optimize=True)
+    s3.put_object(Bucket=config.R2_BUCKET, Key=f"{FEED_PREFIX}/{vtag}.png",
+                  Body=buf.getvalue(), ContentType="image/png",
+                  CacheControl="public, max-age=604800")
+    return vtag
+
+
+def render_feeds(only_day: str, hours_back: int = 336) -> int:
+    """Per-feed debug frames for one UTC day (+3 h lead-in), every 15-min slot.
+
+    Writes FEED_ARCHIVE_KEY as {"path", "slots": {slotkey: {code: vtag}},
+    "picked": {slotkey: {code: "HH:MM(*)"}}} — the star marks a sweep taken
+    from the fill ring, so the page can show where a layer is being held over
+    rather than freshly observed."""
+    s3 = r2_client()
+    d0 = dt.datetime.strptime(only_day, "%Y%m%d").replace(tzinfo=dt.timezone.utc)
+    lo, hi = d0 - dt.timedelta(hours=3), d0 + dt.timedelta(hours=24)
+    try:
+        arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
+                                        Key=FEED_ARCHIVE_KEY)["Body"].read())
+    except Exception:
+        arch = {}
+    arch.update({"path": FEED_PREFIX, "day": only_day,
+                 "generated_at": dt.datetime.now(dt.timezone.utc).strftime(
+                     "%Y%m%dT%H%M")})
+    slots, picked = {}, {}
+    days, done = {}, 0
+    slot = lo
+    while slot < hi:
+        d = slot.date()
+        for dd in (d, (slot - dt.timedelta(hours=1)).date()):
+            if dd not in days:
+                days[dd] = _load_index(s3, dd)
+        pool = days[d]["frames"] + days[(slot - dt.timedelta(hours=1)).date()]["frames"]
+        cands = {}
+        for f in pool:
+            t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=dt.timezone.utc)
+            gap = abs((t - slot).total_seconds())
+            if gap > QUARTER_FILL_MIN * 60:
+                continue
+            cands.setdefault(f["code"], []).append((gap, t, f))
+        skey = slot.strftime("%Y%m%dT%H%M")
+        for code, v in cands.items():
+            gap, t, f = _pick(v, SLOT_TOL_MIN * 60)
+            vtag = _render_feed_slot(s3, code, t, f, slot)
+            if vtag is None:
+                continue
+            slots.setdefault(skey, {})[code] = vtag
+            picked.setdefault(skey, {})[code] = (
+                t.strftime("%H:%M") + ("*" if gap > SLOT_TOL_MIN * 60 else ""))
+            done += 1
+        slot += dt.timedelta(minutes=SLOT_MIN)
+    arch["slots"], arch["picked"] = slots, picked
+    s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_ARCHIVE_KEY,
+                  Body=json.dumps(arch).encode(),
+                  ContentType="application/json",
+                  CacheControl="public, max-age=60")
+    log.info("radar feeds: %d per-feed frames over %d slots (%s)",
+             done, len(slots), only_day)
+    return done

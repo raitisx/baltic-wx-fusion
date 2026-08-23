@@ -1,0 +1,27 @@
+name: radar-feeds
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "UTC day to render per-feed debug frames for (YYYYMMDD)"
+        default: "20260822"
+jobs:
+  feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dependencies
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio
+      - name: Per-feed debug frames
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_FEEDS_DAY: ${{ github.event.inputs.day || '20260822' }}
+        run: python jobs/run_radar_feeds.py

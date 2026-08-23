@@ -11,10 +11,5 @@ jobs:
           python-version: "3.11"
       - name: Dependencies
         run: pip install -r requirements.txt && pip install numpy scipy scikit-image pillow pyproj boto3 requests rasterio
-      - name: Why layers vanish on 22.08
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: baltic-wx
-        run: python jobs/probe_ee_1245.py
+      - name: Placeholder (edit jobs/ + this step for the next probe)
+        run: python -c "print('no probe configured')" 
