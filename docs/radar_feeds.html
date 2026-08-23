@@ -160,11 +160,18 @@ function render(a) {
       show(+seek.value);
     }
     // While the render is still running, pick up the slots as they appear.
-    if (!a.complete && !POLL)
+    // An index written by an older renderer carries no "complete" flag, so
+    // also stop once it has stopped growing between polls.
+    if (!a.complete && !POLL) {
+      let lastCount = KEYS.length, still = 0;
       POLL = setInterval(() => loadArch().then(x => {
+        const n = Object.keys(x.slots || {}).length;
+        still = n === lastCount ? still + 1 : 0;
+        lastCount = n;
         render(x);
-        if (x.complete) { clearInterval(POLL); POLL = null; }
+        if (x.complete || still >= 2) { clearInterval(POLL); POLL = null; }
       }).catch(() => {}), 20000);
+    }
   }
 }
 
