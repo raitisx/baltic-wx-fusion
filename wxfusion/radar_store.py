@@ -513,7 +513,13 @@ def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> d
 # debug page shows exactly which layer blinks and when (docs/radar_feeds.html).
 FEED_PREFIX = "maps/radar/feeds3059"
 FEED_ARCHIVE_KEY = "maps/radar/feeds.json"
-FEED_CODES = ("LV", "EE", "LT2", "LT", "SE", "FI")
+FEED_CODES = ("LV", "EE", "LT2", "SE", "FI")
+# Only the products whose antennas are worth separating get split. Finland
+# tracks the composite cleanly (user check 23.08), and Latvia is one antenna
+# anyway — splitting those just adds panels that say nothing. The legacy LT
+# feed is dropped from the debug page entirely: it is empty, and its sites
+# duplicate LT2's Laukuva/Vilnius.
+SPLIT_FEEDS = ("EE", "LT2", "SE")
 
 
 def _site_pixels_for(code):
@@ -583,7 +589,7 @@ def _render_feed_slot(s3, code, t, f, when):
         return vtag
 
     out[code] = emit(grid, code)
-    sites = _site_pixels_for(code)
+    sites = _site_pixels_for(code) if code in SPLIT_FEEDS else []
     if len(sites) > 1:
         yy, xx = np.mgrid[0:P.H, 0:P.W]
         d = np.stack([np.hypot(xx - sx, yy - sy) for _, sx, sy in sites])
@@ -623,7 +629,8 @@ def render_feeds(only_day: str, from_h: int | None = None,
         arch = {}
     panels = []
     for c in FEED_CODES:
-        sites = [n for n, _, _ in _site_pixels_for(c)]
+        sites = ([n for n, _, _ in _site_pixels_for(c)]
+                 if c in SPLIT_FEEDS else [])
         panels.append({"code": c, "sites": sites})
     arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
                  "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
