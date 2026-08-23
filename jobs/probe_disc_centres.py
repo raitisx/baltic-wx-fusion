@@ -1,117 +1,141 @@
-"""Follow-up to the range-arc fit: is Estonia's product ONE disc, and what
-else does meteolapa serve?
+"""Where can we get SINGLE-RADAR products instead of national composites?
 
-The first fit answered the big question — SMHI's footprint is visibly a union
-of twelve 240 km discs, and Estonia's product is a single 245 km disc centred
-on Harku, with no arc anywhere near Surgavere. Two things are worth nailing
-down before RADAR_SITES is rewritten:
+Both remaining questions need per-antenna data, not composites: equalising
+radars against each other is meaningless while Ase's panel carries ten SMHI
+antennas and Surgavere's carries Harku, and a range-graded correction needs
+to know which antenna a pixel's distance is measured from.
 
-  1. Is that Harku disc the same in every sweep, or does the feed alternate
-     between antennas? Fit the best single circle on frames spread across the
-     day and compare centres.
-  2. Does meteolapa publish an Estonian product we are not consuming (a
-     Surgavere one), which would be real close-range coverage for southern
-     Estonia rather than Harku's far range? List every code it serves with
-     its bounds and size.
+So this walks the open archives looking for per-site products:
+
+  FMI   the S3 mirror's day prefix has {site}/ folders beside finrad/ —
+        list them, open one, and report grid, CRS, scaling and where its
+        coverage centre lands.
+  SMHI  walk the open-data radar API tree (versions -> areas -> products)
+        and report every product that is not the national composite.
+  EE    the Estonian weather service publishes radar pictures per radar on
+        its own site; scrape the page for image URLs and probe what they are.
+  LV/LT same for LVGMC and meteo.lt.
+
+Prints findings only — nothing is stored. Throwaway probe.
 """
 import datetime as dt
 import io
-import math
+import re
 import sys
 
 sys.path.insert(0, ".")
 
 import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
-from scipy.ndimage import binary_erosion  # noqa: E402
 
-from wxfusion import config, radar_store as R  # noqa: E402
-from wxfusion.scrape_maps import (RADAR_SITES, fetch_overlays_window,  # noqa: E402
-                                  parse_radar_overlays)
+from wxfusion.http import session  # noqa: E402
+from wxfusion.radar_nordic import FMI_S3  # noqa: E402
 
-s3 = R.r2_client()
-DAY = dt.date(2026, 8, 22)
-rng = np.random.default_rng(11)
+s = session()
 
 
-def circum(p1, p2, p3):
-    (x1, y1), (x2, y2), (x3, y3) = p1, p2, p3
-    d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
-    if abs(d) < 1e-6:
+def show(tag, url, **kw):
+    try:
+        r = s.get(url, timeout=60, **kw)
+        print(f"  {tag:22s} {r.status_code} {len(r.content):>9,d}B  "
+              f"{r.headers.get('content-type', '?')[:40]}  {url[:110]}")
+        return r
+    except Exception as e:
+        print(f"  {tag:22s} FAIL {type(e).__name__}: {e}  {url[:110]}")
         return None
-    ux = ((x1 ** 2 + y1 ** 2) * (y2 - y3) + (x2 ** 2 + y2 ** 2) * (y3 - y1)
-          + (x3 ** 2 + y3 ** 2) * (y1 - y2)) / d
-    uy = ((x1 ** 2 + y1 ** 2) * (x3 - x2) + (x2 ** 2 + y2 ** 2) * (x1 - x3)
-          + (x3 ** 2 + y3 ** 2) * (x2 - x1)) / d
-    return ux, uy, math.hypot(x1 - ux, y1 - uy)
 
 
-def best_circles(pts, keep=3, iters=40000, tol=4.0):
-    found = []
-    for _ in range(iters):
-        i, j, k = rng.integers(0, len(pts), 3)
-        c = circum(pts[i], pts[j], pts[k])
-        if not c or not (120 <= c[2] <= 300):
-            continue
-        cx, cy, r = c
-        inl = int((np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
-                   < tol).sum())
-        hit = next((n for n, (a, b, _, _) in enumerate(found)
-                    if math.hypot(cx - a, cy - b) < 80), None)
-        if hit is None:
-            found.append((cx, cy, r, inl))
-        elif inl > found[hit][3]:
-            found[hit] = (cx, cy, r, inl)
-    found.sort(key=lambda t: -t[3])
-    return found[:keep]
+def describe_tif(body, label):
+    import rasterio
+    try:
+        with rasterio.open(io.BytesIO(body)) as ds:
+            v = ds.read(1)
+            uniq = np.unique(v)
+            lon = lat = None
+            try:
+                from pyproj import Transformer
+                inv = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True)
+                cx = ds.transform.c + ds.width / 2 * ds.transform.a
+                cy = ds.transform.f + ds.height / 2 * ds.transform.e
+                lon, lat = inv.transform(cx, cy)
+            except Exception:
+                pass
+            print(f"    {label}: {ds.width}x{ds.height} {v.dtype} {ds.crs} "
+                  f"px={abs(ds.transform.a):.0f}m  values {uniq[:6].tolist()}"
+                  f"..{uniq[-3:].tolist()} ({len(uniq)} distinct)"
+                  + (f"  grid centre {lat:.3f}N {lon:.3f}E" if lat else ""))
+    except Exception as e:
+        print(f"    {label}: not readable as a GeoTIFF ({type(e).__name__})")
 
 
-print("=== EE product: one disc per sweep, or alternating antennas? ===")
-idx = R._load_index(s3, DAY)
-ee = sorted((f for f in idx.get("frames", [])
-             if f.get("code") == "EE" and not f.get("grid3059")),
-            key=lambda f: f["time"])
-print(f"{len(ee)} EE frames stored on {DAY}")
-for f in ee[::max(1, len(ee) // 10)][:10]:
-    body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
-    im = Image.open(io.BytesIO(body)).convert("RGBA")
-    W, H = im.size
-    (s_lat, s_lon), (n_lat, n_lon) = tuple(f["sw"]), tuple(f["ne"])
-    kmx = (n_lon - s_lon) * 111.32 * math.cos(
-        math.radians((s_lat + n_lat) / 2)) / W
-    kmy = (n_lat - s_lat) * 111.32 / H
-    painted = np.array(im)[..., 3] > 60
-    edge = painted & ~binary_erosion(painted, np.ones((3, 3), bool))
-    ys, xs = np.nonzero(edge)
-    if len(xs) < 200:
-        print(f"  {f['time']}  boundary={len(xs)} px — too little to fit")
+print("=== FMI: per-site folders on the S3 mirror ===")
+day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=3)).date()
+r = show("day prefixes", f"{FMI_S3}/?list-type=2&delimiter=/"
+                         f"&prefix={day:%Y/%m/%d}/")
+sites = re.findall(r"<Prefix>([^<]+)</Prefix>", r.text) if r else []
+sites = [p for p in sites if p.count("/") == 4]
+print("   folders:", ", ".join(p.rstrip("/").rsplit("/", 1)[-1] for p in sites)
+      or "none")
+for pre in sites:
+    name = pre.rstrip("/").rsplit("/", 1)[-1]
+    if name.startswith("finrad"):
         continue
-    out = []
-    for cx, cy, r, inl in best_circles(np.stack([xs * kmx, ys * kmy], 1)):
-        lo = s_lon + (cx / kmx / W) * (n_lon - s_lon)
-        la = n_lat - (cy / kmy / H) * (n_lat - s_lat)
-        near = min(RADAR_SITES, key=lambda s: (s[1] - la) ** 2 + (s[2] - lo) ** 2)
-        dkm = math.hypot((near[1] - la) * 111.32,
-                         (near[2] - lo) * 111.32 * math.cos(math.radians(la)))
-        out.append(f"{la:.2f}N {lo:.2f}E r={r:.0f} fit={inl} [{near[0]} {dkm:.0f}km]")
-    print(f"  {f['time']}  painted={int(painted.sum())}  " + " | ".join(out))
+    rr = s.get(f"{FMI_S3}/?list-type=2&max-keys=400&prefix={pre}", timeout=60)
+    keys = re.findall(r"<Key>([^<]+)</Key>", rr.text)
+    kinds = sorted({re.sub(r"\d{12}", "<stamp>", k.rsplit("/", 1)[-1])
+                    for k in keys})
+    print(f"   {name:16s} {len(keys):4d} keys  {kinds[:4]}")
+    tif = next((k for k in keys if k.endswith(".tif")), None)
+    if tif:
+        b = s.get(f"{FMI_S3}/{tif}", timeout=120).content
+        describe_tif(b, name)
 
-print("\n=== what meteolapa serves right now ===")
-try:
-    for o in sorted(parse_radar_overlays(), key=lambda o: (o["code"], o["time"])):
-        print(f"  live {o['code']:5s} {o['time']:%H:%M}  sw={o['sw']} ne={o['ne']}"
-              f"  {o['url'].rsplit('/', 1)[-1]}")
-except Exception as e:
-    print("  live listing failed:", type(e).__name__, e)
+print("\n=== SMHI: what the radar API offers besides the composite ===")
+base = "https://opendata-download-radar.smhi.se/api"
+r = show("versions", f"{base}.json")
+if r is not None and r.ok:
+    print("   ", r.text[:600])
+for path in ("/version/latest.json", "/version/latest/area/sweden.json",
+             "/version/latest/area/baltic.json"):
+    rr = show(path, base + path)
+    if rr is not None and rr.ok:
+        print("   ", rr.text[:900])
 
-print("\n=== codes in a 3 h archive window of 22.08 ===")
-try:
-    lo_t = dt.datetime(2026, 8, 22, 12, tzinfo=dt.timezone.utc)
-    seen = {}
-    for o in fetch_overlays_window(lo_t, lo_t + dt.timedelta(hours=3)):
-        seen.setdefault(o["code"], []).append(o)
-    for code, lst in sorted(seen.items()):
-        o = lst[0]
-        print(f"  {code:5s} {len(lst):3d} frames  sw={o['sw']} ne={o['ne']}")
-except Exception as e:
-    print("  archive listing failed:", type(e).__name__, e)
+print("\n=== EE: Estonian weather service radar pages ===")
+for url in ("https://www.ilmateenistus.ee/ilm/ilmavaatlused/radaripildid/",
+            "https://www.ilmateenistus.ee/en/weather/weather-observations/"
+            "radar-images/",
+            "https://publicapi.envir.ee/v1/combinedWeatherData"):
+    rr = show(url.rsplit("/", 2)[-2][:22], url)
+    if rr is not None and rr.ok and "html" in rr.headers.get("content-type", ""):
+        imgs = sorted({m for m in re.findall(
+            r'["\'](/?[^"\']*(?:radar|radaripildid|sur|har)[^"\']*\.(?:png|gif|jpg))',
+            rr.text, re.I)})
+        for i in imgs[:12]:
+            print("     img:", i[:120])
+
+print("\n=== LV / LT: national radar endpoints ===")
+for tag, url in (("lvgmc videscentrs", "https://videscentrs.lvgmc.lv/"),
+                 ("meteo.lv radars", "https://www.meteo.lv/radars/"),
+                 ("meteo.lt api", "https://api.meteo.lt/v1/stations"),
+                 ("meteo.lt radar", "https://www.meteo.lt/orai/radaras/")):
+    rr = show(tag, url)
+    if rr is not None and rr.ok and "html" in rr.headers.get("content-type", ""):
+        hits = sorted({m for m in re.findall(
+            r'["\']([^"\']*radar[^"\']{0,80})["\']', rr.text, re.I)})[:10]
+        for h in hits:
+            print("     ref:", h[:120])
+
+print("\n=== LT: the composite URL names its product — try single sites ===")
+t = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=20)
+t -= dt.timedelta(minutes=t.minute % 5)
+stem = ("https://new.meteo.lt/meteo_jobs/radaru_informacija/"
+        "Header_Radar-{p}-{ts}.png")
+for prod in ("composite", "Laukuva", "laukuva", "Vilnius", "vilnius",
+             "LAU", "VIL", "site-Laukuva", "Laukuva-composite"):
+    u = stem.format(p=prod, ts=t.strftime("%Y%m%d%H%M"))
+    try:
+        r = s_head = session().head(u, allow_redirects=True, timeout=30)
+        print(f"  {prod:18s} {r.status_code} "
+              f"{r.headers.get('content-length', '?'):>9}B")
+    except Exception as e:
+        print(f"  {prod:18s} FAIL {type(e).__name__}")
