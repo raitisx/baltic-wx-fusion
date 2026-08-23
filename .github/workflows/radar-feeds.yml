@@ -5,6 +5,12 @@ on:
       day:
         description: "UTC day to render per-feed debug frames for (YYYYMMDD)"
         default: "20260822"
+      from_h:
+        description: "Start UTC hour (blank = whole day with 3 h lead-in)"
+        default: ""
+      to_h:
+        description: "End UTC hour, exclusive (blank = end of day)"
+        default: ""
 jobs:
   feeds:
     runs-on: ubuntu-latest
@@ -24,4 +30,6 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: baltic-wx
           RADAR_FEEDS_DAY: ${{ github.event.inputs.day || '20260822' }}
+          RADAR_FEEDS_FROM: ${{ github.event.inputs.from_h }}
+          RADAR_FEEDS_TO: ${{ github.event.inputs.to_h }}
         run: python jobs/run_radar_feeds.py
