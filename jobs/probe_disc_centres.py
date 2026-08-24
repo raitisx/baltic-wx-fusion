@@ -1,10 +1,12 @@
-"""Estonia's own radar volumes: where does KAIA actually serve them?
+"""Estonia's raw volumes: the catalogue names them, so where are the files?
 
-The open-data catalogue lists "Meteoroloogiliste radarite andmestik" with a
-"Radari toorandmed (VOL)" resource — raw polar volumes, which is exactly the
-per-radar source Estonia was missing, and the same ODIM shape the SMHI
-decoder already reads. This walks the dataset page for the download or
-service URL behind it, then tries to list and open one volume.
+The dataset page (keskkonnaportaal.ee/et/avaandmed/meteoroloogiliste-
+radarite-andmestik) lists "Radari toorandmed (VOL)" but links only to a
+description page and to two document-list views on their DHS portal, and the
+obvious hosts (kaia.envir.ee, opendata.envir.ee, s3.envir.ee) do not resolve.
+So this reads the description page and both DHS views for the actual service:
+a download link, an FTP or S3 host, or the sentence that says the data is
+handed out on request.
 """
 import re
 import sys
@@ -14,44 +16,59 @@ sys.path.insert(0, ".")
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-PAGE = ("https://keskkonnaportaal.ee/et/avaandmed/"
-        "meteoroloogiliste-radarite-andmestik")
+VIEWS = ("b92201f4-8b48-4d3a-b410-30c8ce4016d5",
+         "c2ea43b7-09c4-4afb-b955-aa5862e46c0f")
 
 
-def get(tag, url, pat=None, limit=25):
+def strip_tags(html):
+    txt = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+    txt = re.sub(r"(?s)<[^>]+>", " ", txt)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def get(tag, url):
     try:
         r = s.get(url, timeout=60)
-        print(f"  {tag:24s} {r.status_code} {len(r.content):>9,d}B  "
-              f"{r.headers.get('content-type', '?')[:28]}  {url[:95]}")
-        if r.ok and pat:
-            for h in sorted({m if isinstance(m, str) else " ".join(m)
-                             for m in re.findall(pat, r.text, re.I)})[:limit]:
-                print("      ", h[:140])
+        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B  {url[:110]}")
         return r
     except Exception as e:
-        print(f"  {tag:24s} FAIL {type(e).__name__}  {url[:95]}")
+        print(f"\n--- {tag}: FAIL {type(e).__name__}  {url[:110]}")
         return None
 
 
-print("=== the dataset page ===")
-r = get("radar dataset", PAGE, r'href="([^"]{6,160})"')
-
-print("\n=== anything that looks like a file service ===")
+r = get("radar data description",
+        "https://keskkonnaportaal.ee/et/avaandmed/radariandmestik/"
+        "radariandmete-kirjeldus")
 if r is not None and r.ok:
-    urls = {u for u in re.findall(r'https?://[^"\'\s<>]{10,150}', r.text)
-            if re.search(r"radar|vol|kaia|opendata|avaandmed|s3|ftp|thredds",
-                         u, re.I)}
-    for u in sorted(urls)[:30]:
-        print("      candidate:", u[:140])
+    txt = strip_tags(r.text)
+    # the paragraphs that mention volumes, formats or how to get them
+    for m in re.finditer(r"[^.]{0,240}(?:VOL|ODIM|HDF5|h5|toorandm|allalaadi"
+                         r"|FTP|API|teenus|litsents|päring)[^.]{0,240}\.",
+                         txt, re.I):
+        print("   ", m.group(0).strip()[:300])
+    for u in sorted({u for u in re.findall(r'https?://[^"\'\s<>]{8,140}',
+                                           r.text)
+                     if re.search(r"radar|vol|data|andme|ftp|s3|api", u, re.I)}):
+        print("    url:", u[:130])
 
-print("\n=== likely hosts, probed directly ===")
-for tag, url in (
-        ("kaia", "https://kaia.envir.ee/"),
-        ("kaia opendata", "https://kaia.envir.ee/opendata/"),
-        ("kaia radar", "https://kaia.envir.ee/opendata/radar/"),
-        ("opendata.envir list", "https://opendata.envir.ee/?list-type=2"),
-        ("envir s3", "https://s3.envir.ee/"),
-        ("ilmateenistus opendata", "https://opendata.ilmateenistus.ee/"),
-        ("ftp-ish", "https://www.ilmateenistus.ee/wp-json/wp/v2/pages?search=radar"),
-):
-    get(tag, url, r'(?:href|Key|title)[">=]{1,3}([^"<,]{4,120})', limit=15)
+for v in VIEWS:
+    r = get(f"DHS view {v[:8]}",
+            f"https://avaandmed.keskkonnaportaal.ee/dhs/Active/"
+            f"documentList.aspx?ViewId={v}")
+    if r is None or not r.ok:
+        continue
+    txt = strip_tags(r.text)
+    print("    text:", txt[:400])
+    for u in sorted({u for u in re.findall(r'(?:href|src)="([^"]{6,160})"',
+                                           r.text)
+                     if re.search(r"radar|vol|download|fail|doc", u, re.I)})[:20]:
+        print("    link:", u[:130])
+
+# The service's own radar page may name the file host in its map config.
+r = get("ilmateenistus radar app",
+        "https://www.ilmateenistus.ee/ilm/ilmavaatlused/radar/")
+if r is not None and r.ok:
+    for u in sorted({u for u in re.findall(r'https?[:\\/]{2,4}[^"\'\s<>]{8,140}',
+                                           r.text)
+                     if re.search(r"radar|tiles|api|data", u, re.I)})[:25]:
+        print("    url:", u.replace("\\/", "/")[:130])
