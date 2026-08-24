@@ -517,29 +517,53 @@ FEED_CODES = ("LV", "EE", "LT2", "SE", "FI",
               # Single radars, stored beside the national products:
               # FMI publishes one cappi per antenna, so Finland can be
               # judged radar by radar instead of as one composite.
-              "FIKOR", "FIVIH", "FIANJ", "FIKAN", "FIKES",
-              # SMHI publishes polar volumes per antenna; these four reach us.
-              "SEHEM", "SEBAL", "SEATV", "SEHUD")
+              "FIKOR", "FIVIH", "FIANJ", "FIKAN",
+              # SMHI publishes polar volumes per antenna.
+              "SEHEM", "SEBAL", "SEATV")
 # Only the products whose antennas are worth separating get split. Finland
 # tracks the composite cleanly (user check 23.08), and Latvia is one antenna
 # anyway — splitting those just adds panels that say nothing. The legacy LT
 # feed is dropped from the debug page entirely: it is empty, and its sites
 # duplicate LT2's Laukuva/Vilnius.
-SPLIT_FEEDS = ("EE", "LT2", "SE")
+# Products we can only separate by geometry, because no per-radar source
+# exists for them. Sweden and Finland left this list the day their own
+# single-radar products were wired up (radar_nordic SE_SITES / FI_SITES) —
+# a real sweep from one dish beats a disc cut out of a composite.
+SPLIT_FEEDS = ("EE", "LT2")
+
+# Which single-radar feeds belong under which national product's row.
+SITE_ROWS = {"SE": ("SEHEM", "SEBAL", "SEATV"),
+             "FI": ("FIKOR", "FIVIH", "FIANJ", "FIKAN")}
+ROW_CODES = ("LV", "EE", "LT2", "SE", "FI")
 
 
 # How far a panel reaches from its own antenna. Fitting range arcs to the
 # products (jobs/probe_disc_centres.py) measured the real thing: Estonia's two
 # discs come out at 236-251 km, Lithuania's at 213-246, SMHI's at ~240.
 SPLIT_RANGE_KM = 250
+# A radar earns a panel by covering some of the map, not by grazing a corner.
+# Measured against the raster: Ase 16%, Korppoo 19%, Vihti 17%, Anjalankoski
+# 10%, Balsta 7.5%, Kankaanpaa 2.3%, Vilebo 1.9% — then a cliff to Kesalahti
+# 0.4% and Hudiksvall 0.1%, which is 345 px in the top-left corner (and a
+# 20 MB volume per sweep to paint a sliver of sea).
+MIN_COVER_PX = 3900          # 1% of the 570x690 raster
+
+
+def covered_px(px, py, range_km=SPLIT_RANGE_KM):
+    """How many raster pixels lie within range of an antenna at (px, py)."""
+    import numpy as np
+
+    from . import proj3059 as P
+    yy, xx = np.mgrid[0:P.H, 0:P.W]          # 1 px = 1 km
+    return int((np.hypot(xx - px, yy - py) <= range_km).sum())
 
 
 def _site_pixels_for(code, on_canvas=False):
     """[(site name, x px, y px)] for the antennas belonging to one feed.
 
-    on_canvas drops the ones whose range cannot touch our raster at all —
-    SMHI's network runs the length of Sweden, and a panel for Karlskrona
-    would be a permanently empty box.
+    on_canvas keeps only the ones that cover at least MIN_COVER_PX of our
+    raster — SMHI's network runs the length of Sweden, and a panel for
+    Karlskrona or Hudiksvall is an empty box or a corner sliver.
     """
     from .scrape_maps import RADAR_SITES, _feed_site_names
     from . import proj3059 as P
@@ -551,11 +575,8 @@ def _site_pixels_for(code, on_canvas=False):
         x, y = P.to_xy(lo, la)
         px = (x - P.X0) / (P.X1 - P.X0) * P.W
         py = (P.Y1 - y) / (P.Y1 - P.Y0) * P.H
-        if on_canvas:
-            dx = max(0.0, px - P.W, -px)          # 1 px = 1 km
-            dy = max(0.0, py - P.H, -py)
-            if (dx * dx + dy * dy) ** 0.5 > SPLIT_RANGE_KM:
-                continue
+        if on_canvas and covered_px(px, py) < MIN_COVER_PX:
+            continue
         out.append((name, px, py))
     return out
 
@@ -664,6 +685,31 @@ def _render_feed_slot(s3, code, t, f, when):
     return out
 
 
+def _row_parts(code):
+    """The panels of one country's row: source, whole product, then radars.
+
+    A radar shows up either as its OWN product (Sweden and Finland publish
+    one per antenna) or, where no such source exists, as the part of the
+    national product within range of that dish.
+    """
+    from .scrape_maps import _feed_site_names
+    parts = [{"key": f"{code} source", "label": "SOURCE",
+              "what": "source, as served"},
+             {"key": code, "label": code,
+              "what": "our render \u00b7 whole product"}]
+    for sc in SITE_ROWS.get(code, ()):
+        if not _site_pixels_for(sc, on_canvas=True):
+            continue                       # covers too little of the raster
+        name = _feed_site_names(sc)[0]
+        parts.append({"key": sc, "label": name.split(" ", 1)[-1],
+                      "what": "single radar, its own product"})
+    if code in SPLIT_FEEDS:
+        for name, _, _ in _site_pixels_for(code, on_canvas=True):
+            parts.append({"key": name, "label": name.split(" ", 1)[-1],
+                          "what": "antenna, cut from the product by range"})
+    return parts
+
+
 def render_feeds(only_day: str, from_h: int | None = None,
                  to_h: int | None = None) -> int:
     """Per-feed debug frames for one UTC day, every 15-min slot.
@@ -686,11 +732,7 @@ def render_feeds(only_day: str, from_h: int | None = None,
                                         Key=FEED_ARCHIVE_KEY)["Body"].read())
     except Exception:
         arch = {}
-    panels = []
-    for c in FEED_CODES:
-        sites = ([n for n, _, _ in _site_pixels_for(c, on_canvas=True)]
-                 if c in SPLIT_FEEDS else [])
-        panels.append({"code": c, "sites": sites, "src": f"{c} source"})
+    panels = [{"code": c, "parts": _row_parts(c)} for c in ROW_CODES]
     arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
                  "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
                  "generated_at": dt.datetime.now(dt.timezone.utc).strftime(

@@ -788,6 +788,8 @@ RADAR_SITES = [
     ("SE Ase", 57.3035, 18.4001),        # PLC:Hemse(Ase), Gotland
     ("SE Karlskrona", 56.2955, 15.6102),
     ("SE Balsta", 59.6110, 17.5833),
+    # Hudiksvall reaches 345 px of our raster — a corner sliver — and
+    # Kesalahti 1632; both are listed for range only, never fetched.
     ("SE Hudiksvall", 61.5771, 16.7144),
     ("SE Vilebo", 58.1059, 15.9365),     # PLC:Atvidaberg(Vilebo)
     # Read off FMI's per-radar grids (their centre pixel IS the antenna), not
@@ -810,12 +812,10 @@ SITE_FEEDS = {
     "SEHEM": "SE Ase",
     "SEBAL": "SE Balsta",
     "SEATV": "SE Vilebo",
-    "SEHUD": "SE Hudiksvall",
     "FIKOR": "FI Korppoo",
     "FIVIH": "FI Vihti",
     "FIANJ": "FI Anjalankoski",
     "FIKAN": "FI Kankaanpaa",
-    "FIKES": "FI Kesalahti",
 }
 
 

@@ -41,9 +41,11 @@
 <header>
   <h1>Per-radar debug</h1>
   <span class="hint">One row per country: the product as served (SOURCE,
-    untouched), then our render of it, then each antenna &mdash; each antenna
-    panel holding everything within 250 km of THAT radar, so panels overlap
-    where the coverage discs do.
+    untouched), then our render of it, then the radars. Sweden and Finland
+    publish one product PER ANTENNA, so those panels are separate radars in
+    their own right; Estonia and Lithuania have no such source, so their
+    antennas are cut out of the national product by range and overlap where
+    the discs do.
     <span class="none">NO FRAME</span> = no sweep for the slot;
     <span class="held">amber time</span> = sweep held over from the fill ring
     (&gt;8 min away). <a href="?whole=1">products only</a></span>
@@ -77,32 +79,35 @@ function buildPanels(panels) {
   PANELS = [];
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
-  // One ROW per country: the source as served, then our render of the whole
-  // product, then each antenna of it.
-  for (const {code, sites, src} of panels) {
+  // One ROW per country, and the row says what each panel IS: the source as
+  // served, our render of the whole product, then the radars — each either
+  // its own single-radar product (SE, FI) or a disc cut out of the national
+  // one (EE, LT).
+  for (const row_ of panels) {
+    const code = row_.code;
+    let parts = row_.parts;
+    if (!parts)                      // index written before rows carried parts
+      parts = [{key: code + " source", label: "SOURCE", what: "source"},
+               {key: code, label: code, what: "whole product"}].concat(
+        (row_.sites || []).map(n => ({key: n, label: n.split(" ").slice(1)
+                                        .join(" "), what: "antenna"})));
+    if (WHOLE_ONLY) parts = parts.filter(p => p.key === code ||
+                                              /source$/.test(p.key));
     const row = document.createElement("section");
     row.className = "row";
     row.innerHTML = `<h2>${FEED[code] || code}</h2>`;
     const strip = document.createElement("div");
     strip.className = "strip";
     row.appendChild(strip);
-    const list = [];
-    if (src) list.push([src, "source, as served"]);
-    list.push([code, "our render \u00b7 whole product"]);
-    if (!WHOLE_ONLY && sites.length > 1)
-      for (const st of sites) list.push([st, "antenna"]);
-    for (const pair of list) {
-      const p = pair[0], what = pair[1];
-      PANELS.push(p);
+    for (const part of parts) {
+      PANELS.push(part.key);
       const fig = document.createElement("figure");
-      if (p === src) fig.className = "src";
-      const short = p === src ? "SOURCE"
-                  : p === code ? code : p.split(" ").slice(1).join(" ");
+      if (/source$/.test(part.key)) fig.className = "src";
       fig.innerHTML =
-        `<figcaption><span class="code">${short}</span>` +
-        `<span class="stamp" id="s_${id(p)}">\u2014</span>` +
-        `<span style="margin-left:auto;color:#7a8395">${what}</span>` +
-        `</figcaption><div class="wrap" id="w_${id(p)}"></div>`;
+        `<figcaption><span class="code">${part.label}</span>` +
+        `<span class="stamp" id="s_${id(part.key)}">\u2014</span>` +
+        `<span style="margin-left:auto;color:#7a8395">${part.what}</span>` +
+        `</figcaption><div class="wrap" id="w_${id(part.key)}"></div>`;
       strip.appendChild(fig);
     }
     grid.appendChild(row);
@@ -142,8 +147,21 @@ function show(i) {
                 wrap.appendChild(img); }
     if (img.getAttribute("src") !== url) img.src = url;
   }
-  history.replaceState(null, "", "?slot=" + key +
-    (QS.get("maps") ? "&maps=" + encodeURIComponent(QS.get("maps")) : ""));
+  markUrl(key);
+}
+
+// The URL is updated on a timer, never per input event: dragging the seek bar
+// fires dozens a second, and browsers throttle replaceState and then THROW —
+// which killed the drag half way along the bar.
+let urlTimer = null;
+function markUrl(key) {
+  clearTimeout(urlTimer);
+  urlTimer = setTimeout(() => {
+    try {
+      history.replaceState(null, "", "?slot=" + key +
+        (QS.get("maps") ? "&maps=" + encodeURIComponent(QS.get("maps")) : ""));
+    } catch (e) { /* throttled: the pictures matter, the URL does not */ }
+  }, 400);
 }
 
 // Bases to try in order: whatever the host implies, then the public bucket.
@@ -173,9 +191,8 @@ function render(a) {
   {
     const first = ARCH === null;
     if (first || !PANELS.length)
-      buildPanels(a.panels || [{code:"LV",sites:[]},{code:"EE",sites:[]},
-                               {code:"LT2",sites:[]},{code:"SE",sites:[]},
-                               {code:"FI",sites:[]}]);
+      buildPanels(a.panels || ["LV", "EE", "LT2", "SE", "FI"].map(
+        c => ({code: c, sites: []})));
     ARCH = a;
     const at0 = first ? null : KEYS[document.getElementById("seek").value];
     KEYS = Object.keys(a.slots || {}).sort();
