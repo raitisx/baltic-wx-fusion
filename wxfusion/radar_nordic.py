@@ -177,7 +177,6 @@ SE_SITES = {
     "SEHEM": ("hemse", "SE Ase", 57.3035, 18.4001),        # PLC:Hemse(Ase)
     "SEBAL": ("balsta", "SE Balsta", 59.6110, 17.5833),
     "SEATV": ("atvidaberg", "SE Vilebo", 58.1059, 15.9365),  # PLC:Atvidaberg
-    "SEHUD": ("hudiksvall", "SE Hudiksvall", 61.5771, 16.7144),
 }
 # Karlskrona is 14 km short of our raster and the rest of the network is
 # hundreds of km away, so those volumes are never fetched. Positions and
@@ -305,8 +304,10 @@ FI_SITES = {
     "FIVIH": ("fivih", "FI Vihti", 60.556, 24.494),
     "FIANJ": ("fianj", "FI Anjalankoski", 60.904, 27.108),
     "FIKAN": ("fikan", "FI Kankaanpaa", 61.811, 22.500),
-    "FIKES": ("fikes", "FI Kesalahti", 61.907, 29.799),
 }
+# Kesalahti (fikes) is listed by FMI too but only reaches 0.4% of our raster,
+# so it is not fetched — same rule that dropped Hudiksvall on the Swedish
+# side (radar_store.MIN_COVER_PX).
 
 
 def _fmi_site_entries(s, day, site):
