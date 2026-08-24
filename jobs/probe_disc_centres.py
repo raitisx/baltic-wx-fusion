@@ -1,13 +1,15 @@
-"""Estonia's raw volumes: the catalogue names them, so where are the files?
+"""Estonia per radar: the app names an S3 bucket and a "cmp_cap" tile layer.
 
-The dataset page (keskkonnaportaal.ee/et/avaandmed/meteoroloogiliste-
-radarite-andmestik) lists "Radari toorandmed (VOL)" but links only to a
-description page and to two document-list views on their DHS portal, and the
-obvious hosts (kaia.envir.ee, opendata.envir.ee, s3.envir.ee) do not resolve.
-So this reads the description page and both DHS views for the actual service:
-a download link, an FTP or S3 host, or the sentence that says the data is
-handed out on request.
+Their radar page loads tiles from
+    https://ilmtiles.envir.ee/tiles/ilm/cmp_cap/{TIME}/{z}/{x}/{-y}.png
+and mentions
+    https://s3.pilw.io/rp-kemit-ilm04/EE-radar/
+
+"cmp" is composite — which implies siblings per radar — and an S3 prefix
+called EE-radar is exactly where raw sweeps would live. This lists the bucket
+and probes the tile server for per-radar layer names (Harku, Surgavere).
 """
+import datetime as dt
 import re
 import sys
 
@@ -16,59 +18,46 @@ sys.path.insert(0, ".")
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-VIEWS = ("b92201f4-8b48-4d3a-b410-30c8ce4016d5",
-         "c2ea43b7-09c4-4afb-b955-aa5862e46c0f")
+BUCKET = "https://s3.pilw.io/rp-kemit-ilm04"
+TILES = "https://ilmtiles.envir.ee/tiles/ilm"
 
 
-def strip_tags(html):
-    txt = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
-    txt = re.sub(r"(?s)<[^>]+>", " ", txt)
-    return re.sub(r"\s+", " ", txt).strip()
-
-
-def get(tag, url):
+def get(tag, url, show=0):
     try:
         r = s.get(url, timeout=60)
-        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B  {url[:110]}")
+        print(f"  {tag:30s} {r.status_code} {len(r.content):>10,d}B  "
+              f"{r.headers.get('content-type','?')[:24]}  {url[:100]}")
+        if show and r.ok:
+            print("     ", r.text[:show].replace("\n", " "))
         return r
     except Exception as e:
-        print(f"\n--- {tag}: FAIL {type(e).__name__}  {url[:110]}")
+        print(f"  {tag:30s} FAIL {type(e).__name__}  {url[:100]}")
         return None
 
 
-r = get("radar data description",
-        "https://keskkonnaportaal.ee/et/avaandmed/radariandmestik/"
-        "radariandmete-kirjeldus")
+print("=== the S3 bucket behind the Estonian radar app ===")
+r = get("EE-radar prefixes",
+        f"{BUCKET}?list-type=2&delimiter=/&prefix=EE-radar/")
 if r is not None and r.ok:
-    txt = strip_tags(r.text)
-    # the paragraphs that mention volumes, formats or how to get them
-    for m in re.finditer(r"[^.]{0,240}(?:VOL|ODIM|HDF5|h5|toorandm|allalaadi"
-                         r"|FTP|API|teenus|litsents|päring)[^.]{0,240}\.",
-                         txt, re.I):
-        print("   ", m.group(0).strip()[:300])
-    for u in sorted({u for u in re.findall(r'https?://[^"\'\s<>]{8,140}',
-                                           r.text)
-                     if re.search(r"radar|vol|data|andme|ftp|s3|api", u, re.I)}):
-        print("    url:", u[:130])
+    pres = re.findall(r"<Prefix>([^<]+)</Prefix>", r.text)
+    keys = re.findall(r"<Key>([^<]+)</Key>", r.text)
+    print("   prefixes:", ", ".join(sorted(set(pres))[:40]) or "none")
+    print("   keys:", ", ".join(keys[:15]) or "none")
+    for pre in sorted(set(p for p in pres if p.rstrip("/") != "EE-radar"))[:10]:
+        rr = get(f"list {pre[:26]}",
+                 f"{BUCKET}?list-type=2&max-keys=40&prefix={pre}")
+        if rr is not None and rr.ok:
+            ks = re.findall(r"<Key>([^<]+)</Key>", rr.text)
+            print("      ", len(ks), "keys, e.g.", "; ".join(ks[-4:])[:220])
+get("bucket root", f"{BUCKET}?list-type=2&max-keys=25&delimiter=/", show=600)
 
-for v in VIEWS:
-    r = get(f"DHS view {v[:8]}",
-            f"https://avaandmed.keskkonnaportaal.ee/dhs/Active/"
-            f"documentList.aspx?ViewId={v}")
-    if r is None or not r.ok:
-        continue
-    txt = strip_tags(r.text)
-    print("    text:", txt[:400])
-    for u in sorted({u for u in re.findall(r'(?:href|src)="([^"]{6,160})"',
-                                           r.text)
-                     if re.search(r"radar|vol|download|fail|doc", u, re.I)})[:20]:
-        print("    link:", u[:130])
-
-# The service's own radar page may name the file host in its map config.
-r = get("ilmateenistus radar app",
-        "https://www.ilmateenistus.ee/ilm/ilmavaatlused/radar/")
-if r is not None and r.ok:
-    for u in sorted({u for u in re.findall(r'https?[:\\/]{2,4}[^"\'\s<>]{8,140}',
-                                           r.text)
-                     if re.search(r"radar|tiles|api|data", u, re.I)})[:25]:
-        print("    url:", u.replace("\\/", "/")[:130])
+print("\n=== the tile server: is there a layer per radar? ===")
+now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=25)
+stamp = now.replace(minute=now.minute - now.minute % 5, second=0,
+                    microsecond=0).strftime("%Y%m%d%H%M")
+for layer in ("cmp_cap", "har_cap", "sur_cap", "syr_cap", "harku_cap",
+              "surgavere_cap", "cmp_dbz", "har_dbz", "sur_dbz"):
+    get(layer, f"{TILES}/{layer}/{stamp}/6/37/21.png")
+for probe in ("", "layers.json", "capabilities.json", "index.json",
+              "cmp_cap/times.json", "cmp_cap"):
+    get(f"meta '{probe}'", f"{TILES}/{probe}", show=300)
