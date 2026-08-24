@@ -51,7 +51,18 @@ if r is not None and r.ok:
             print("      ", len(ks), "keys, e.g.", "; ".join(ks[-4:])[:220])
 get("bucket root", f"{BUCKET}?list-type=2&max-keys=25&delimiter=/", show=600)
 
-print("\n=== the tile server: is there a layer per radar? ===")
+print("\n=== the tile server is an open directory: list every layer ===")
+r = get("index of /tiles/ilm", f"{TILES}/")
+if r is not None and r.ok:
+    names = [n for n in re.findall(r'<a href="([^"?/][^"]*)/?"', r.text)]
+    print("   layers:", ", ".join(sorted(set(names))))
+    for lay in sorted(set(n.rstrip("/") for n in names)):
+        rr = s.get(f"{TILES}/{lay}/", timeout=60)
+        stamps = sorted(set(re.findall(r'<a href="(\d{8,14})/?"', rr.text)))
+        print(f"   {lay:16s} {len(stamps):5d} timestamps"
+              + (f"  {stamps[0]} .. {stamps[-1]}" if stamps else ""))
+
+print("\n=== per-radar layer guesses (kept for the record) ===")
 now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=25)
 stamp = now.replace(minute=now.minute - now.minute % 5, second=0,
                     microsecond=0).strftime("%Y%m%d%H%M")
