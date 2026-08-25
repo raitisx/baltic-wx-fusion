@@ -37,6 +37,13 @@
   input[type=range] { width:100%; }
   .now { text-align:center; padding-top:6px; font-weight:600; }
   a { color:#7fb2ee; }
+  .nav { display:flex; gap:6px; align-items:center; }
+  .nav button, .nav select { font:inherit; font-size:12px; color:#e6e8ee;
+      background:#2b3140; border:1px solid #3a4254; border-radius:5px;
+      padding:3px 8px; cursor:pointer; }
+  .nav button:hover:enabled, .nav select:hover { background:#353d4f; }
+  .nav button:disabled { opacity:.4; cursor:default; }
+  .nav button.on { background:#3d6ea8; border-color:#4f86c6; }
 </style>
 <header>
   <h1>Per-radar debug</h1>
@@ -52,6 +59,7 @@
     <span class="none">NO FRAME</span> = no sweep for the slot;
     <span class="held">amber time</span> = sweep held over from the fill ring
     (&gt;8 min away). <a href="?whole=1">products only</a></span>
+  <span class="nav" id="days"></span>
   <span class="hint" id="meta"></span>
 </header>
 <div class="grid" id="grid"></div>
@@ -74,6 +82,7 @@ const FEED = {LV:"Latvia (LVGMC)", EE:"Estonia (KESKKONNAAGENTUUR)",
 // radar dropped is the question. The whole-product panel stays as the first
 // panel of each feed for comparison. ?whole=1 shows only the products.
 const WHOLE_ONLY = QS.get("whole") === "1";
+const WANT_DAY = /^\d{8}$/.test(QS.get("day") || "") ? QS.get("day") : null;
 let ARCH = null, KEYS = [], PANELS = [];
 
 function id(p) { return "p_" + p.replace(/[^A-Za-z0-9]/g, "_"); }
@@ -142,8 +151,12 @@ function show(i) {
       continue;
     }
     const p = picked[c] || "";
-    stamp.textContent = p.replace("*", " (held)");
+    // The stamp must not change WIDTH between slots: appending "(held)"
+    // reflowed every caption and the whole grid jumped as you dragged. The
+    // amber colour says the same thing and costs no pixels.
+    stamp.textContent = p.replace("*", "");
     stamp.className = p.endsWith("*") ? "held" : "stamp";
+    stamp.title = p.endsWith("*") ? "held over from the fill ring (>8 min)" : "";
     const url = `${MAPS_BASE}/${ARCH.path}/${vtag}.png?v=${ARCH.generated_at}`;
     let img = wrap.querySelector("img");
     if (!img) { wrap.innerHTML = ""; img = document.createElement("img");
@@ -161,8 +174,12 @@ function markUrl(key) {
   clearTimeout(urlTimer);
   urlTimer = setTimeout(() => {
     try {
-      history.replaceState(null, "", "?slot=" + key +
-        (QS.get("maps") ? "&maps=" + encodeURIComponent(QS.get("maps")) : ""));
+      const q = new URLSearchParams();
+      q.set("slot", key);
+      if (WANT_DAY) q.set("day", WANT_DAY);
+      if (QS.get("maps")) q.set("maps", QS.get("maps"));
+      if (WHOLE_ONLY) q.set("whole", "1");
+      history.replaceState(null, "", "?" + q);
     } catch (e) { /* throttled: the pictures matter, the URL does not */ }
   }, 400);
 }
@@ -172,14 +189,14 @@ function markUrl(key) {
 // some hosts, so a response that is not JSON counts as "not here, try next".
 const BASES = [...new Set([MAPS_BASE,
   "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev"])];
-async function loadArch() {
+async function fetchJson(path, open_) {
   let lastErr = "";
   for (const base of BASES) {
     try {
-      const r = await fetch(`${base}/maps/radar/feeds.json?v=${Date.now()}`);
+      const r = await fetch(`${base}/${path}?v=${Date.now()}`);
       if (!r.ok) { lastErr = `${base} -> HTTP ${r.status}`; continue; }
       const txt = await r.text();
-      if (!txt.trim().startsWith("{")) {
+      if (!txt.trim().startsWith(open_)) {
         lastErr = `${base} -> not JSON (page returned instead of the key)`;
         continue;
       }
@@ -187,6 +204,61 @@ async function loadArch() {
     } catch (e) { lastErr = `${base} -> ${e}`; }
   }
   throw new Error(lastErr);
+}
+
+// Without ?day, read feeds.json — whichever day was rendered last, so the
+// page opens on the newest work without having to know its date.
+function loadArch() {
+  return fetchJson(WANT_DAY ? `maps/radar/feeds/${WANT_DAY}.json`
+                            : "maps/radar/feeds.json", "{");
+}
+
+// days.json lists every day the renderer has archived. It is written by the
+// current renderer only: an older index leaves it missing, and then the nav
+// falls back to the one day that is loaded.
+function dayLabel(d) {
+  const t = new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1,
+                              +d.slice(6, 8)));
+  return t.toLocaleDateString(undefined, {weekday: "short", day: "2-digit",
+                                          month: "2-digit", timeZone: "UTC"});
+}
+function goDay(d, latest) {
+  const q = new URLSearchParams();
+  if (d && !latest) q.set("day", d);
+  if (QS.get("maps")) q.set("maps", QS.get("maps"));
+  if (WHOLE_ONLY) q.set("whole", "1");
+  location.search = q.toString();
+}
+function buildDayNav(days, cur) {
+  const box = document.getElementById("days");
+  if (!box || !cur) return;
+  if (!days.includes(cur)) days = days.concat([cur]).sort();
+  const i = days.indexOf(cur), last = days[days.length - 1];
+  box.textContent = "";
+  const btn = (label, title, on, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.title = title;
+    if (on) b.addEventListener("click", fn); else b.disabled = true;
+    return b;
+  };
+  box.append(btn("\u2039", "previous rendered day", i > 0,
+                 () => goDay(days[i - 1])));
+  const sel = document.createElement("select");
+  sel.title = "rendered days";
+  for (const d of days) {
+    const o = document.createElement("option");
+    o.value = d; o.textContent = dayLabel(d); o.selected = d === cur;
+    sel.append(o);
+  }
+  sel.addEventListener("change", () => goDay(sel.value,
+                                             sel.value === last && !WANT_DAY));
+  box.append(sel);
+  box.append(btn("\u203a", "next rendered day", i < days.length - 1,
+                 () => goDay(days[i + 1])));
+  const now = btn("latest", "the day rendered most recently",
+                  !!WANT_DAY, () => goDay(null, true));
+  if (!WANT_DAY) now.classList.add("on");
+  box.append(now);
 }
 
 let POLL = null;
@@ -197,6 +269,10 @@ function render(a) {
       buildPanels(a.panels || ["LV", "EE", "LT2", "SE", "FI"].map(
         c => ({code: c, sites: []})));
     ARCH = a;
+    if (first)
+      fetchJson("maps/radar/feeds/days.json", "[")
+        .then(d => buildDayNav(d.filter(x => /^\d{8}$/.test(x)), a.day))
+        .catch(() => buildDayNav([], a.day));
     const at0 = first ? null : KEYS[document.getElementById("seek").value];
     KEYS = Object.keys(a.slots || {}).sort();
     const seek = document.getElementById("seek");
@@ -240,9 +316,14 @@ function render(a) {
 }
 
 loadArch().then(render).catch(e => {
-  document.getElementById("now").textContent =
-    "feeds.json not readable yet — the radar-feeds workflow writes it as it " +
-    "renders; retrying every 20 s. (" + e.message + ")";
+  document.getElementById("now").textContent = (WANT_DAY
+    ? `no archive for ${WANT_DAY} — only days the renderer has run are kept; `
+    : "feeds.json not readable yet — the radar-feeds workflow writes it as it ")
+    + "retrying every 20 s. (" + e.message + ")";
+  fetchJson("maps/radar/feeds/days.json", "[")
+    .then(d => buildDayNav(d.filter(x => /^\d{8}$/.test(x)),
+                           WANT_DAY || d[d.length - 1]))
+    .catch(() => {});
   POLL = setInterval(() => loadArch().then(a => {
     clearInterval(POLL); POLL = null; render(a);
   }).catch(() => {}), 20000);
