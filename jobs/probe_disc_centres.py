@@ -1,48 +1,48 @@
-"""How does Surgavere classify, judged only where Surgavere alone can see?
+"""Which feed is actually off? Every pair, in their own overlaps.
 
-The crescent is the attributable part of a composite: inside one dish's range
-and outside the other's. So this reads the Estonian product over a rainy
-window and asks three things of Surgavere's crescent —
+Surgavere's crescent came out 1.22x against Lithuania and 0.39x against
+Latvia on the same day — both cannot be right about Surgavere, so the answer
+has to come from the whole ring of feeds rather than one pair. This walks
+22.08 and, for every pair that overlaps, takes the pixels where BOTH are wet
+and reports the median ratio of their rain rates.
 
-  1. what classes it puts there, against Harku's crescent on the same frames,
-  2. whether the classes fall off with range (the thing the range-graded
-     sensitivity is meant to correct), by 50 km rings from the dish,
-  3. how it compares with a NEIGHBOUR watching the same pixels from its own
-     side — Latvia and Lithuania cover much of Surgavere's crescent, Finland
-     covers Harku's — since one radar can only be called hot or cold against
-     another.
-
-Levels are the shared 0..96 ramp (6 classes x 16), so a level difference of
-16 is one whole class.
+Twice over, because range confounds it: once on all co-wet pixels, and once
+on the NEAR FIELD only — pixels within 150 km of one of each feed's own
+antennas — where every radar is at its most trustworthy. A feed that is out
+of line in both is out of line for real.
 """
-import base64
 import datetime as dt
-import io
+import itertools
 import sys
 
 sys.path.insert(0, ".")
 
 import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
 
 from wxfusion import proj3059 as P, radar_store as R  # noqa: E402
-from wxfusion.scrape_maps import (SUB, draw_borders, lev_class,  # noqa: E402
-                                  pos_rain, ramp_lut)
+from wxfusion.scrape_maps import pos_rain  # noqa: E402
 
 s3 = R.r2_client()
-DAY = dt.date(2026, 8, 22)     # the storm day: 24.08 was dry, 7 wet px a frame
-LO, HI = 9, 17          # UTC hours to walk
+DAY = dt.date(2026, 8, 22)
+LO, HI = 9, 17
+CODES = ("EE", "LV", "LT2", "SE", "FI")
+NEAR_KM = 150.0
 yy, xx = np.mgrid[0:P.H, 0:P.W]
 
-sites = R._site_pixels_for("EE", on_canvas=True)
-D = {n: np.hypot(xx - sx, yy - sy) for n, sx, sy in sites}
-CRES = {}
-for n in D:
-    others = [v for k, v in D.items() if k != n]
-    CRES[n] = (D[n] <= R.SPLIT_RANGE_KM) & np.all(
-        [o > R.SPLIT_RANGE_KM for o in others], axis=0)
-for n, m in CRES.items():
-    print(f"{n:14s} crescent {int(m.sum()):6d} px")
+# near field: within NEAR_KM of any antenna the feed actually owns
+NEAR = {}
+for c in CODES:
+    sites = R._site_pixels_for(c, on_canvas=True)
+    if not sites:
+        NEAR[c] = None
+        print(f"{c:4s}: no antennas listed — near field not defined")
+        continue
+    d = np.full((P.H, P.W), np.inf, np.float32)
+    for _, sx, sy in sites:
+        d = np.minimum(d, np.hypot(xx - sx, yy - sy).astype(np.float32))
+    NEAR[c] = d <= NEAR_KM
+    print(f"{c:4s}: {len(sites)} antennas, near field {int(NEAR[c].sum()):6d} px"
+          f"  ({', '.join(n for n, _, _ in sites)})")
 
 idx = R._load_index(s3, DAY)
 frames = {}
@@ -51,6 +51,7 @@ for f in idx.get("frames", []):
         tzinfo=dt.timezone.utc)
     if LO <= t.hour < HI:
         frames.setdefault(f["code"], []).append((t, f))
+print("\nframes in window:", {c: len(v) for c, v in sorted(frames.items())})
 
 
 def nearest(code, when, tol=900):
@@ -62,104 +63,62 @@ def nearest(code, when, tol=900):
     return best
 
 
-def stats(lev, mask):
-    v = lev[mask]
-    wet = v[v > 0]
-    if not wet.size:
-        return None
-    cls = lev_class(wet)
-    hist = np.bincount(cls, minlength=7)[1:7]
-    return wet.size, float(np.median(wet)), hist
+def rate(lev, m):
+    return pos_rain((lev[m].astype(np.float64) - 0.5) / 96)
 
 
-print(f"\n=== {DAY} {LO:02d}-{HI:02d}Z, Estonia by crescent ===")
-print(f"{'slot':6s} {'Surgavere wet/med/classes':44s} {'Harku wet/med/classes'}")
-rings, ring_lab = {}, [(0, 50), (50, 100), (100, 150), (150, 200), (200, 250)]
-pairs = {}
-shot = None
+all_px, near_px, own = {}, {}, {}
+slots = 0
 for hh in range(LO, HI):
     for mm in (0, 30):
         when = dt.datetime(DAY.year, DAY.month, DAY.day, hh, mm,
                            tzinfo=dt.timezone.utc)
-        got = nearest("EE", when)
-        if not got:
-            continue
-        _, t, f = got
-        try:
-            lev, _ = R._feed_grid(s3, "EE", f)
-        except Exception as e:
-            print(f"{hh:02d}:{mm:02d}  load failed {type(e).__name__}")
-            continue
-        line = []
-        for n in ("EE Surgavere", "EE Harku"):
-            st = stats(lev, CRES[n])
-            line.append("-" if st is None else
-                        f"{st[0]:6d} med{st[1]:5.1f} " + "/".join(
-                            str(int(c)) for c in st[2]))
-        print(f"{hh:02d}:{mm:02d}  {line[0]:44s} {line[1]}")
-        # range rings inside Surgavere's crescent
-        m = CRES["EE Surgavere"]
-        for lo_, hi_ in ring_lab:
-            r = m & (D["EE Surgavere"] >= lo_) & (D["EE Surgavere"] < hi_)
-            v = lev[r]
-            wet = v[v > 0]
-            if wet.size:
-                rings.setdefault((lo_, hi_), []).append(
-                    (wet.size, float(np.median(wet)), int(r.sum())))
-        # neighbours over the same crescent
-        for code, who in (("LV", "EE Surgavere"), ("LT2", "EE Surgavere"),
-                          ("FI", "EE Harku")):
-            g2 = nearest(code, when)
-            if not g2:
+        grids = {}
+        for c in CODES:
+            got = nearest(c, when)
+            if not got:
                 continue
             try:
-                lev2, _ = R._feed_grid(s3, code, g2[2])
-            except Exception:
+                grids[c], _ = R._feed_grid(s3, c, got[2])
+            except Exception as e:
+                print(f"  {hh:02d}:{mm:02d} {c}: {type(e).__name__}")
+        if len(grids) < 2:
+            continue
+        slots += 1
+        for c, g in grids.items():
+            if NEAR[c] is not None:
+                w = g[NEAR[c]]
+                w = w[w > 0]
+                if w.size:
+                    own.setdefault(c, []).append(float(np.median(w)))
+        for a, b in itertools.combinations(sorted(grids), 2):
+            ga, gb = grids[a], grids[b]
+            wet = (ga > 0) & (gb > 0)
+            if int(wet.sum()) >= 100:
+                r = np.median(rate(ga, wet)) / max(1e-9, np.median(rate(gb, wet)))
+                all_px.setdefault((a, b), []).append((int(wet.sum()), float(r)))
+            if NEAR[a] is None or NEAR[b] is None:
                 continue
-            both = CRES[who] & (lev > 0) & (lev2 > 0)
-            if int(both.sum()) < 100:
-                continue
-            a = pos_rain((lev[both].astype(float) - 0.5) / 96)
-            b = pos_rain((lev2[both].astype(float) - 0.5) / 96)
-            pairs.setdefault((who, code), []).append(
-                (int(both.sum()), float(np.median(a) / max(1e-6,
-                                                           np.median(b)))))
-        if shot is None and stats(lev, CRES["EE Surgavere"]):
-            shot = (t, lev.copy())
+            wn = wet & NEAR[a] & NEAR[b]
+            if int(wn.sum()) >= 100:
+                r = np.median(rate(ga, wn)) / max(1e-9, np.median(rate(gb, wn)))
+                near_px.setdefault((a, b), []).append((int(wn.sum()), float(r)))
 
-print("\n=== inside Surgavere's crescent, by range from the dish ===")
-for key in ring_lab:
-    v = rings.get(key)
-    if not v:
-        print(f"  {key[0]:3d}-{key[1]:3d} km: nothing")
-        continue
-    wet = sum(x[0] for x in v)
-    area = v[0][2]
-    med = float(np.median([x[1] for x in v]))
-    print(f"  {key[0]:3d}-{key[1]:3d} km: {area:6d} px of crescent, "
-          f"wet {wet / len(v):8.0f} px/frame ({100 * wet / len(v) / max(1, area):4.1f}%), "
-          f"median level {med:5.1f}  (class {int(lev_class(med))})")
+print(f"\n{slots} slots with two or more feeds\n")
+print(f"{'pair':12s} {'all co-wet':>26s}   {'near field (<150 km both)':>30s}")
+for pair in sorted(set(all_px) | set(near_px)):
+    a, b = pair
+    out = []
+    for src in (all_px, near_px):
+        v = src.get(pair)
+        if not v:
+            out.append(f"{'-':>26s}")
+            continue
+        n = sum(x[0] for x in v)
+        r = float(np.median([x[1] for x in v]))
+        out.append(f"{len(v):2d} frames {n:9,d} px {r:5.2f}x")
+    print(f"{a:4s} / {b:4s} {out[0]}   {out[1]}")
 
-print("\n=== against a neighbour watching the same pixels ===")
-for (who, code), v in sorted(pairs.items()):
-    n = sum(x[0] for x in v)
-    ratio = float(np.median([x[1] for x in v]))
-    print(f"  {who:14s} vs {code:4s}: {len(v)} frames, {n:,} co-wet px, "
-          f"median rate ratio {ratio:5.2f}x  "
-          f"({'EE reads high' if ratio > 1.15 else 'EE reads low' if ratio < 0.87 else 'in line'})")
-
-if shot is not None:
-    t, lev = shot
-    rgba = ramp_lut(False)[np.clip(lev, 0, 96).astype(np.uint8)]
-    rgba = rgba.copy()
-    for n, col in (("EE Surgavere", (255, 90, 90)), ("EE Harku", (90, 160, 255))):
-        edge = CRES[n] ^ (np.roll(CRES[n], 1, 0) & np.roll(CRES[n], 1, 1))
-        rgba[edge] = (*col, 255)
-    im = Image.fromarray(np.ascontiguousarray(rgba, np.uint8), "RGBA")
-    draw_borders(im)
-    bg = Image.new("RGB", im.size, (247, 245, 239))
-    bg.paste(im, (0, 0), im)
-    buf = io.BytesIO()
-    bg.save(buf, "PNG", optimize=True)
-    print(f"\nframe shown: {t:%H:%M}Z")
-    print("@@IMG:crescents:" + base64.b64encode(buf.getvalue()).decode())
+print("\nmedian wet level in each feed's OWN near field (levels 0..96):")
+for c in sorted(own):
+    print(f"  {c:4s} {float(np.median(own[c])):5.1f}  ({len(own[c])} frames)")
