@@ -516,6 +516,10 @@ FEED_PREFIX = "maps/radar/feeds3059"
 FEED_ARCHIVE_KEY = "maps/radar/feeds.json"          # the day rendered last
 FEED_DAY_PREFIX = "maps/radar/feeds"                # feeds/<YYYYMMDD>.json
 FEED_DAYS_KEY = "maps/radar/feeds/days.json"        # which days exist
+# How many slots at the end of a render window are rendered again even when
+# the day already holds them: a slot rendered minutes after the fact can miss
+# a feed that publishes late, and only a re-render lets it in.
+FEED_REDO_SLOTS = 3
 FEED_CODES = ("LV", "EE", "LT2", "SE", "FI",
               # Single radars, stored beside the national products:
               # FMI publishes one cappi per antenna, so Finland can be
@@ -746,11 +750,15 @@ def _row_parts(code):
 
 
 def render_feeds(only_day: str, from_h: int | None = None,
-                 to_h: int | None = None) -> int:
+                 to_h: int | None = None, keep_rendered: bool = False) -> int:
     """Per-feed debug frames for one UTC day, every 15-min slot.
 
     from_h/to_h narrow it to a UTC hour window (e.g. 9..16) so a stretch
     under investigation renders in minutes instead of the whole day.
+
+    keep_rendered skips slots the day already holds — that is the rolling
+    top-up the tick does. A dispatched run leaves it off, because the reason
+    to render a day again by hand is that the drawing rules changed.
 
     Writes FEED_ARCHIVE_KEY as {"path", "slots": {slotkey: {code: vtag}},
     "picked": {slotkey: {code: "HH:MM(*)"}}} — the star marks a sweep taken
@@ -762,17 +770,28 @@ def render_feeds(only_day: str, from_h: int | None = None,
         else d0 - dt.timedelta(hours=3)
     hi = d0 + dt.timedelta(hours=to_h) if to_h is not None \
         else d0 + dt.timedelta(hours=24)
+    # A day is built up over many runs — the tick tops today up every half
+    # hour — so start from what that day already holds and add to it. Only an
+    # archive for THIS day counts; feeds.json is whatever was rendered last.
     try:
-        arch = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
-                                        Key=FEED_ARCHIVE_KEY)["Body"].read())
+        arch = json.loads(s3.get_object(
+            Bucket=config.R2_BUCKET,
+            Key=f"{FEED_DAY_PREFIX}/{only_day}.json")["Body"].read())
     except Exception:
+        arch = {}
+    if arch.get("day") != only_day:
         arch = {}
     panels = [{"code": c, "parts": _row_parts(c)} for c in ROW_CODES]
     arch.update({"path": FEED_PREFIX, "day": only_day, "panels": panels,
-                 "window": f"{lo:%H:%M}-{hi:%H:%M}Z",
                  "generated_at": dt.datetime.now(dt.timezone.utc).strftime(
                      "%Y%m%dT%H%M")})
-    slots, picked = {}, {}
+    slots = dict(arch.get("slots") or {})
+    picked = dict(arch.get("picked") or {})
+    # Slots this day already has are left alone, except the tail of the
+    # window: those were rendered while their sweeps were still arriving, so
+    # a feed that showed up late is only picked up by rendering them again.
+    prior = set(slots) if keep_rendered else set()
+    redo_from = hi - dt.timedelta(minutes=SLOT_MIN * FEED_REDO_SLOTS)
     days, done = {}, 0
     # A sweep is usually picked by two or three neighbouring slots (and by the
     # fill ring beyond that). The frame is named after the sweep, so render
@@ -783,6 +802,11 @@ def render_feeds(only_day: str, from_h: int | None = None,
 
     def flush():
         arch["slots"], arch["picked"] = slots, picked
+        # The window is what the day actually holds, not what this run asked
+        # for: a day topped up half-hourly grows one slot at a time.
+        ks = sorted(slots)
+        arch["window"] = (f"{ks[0][9:11]}:{ks[0][11:13]}-"
+                          f"{ks[-1][9:11]}:{ks[-1][11:13]}Z") if ks else ""
         body = json.dumps(arch).encode()
         for key in (FEED_ARCHIVE_KEY, f"{FEED_DAY_PREFIX}/{only_day}.json"):
             s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=body,
@@ -797,6 +821,11 @@ def render_feeds(only_day: str, from_h: int | None = None,
         except Exception:
             days = set()
         days.add(only_day)
+        # A day whose frames the pruner has taken would show as a page of
+        # broken images, so it leaves the list when they go.
+        cut = (dt.datetime.now(dt.timezone.utc)
+               - dt.timedelta(days=FRAME_KEEP_DAYS)).strftime("%Y%m%d")
+        days = {d for d in days if d >= cut}
         s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_DAYS_KEY,
                       Body=json.dumps(sorted(days)).encode(),
                       ContentType="application/json",
@@ -822,6 +851,9 @@ def render_feeds(only_day: str, from_h: int | None = None,
                 continue
             cands.setdefault(f["code"], []).append((gap, t, f))
         skey = slot.strftime("%Y%m%dT%H%M")
+        if skey in prior and slot < redo_from:
+            slot += dt.timedelta(minutes=SLOT_MIN)
+            continue
         for code, v in cands.items():
             gap, t, f = _pick(v, SLOT_TOL_MIN * 60)
             key = (code, t)
@@ -839,7 +871,9 @@ def render_feeds(only_day: str, from_h: int | None = None,
         if skey in slots:
             flush()          # the page can seek what is ready already
         slot += dt.timedelta(minutes=SLOT_MIN)
-    arch["complete"] = True
+    now = dt.datetime.now(dt.timezone.utc)
+    arch["live"] = hi > now
+    arch["complete"] = not arch["live"]
     flush()
     log.info("radar feeds: %d per-feed frames over %d slots (%s)",
              done, len(slots), only_day)

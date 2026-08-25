@@ -95,6 +95,22 @@ jobs:
           RADAR_RENDER_PRUNE: "0"
         run: python jobs/run_radar_render.py
 
+      # Keeps TODAY on the per-radar debug page (docs/radar_feeds.html).
+      # Without this the page only ever holds days someone dispatched by
+      # hand, so "go to today" had nothing to go to. Slots the day already
+      # holds are skipped, so a tick renders the two or three newest ones.
+      - name: Radar per-feed debug frames (today)
+        if: always()
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_FEEDS_TAIL: "1.5"   # the tick runs every half hour; the
+                                    # overlap catches feeds that publish late
+        run: python jobs/run_radar_feeds.py
+
       # Hours the page asked for that have no frames. Usually nothing to do.
       - name: Requested map hours
         if: always()

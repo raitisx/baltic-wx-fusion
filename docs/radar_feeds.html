@@ -255,8 +255,9 @@ function buildDayNav(days, cur) {
   box.append(sel);
   box.append(btn("\u203a", "next rendered day", i < days.length - 1,
                  () => goDay(days[i + 1])));
-  const now = btn("latest", "the day rendered most recently",
-                  !!WANT_DAY, () => goDay(null, true));
+  const now = btn("today", "the newest day on the page — the tick keeps " +
+                  "today topped up every half hour", !!WANT_DAY,
+                  () => goDay(null, true));
   if (!WANT_DAY) now.classList.add("on");
   box.append(now);
 }
@@ -280,7 +281,8 @@ function render(a) {
     document.getElementById("meta").textContent =
       `day ${a.day} ${a.window || ""} · ${KEYS.length} slots · ` +
       `rendered ${a.generated_at}` +
-      (a.complete ? "" : " · still rendering, reloading as slots land");
+      (a.live ? " · today, topped up as it happens"
+              : a.complete ? "" : " · still rendering, reloading as slots land");
     if (first) {
       const want = QS.get("slot");
       const at = want && KEYS.indexOf(want) >= 0 ? KEYS.indexOf(want) : 0;
@@ -302,6 +304,9 @@ function render(a) {
     // While the render is still running, pick up the slots as they appear.
     // An index written by an older renderer carries no "complete" flag, so
     // also stop once it has stopped growing between polls.
+    // Today is never "complete" — the tick adds slots every half hour — so
+    // it keeps polling, slowly. A day being rendered right now polls fast
+    // and stops once it has stopped growing.
     if (!a.complete && !POLL) {
       let lastCount = KEYS.length, still = 0;
       POLL = setInterval(() => loadArch().then(x => {
@@ -309,8 +314,10 @@ function render(a) {
         still = n === lastCount ? still + 1 : 0;
         lastCount = n;
         render(x);
-        if (x.complete || still >= 2) { clearInterval(POLL); POLL = null; }
-      }).catch(() => {}), 20000);
+        if (x.complete || (still >= 2 && !x.live)) {
+          clearInterval(POLL); POLL = null;
+        }
+      }).catch(() => {}), a.live ? 120000 : 20000);
     }
   }
 }
