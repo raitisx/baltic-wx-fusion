@@ -402,7 +402,8 @@ def _render_slot(s3, best, when):
     cold = _freezing_mask(when)
     used = []
     layers = []
-    for code in ("SE", "FI", "EE", "LT2", "LT", "LV"):
+    from .scrape_maps import DRAW_ORDER
+    for code in DRAW_ORDER:              # trust order — Estonia at the bottom
         if code not in best:
             continue
         _, t, f = best[code]
@@ -548,6 +549,23 @@ SPLIT_RANGE_KM = 250
 # 20 MB volume per sweep to paint a sliver of sea).
 MIN_COVER_PX = 3900          # 1% of the 570x690 raster
 
+# Which antennas of a geometrically-split product get a panel.
+#
+# DO NOT USE THE SURGAVERE CRESCENT FOR CLASSIFICATION. Cutting a composite
+# at 250 km only separates two radars if neither reaches past it, and Estonia
+# does: measured 22.08.2026, its echo runs 307-374 km from Harku and 326-333
+# from Surgavere on every wet sweep. Harku's own echo therefore fills most of
+# what the crescent calls Surgavere's, so anything measured in there is a
+# region of the merged product, not a radar. It also pulsates frame to frame,
+# which is what made it unreadable in the first place. The product carries no
+# coverage mask at all — at 23:59 on a dry night the whole frame holds 303
+# painted pixels — so there is nothing to cut by except the rain itself.
+#
+# Estonia therefore shows as composite plus Harku, whose disc at least sits
+# clear of the product's own edges. Lithuania keeps both, having shown none
+# of this behaviour, but is on the same notice.
+SPLIT_SITES = {"EE": ("EE Harku",)}
+
 
 def covered_px(px, py, range_km=SPLIT_RANGE_KM):
     """How many raster pixels lie within range of an antenna at (px, py)."""
@@ -579,6 +597,13 @@ def _site_pixels_for(code, on_canvas=False):
             continue
         out.append((name, px, py))
     return out
+
+
+def _split_sites(code):
+    """The antennas of a split product that are worth a panel (SPLIT_SITES)."""
+    keep = SPLIT_SITES.get(code)
+    sites = _site_pixels_for(code, on_canvas=True)
+    return [s for s in sites if keep is None or s[0] in keep]
 
 
 def _feed_grid(s3, code, f):
@@ -667,7 +692,7 @@ def _render_feed_slot(s3, code, t, f, when):
                   CacheControl="public, max-age=604800")
     out[f"{code} source"] = stag
 
-    sites = _site_pixels_for(code, on_canvas=True) if code in SPLIT_FEEDS else []
+    sites = _split_sites(code) if code in SPLIT_FEEDS else []
     if len(sites) > 1:
         # A panel holds the CRESCENT this antenna alone can see: inside its
         # own range and outside every other antenna of the product.
@@ -711,9 +736,9 @@ def _row_parts(code):
         parts.append({"key": sc, "label": name.split(" ", 1)[-1],
                       "what": "single radar, its own product"})
     if code in SPLIT_FEEDS:
-        for name, _, _ in _site_pixels_for(code, on_canvas=True):
+        for name, _, _ in _split_sites(code):
             parts.append({"key": name, "label": name.split(" ", 1)[-1],
-                          "what": "crescent only this dish sees"})
+                          "what": "cut from the product by range"})
     return parts
 
 
