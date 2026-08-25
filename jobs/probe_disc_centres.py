@@ -1,14 +1,18 @@
-"""Estonia, closer in: read the radar app's inline config verbatim.
+"""Estonia has a public GeoServer — ask it what layers it has.
 
-The tiles URL and the S3 bucket both came from the radar page's own inline
-JavaScript, so that config is where the app's data endpoints live — how it
-lists available frames, what layers it can switch between, and whether any
-of them is a single radar. This dumps the config around those anchors, lists
-the WordPress REST routes (the site's own API surface), and knocks on the
-WSO2 gateway's developer portal, which is where an APIM host publishes what
-it actually serves.
+The radar app's inline config names three of them:
+    https://ilmgs.envir.ee/geoserver/ilm/wms   ilm:cmp_cap, ilm:nowcasting,
+                                               ilm:uus_radar, ilm:ilm_alus_radar
+    https://gslightning.envir.ee/geoserver/lightning/wms
+    https://gsavalik.envir.ee/geoserver/baasandmed/wms
+plus an S3 PNG layer id "EE-CMP-CAP" under .../EE-radar/, which reads like a
+naming scheme with siblings.
+
+GetCapabilities lists everything a GeoServer serves, so this asks all three —
+WMS and WCS — for the full layer list, and reports anything whose name or
+abstract mentions a radar or a site. WCS matters as much as WMS: a coverage
+gives values, not a styled picture.
 """
-import json
 import re
 import sys
 
@@ -17,51 +21,62 @@ sys.path.insert(0, ".")
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-PAGE = "https://www.ilmateenistus.ee/ilm/ilmavaatlused/radar/"
+GS = {"ilm": "https://ilmgs.envir.ee/geoserver",
+      "lightning": "https://gslightning.envir.ee/geoserver",
+      "avalik": "https://gsavalik.envir.ee/geoserver"}
+RADARISH = re.compile(r"radar|cap|dbz|sur|har|pikne|nowcast|opera|vol", re.I)
 
 
-def get(tag, url, show=0, **kw):
+def caps(tag, url):
     try:
-        r = s.get(url, timeout=45, **kw)
-        print(f"  {tag:32s} {r.status_code} {len(r.content):>9,d}B  "
-              f"{r.headers.get('content-type','?')[:24]}  {url[:88]}")
-        if show and r.ok:
-            print("       ", r.text[:show].replace("\n", " "))
-        return r
+        r = s.get(url, timeout=90)
+        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B  {url[:96]}")
+        return r if r.ok else None
     except Exception as e:
-        print(f"  {tag:32s} FAIL {type(e).__name__}  {url[:88]}")
+        print(f"\n--- {tag}: FAIL {type(e).__name__}  {url[:96]}")
         return None
 
 
-print("=== 1. the inline config, verbatim around each anchor ===")
-r = get("radar page", PAGE)
-if r is not None and r.ok:
-    txt = r.text
-    for anchor in ("cmp_cap", "EE-radar", "pilw.io", "ilmtiles",
-                   "radarSettings", "layers", "timestamps"):
-        for m in list(re.finditer(re.escape(anchor), txt))[:2]:
-            a, b = max(0, m.start() - 700), min(len(txt), m.end() + 700)
-            blob = re.sub(r"\s+", " ", txt[a:b])
-            print(f"\n  --- {anchor} @ {m.start()} ---")
-            print("   ", blob[:1400])
+for name, base in GS.items():
+    for svc, ver in (("WMS", "1.3.0"), ("WCS", "2.0.1"), ("WFS", "2.0.0")):
+        r = caps(f"{name} {svc}",
+                 f"{base}/ows?service={svc}&version={ver}"
+                 f"&request=GetCapabilities")
+        if r is None:
+            continue
+        if svc == "WMS":
+            layers = re.findall(r"<Name>([^<]+)</Name>", r.text)
+        elif svc == "WCS":
+            layers = re.findall(r"<wcs:CoverageId>([^<]+)</wcs:CoverageId>",
+                                r.text) or re.findall(
+                r"<CoverageId>([^<]+)</CoverageId>", r.text)
+        else:
+            layers = re.findall(r"<Name>([^<]+)</Name>", r.text)
+        layers = sorted(set(layers))
+        print(f"    {len(layers)} names")
+        hits = [n for n in layers if RADARISH.search(n)]
+        print("    radar-ish:", ", ".join(hits[:60]) or "none")
+        if name == "ilm" and svc == "WMS":
+            print("    ALL:", ", ".join(layers[:200]))
+        # titles/abstracts that mention a site by name
+        for m in re.finditer(r"(?is)<(?:Title|Abstract)>([^<]{4,160})</", r.text):
+            t = m.group(1)
+            if re.search(r"S[uü]rgavere|Harku|radar", t, re.I):
+                print("      says:", t.strip()[:150])
 
-print("\n\n=== 2. the site's own REST routes ===")
-r = get("wp-json index", "https://www.ilmateenistus.ee/wp-json/")
-if r is not None and r.ok:
-    try:
-        routes = json.loads(r.text).get("routes", {})
-    except Exception:
-        routes = {}
-    print(f"   {len(routes)} routes; namespaces:",
-          ", ".join(sorted({k.strip('/').split('/')[0] for k in routes})[:30]))
-    for k in sorted(routes):
-        if re.search(r"radar|ilm|kaart|map|obs|layer|tile", k, re.I):
-            print("    route:", k[:110])
-
-print("\n=== 3. the APIM gateway's portals ===")
-for path in ("devportal", "publisher", "store", "services", "api-docs",
-             "apis", "t/carbon.super/apis"):
-    get(f"/{path}", f"https://publicapi.envir.ee/{path}", show=180)
-for host in ("https://api.envir.ee/", "https://apim.envir.ee/",
-             "https://avaandmed.envir.ee/", "https://opendata.keskkonnaportaal.ee/"):
-    get(host, host, show=180)
+print("\n=== the S3 layer-id scheme: EE-CMP-CAP has siblings? ===")
+import datetime as dt  # noqa: E402
+now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=20)
+now = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+base = "https://s3.pilw.io/rp-kemit-ilm04/EE-radar"
+for lid in ("EE-CMP-CAP", "EE-HAR-CAP", "EE-SUR-CAP", "EE-SYR-CAP"):
+    for pat in ("{b}/{l}/{t:%Y%m%d%H%M}.png", "{b}/{l}-{t:%Y%m%d%H%M}.png",
+                "{b}/{l}_{t:%Y%m%d%H%M}.png",
+                "{b}/{t:%Y/%m/%d}/{l}-{t:%Y%m%d%H%M}.png"):
+        u = pat.format(b=base, l=lid, t=now)
+        try:
+            r = s.head(u, timeout=30, allow_redirects=True)
+            if r.status_code != 403 or lid == "EE-CMP-CAP":
+                print(f"  {r.status_code} {u[:110]}")
+        except Exception as e:
+            print(f"  FAIL {type(e).__name__} {u[:110]}")
