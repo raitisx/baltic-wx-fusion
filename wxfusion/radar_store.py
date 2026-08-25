@@ -513,7 +513,9 @@ def prune(src_days: int = SRC_KEEP_DAYS, frame_days: int = FRAME_KEEP_DAYS) -> d
 # These render every feed alone on the same canvas, per slot, so seeking the
 # debug page shows exactly which layer blinks and when (docs/radar_feeds.html).
 FEED_PREFIX = "maps/radar/feeds3059"
-FEED_ARCHIVE_KEY = "maps/radar/feeds.json"
+FEED_ARCHIVE_KEY = "maps/radar/feeds.json"          # the day rendered last
+FEED_DAY_PREFIX = "maps/radar/feeds"                # feeds/<YYYYMMDD>.json
+FEED_DAYS_KEY = "maps/radar/feeds/days.json"        # which days exist
 FEED_CODES = ("LV", "EE", "LT2", "SE", "FI",
               # Single radars, stored beside the national products:
               # FMI publishes one cappi per antenna, so Finland can be
@@ -781,14 +783,29 @@ def render_feeds(only_day: str, from_h: int | None = None,
 
     def flush():
         arch["slots"], arch["picked"] = slots, picked
-        s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_ARCHIVE_KEY,
-                      Body=json.dumps(arch).encode(),
+        body = json.dumps(arch).encode()
+        for key in (FEED_ARCHIVE_KEY, f"{FEED_DAY_PREFIX}/{only_day}.json"):
+            s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=body,
+                          ContentType="application/json",
+                          CacheControl="public, max-age=30")
+
+    def publish_days():
+        """The list of days that have been rendered, for the page's day nav."""
+        try:
+            days = set(json.loads(s3.get_object(
+                Bucket=config.R2_BUCKET, Key=FEED_DAYS_KEY)["Body"].read()))
+        except Exception:
+            days = set()
+        days.add(only_day)
+        s3.put_object(Bucket=config.R2_BUCKET, Key=FEED_DAYS_KEY,
+                      Body=json.dumps(sorted(days)).encode(),
                       ContentType="application/json",
                       CacheControl="public, max-age=30")
 
     # An empty index up front, so the page has something to read while the
     # rest of the day renders rather than failing on a missing key.
     flush()
+    publish_days()
     slot = lo
     while slot < hi:
         d = slot.date()
