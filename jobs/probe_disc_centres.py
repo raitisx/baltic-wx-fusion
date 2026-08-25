@@ -1,82 +1,82 @@
-"""Estonia has a public GeoServer — ask it what layers it has.
+"""ilm__cmp_cap over WCS: does Estonia hand out radar VALUES?
 
-The radar app's inline config names three of them:
-    https://ilmgs.envir.ee/geoserver/ilm/wms   ilm:cmp_cap, ilm:nowcasting,
-                                               ilm:uus_radar, ilm:ilm_alus_radar
-    https://gslightning.envir.ee/geoserver/lightning/wms
-    https://gsavalik.envir.ee/geoserver/baasandmed/wms
-plus an S3 PNG layer id "EE-CMP-CAP" under .../EE-radar/, which reads like a
-naming scheme with siblings.
-
-GetCapabilities lists everything a GeoServer serves, so this asks all three —
-WMS and WCS — for the full layer list, and reports anything whose name or
-abstract mentions a radar or a site. WCS matters as much as WMS: a coverage
-gives values, not a styled picture.
+Their GeoServer lists two coverages — ilm__cmp_cap (the composite CAPPI the
+app draws) and ilm__nowcasting. A coverage is not a picture: GetCoverage
+returns the grid itself, so if this works Estonia stops being a palette to
+match and becomes numbers to classify, like SMHI and FMI. Worth knowing
+exactly: the CRS and grid, whether there is a TIME axis, and what the values
+mean.
 """
+import io
 import re
 import sys
 
 sys.path.insert(0, ".")
 
+import numpy as np  # noqa: E402
+
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-GS = {"ilm": "https://ilmgs.envir.ee/geoserver",
-      "lightning": "https://gslightning.envir.ee/geoserver",
-      "avalik": "https://gsavalik.envir.ee/geoserver"}
-RADARISH = re.compile(r"radar|cap|dbz|sur|har|pikne|nowcast|opera|vol", re.I)
+OWS = "https://ilmgs.envir.ee/geoserver/ows"
+COV = "ilm__cmp_cap"
 
 
-def caps(tag, url):
+def get(tag, url, show=0):
     try:
         r = s.get(url, timeout=90)
-        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B  {url[:96]}")
-        return r if r.ok else None
+        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B  "
+              f"{r.headers.get('content-type','?')[:40]}")
+        print("    ", url[:150])
+        if show and r.ok and "xml" in r.headers.get("content-type", ""):
+            print("    ", re.sub(r"\s+", " ", r.text)[:show])
+        return r
     except Exception as e:
-        print(f"\n--- {tag}: FAIL {type(e).__name__}  {url[:96]}")
+        print(f"\n--- {tag}: FAIL {type(e).__name__}\n     {url[:150]}")
         return None
 
 
-for name, base in GS.items():
-    for svc, ver in (("WMS", "1.3.0"), ("WCS", "2.0.1"), ("WFS", "2.0.0")):
-        r = caps(f"{name} {svc}",
-                 f"{base}/ows?service={svc}&version={ver}"
-                 f"&request=GetCapabilities")
-        if r is None:
-            continue
-        if svc == "WMS":
-            layers = re.findall(r"<Name>([^<]+)</Name>", r.text)
-        elif svc == "WCS":
-            layers = re.findall(r"<wcs:CoverageId>([^<]+)</wcs:CoverageId>",
-                                r.text) or re.findall(
-                r"<CoverageId>([^<]+)</CoverageId>", r.text)
-        else:
-            layers = re.findall(r"<Name>([^<]+)</Name>", r.text)
-        layers = sorted(set(layers))
-        print(f"    {len(layers)} names")
-        hits = [n for n in layers if RADARISH.search(n)]
-        print("    radar-ish:", ", ".join(hits[:60]) or "none")
-        if name == "ilm" and svc == "WMS":
-            print("    ALL:", ", ".join(layers[:200]))
-        # titles/abstracts that mention a site by name
-        for m in re.finditer(r"(?is)<(?:Title|Abstract)>([^<]{4,160})</", r.text):
-            t = m.group(1)
-            if re.search(r"S[uü]rgavere|Harku|radar", t, re.I):
-                print("      says:", t.strip()[:150])
+r = get("DescribeCoverage",
+        f"{OWS}?service=WCS&version=2.0.1&request=DescribeCoverage"
+        f"&coverageId={COV}", show=3000)
 
-print("\n=== the S3 layer-id scheme: EE-CMP-CAP has siblings? ===")
-import datetime as dt  # noqa: E402
-now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=20)
-now = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
-base = "https://s3.pilw.io/rp-kemit-ilm04/EE-radar"
-for lid in ("EE-CMP-CAP", "EE-HAR-CAP", "EE-SUR-CAP", "EE-SYR-CAP"):
-    for pat in ("{b}/{l}/{t:%Y%m%d%H%M}.png", "{b}/{l}-{t:%Y%m%d%H%M}.png",
-                "{b}/{l}_{t:%Y%m%d%H%M}.png",
-                "{b}/{t:%Y/%m/%d}/{l}-{t:%Y%m%d%H%M}.png"):
-        u = pat.format(b=base, l=lid, t=now)
-        try:
-            r = s.head(u, timeout=30, allow_redirects=True)
-            if r.status_code != 403 or lid == "EE-CMP-CAP":
-                print(f"  {r.status_code} {u[:110]}")
-        except Exception as e:
-            print(f"  FAIL {type(e).__name__} {u[:110]}")
+# WMS side: what does GetCapabilities say about its time dimension?
+r2 = get("WMS caps (dimension)",
+         f"{OWS}?service=WMS&version=1.3.0&request=GetCapabilities")
+if r2 is not None and r2.ok:
+    for m in re.finditer(r"(?is)<Layer[^>]*>.{0,4000}?</Layer>", r2.text):
+        blob = m.group(0)
+        if "cmp_cap" in blob:
+            for d in re.finditer(r"(?is)<Dimension[^>]*>(.{0,400}?)</Dimension>",
+                                 blob):
+                print("    time dimension:", re.sub(r"\s+", " ",
+                                                    d.group(0))[:400])
+            break
+
+print("\n=== GetCoverage: fetch the grid itself ===")
+for fmt, ext in (("image/tiff", "tif"), ("application/gml+xml", "gml")):
+    rr = get(f"GetCoverage {fmt}",
+             f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
+             f"&coverageId={COV}&format={fmt}")
+    if rr is None or not rr.ok or ext != "tif":
+        continue
+    try:
+        import rasterio
+        with rasterio.open(io.BytesIO(rr.content)) as ds:
+            v = ds.read(1)
+            print(f"    {ds.width}x{ds.height} {v.dtype} {ds.crs} "
+                  f"px={abs(ds.transform.a):.0f}  nodata={ds.nodata}")
+            u, c = np.unique(v, return_counts=True)
+            print("    values:", [(int(a), int(b)) for a, b in
+                                  list(zip(u, c))[:12]], "...", len(u),
+                  "distinct")
+            print("    band count:", ds.count, " tags:",
+                  {k: val for k, val in list(ds.tags().items())[:8]})
+    except Exception as e:
+        print("    not readable:", type(e).__name__, e)
+
+print("\n=== and the WMS picture, for comparison ===")
+get("GetMap", f"{OWS}?service=WMS&version=1.1.1&request=GetMap"
+               f"&layers=ilm:cmp_cap&styles=&srs=EPSG:3301"
+               f"&bbox=300000,6350000,800000,6650000&width=500&height=300"
+               f"&format=image/png&transparent=true")
