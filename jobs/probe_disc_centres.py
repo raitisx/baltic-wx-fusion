@@ -62,3 +62,41 @@ for f in ee[::max(1, len(ee) // 8)][:8]:
 print("\nIf the product were Harku alone, the '>250 km from Harku' column "
       "would be ~0\nand the furthest painted pixel from Harku would sit at "
       "its range, ~245 km.")
+
+# ---- and the question that decides how to read all of it: is it CLIPPED?
+# Our canvas stops at 28.6E and 59.9N; the product's own image stops
+# wherever meteolapa cropped it. An arc that runs off either edge cannot be
+# fitted, which is exactly how one dish ends up looking like a clean disc
+# and the other like a merge.
+import io  # noqa: E402
+import math  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+from wxfusion import config  # noqa: E402
+
+print("\n=== clipping ===")
+f = ee[len(ee) // 2]
+(s_lat, s_lon), (n_lat, n_lon) = tuple(f["sw"]), tuple(f["ne"])
+print(f"product bounds  {s_lat:.3f}..{n_lat:.3f} N   {s_lon:.3f}..{n_lon:.3f} E")
+print(f"our canvas      {53.8:.3f}..{59.9:.3f} N   {20.0:.3f}..{28.6:.3f} E")
+for name, la, lo, rng in (("Harku", 59.398, 24.603, 245),
+                          ("Surgavere", 58.482, 25.519, 245)):
+    dlat = rng / 111.32
+    dlon = rng / (111.32 * math.cos(math.radians(la)))
+    print(f"  {name:10s} disc reaches {la - dlat:.2f}..{la + dlat:.2f} N  "
+          f"{lo - dlon:.2f}..{lo + dlon:.2f} E")
+    print(f"{'':13s}south arc {'INSIDE' if la - dlat > s_lat else 'CUT'} "
+          f"the product's own bottom edge ({s_lat:.2f} N), "
+          f"east arc {'inside' if lo + dlon < 28.6 else 'CUT'} our canvas")
+
+body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
+a = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
+pnt = a[..., 3] > 60
+H, W = pnt.shape
+edges = {"top": int(pnt[0].sum()), "bottom": int(pnt[-1].sum()),
+         "left": int(pnt[:, 0].sum()), "right": int(pnt[:, -1].sum())}
+print(f"\n  source image {W}x{H}, painted {int(pnt.sum()):,} px")
+print("  painted pixels touching each edge of the SOURCE image:", edges)
+print("  (a non-zero edge means the product itself is cut there)")
+
