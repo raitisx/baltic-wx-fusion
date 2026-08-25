@@ -669,17 +669,24 @@ def _render_feed_slot(s3, code, t, f, when):
 
     sites = _site_pixels_for(code, on_canvas=True) if code in SPLIT_FEEDS else []
     if len(sites) > 1:
-        # Each panel holds what lies within THAT antenna's range — not the
-        # half of the map it is nearest to. Nearest-antenna looks tidier but
-        # lies: Harku sees 240 km deep into Latvia, and a Voronoi split files
-        # that echo, range ring and all, under Surgavere. Panels therefore
-        # OVERLAP where the discs do, which is the truth about a composite —
-        # and a radar dropping out still empties the crescent only it covers.
+        # A panel holds the CRESCENT this antenna alone can see: inside its
+        # own range and outside every other antenna of the product.
+        #
+        # Neither of the obvious splits is honest about a composite. Nearest-
+        # antenna files Harku's echo 240 km into Latvia under Surgavere, range
+        # ring and all. Whole discs are true but overlap, so a pixel both
+        # dishes see appears twice and neither panel can be held to it. The
+        # crescent gives up the middle and keeps what is attributable — which
+        # is exactly what calibrating one radar against another needs, and
+        # what empties when that radar drops out.
         yy, xx = np.mgrid[0:P.H, 0:P.W]
-        for name, sx, sy in sites:
-            g = np.where(np.hypot(xx - sx, yy - sy) <= SPLIT_RANGE_KM,
-                         grid, 0).astype(grid.dtype)
-            out[name] = emit(g, name.replace(" ", "-"))
+        d = {name: np.hypot(xx - sx, yy - sy) for name, sx, sy in sites}
+        for name in d:
+            others = [v for k, v in d.items() if k != name]
+            only = (d[name] <= SPLIT_RANGE_KM) & np.all(
+                [o > SPLIT_RANGE_KM for o in others], axis=0)
+            out[name] = emit(np.where(only, grid, 0).astype(grid.dtype),
+                             name.replace(" ", "-"))
     elif sites:
         out[sites[0][0]] = out[code]
     return out
@@ -706,7 +713,7 @@ def _row_parts(code):
     if code in SPLIT_FEEDS:
         for name, _, _ in _site_pixels_for(code, on_canvas=True):
             parts.append({"key": name, "label": name.split(" ", 1)[-1],
-                          "what": "antenna, cut from the product by range"})
+                          "what": "crescent only this dish sees"})
     return parts
 
 

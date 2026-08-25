@@ -1,12 +1,22 @@
-"""ilm__cmp_cap works. Now: what are the numbers, and can we ask for a slice?
+"""How does Surgavere classify, judged only where Surgavere alone can see?
 
-DescribeCoverage says "Komposiit radari pilt", ImageMosaic, EPSG:3301,
-2844x2844 at 360 m, float32, nodata 65535, TIME every 5 minutes over the last
-~2 days. The full grid is 37 MB, which is no way to fetch a frame — so this
-checks the two things that decide whether Estonia can be read numerically:
-what the values mean, and whether a bbox + time subset works.
+The crescent is the attributable part of a composite: inside one dish's range
+and outside the other's. So this reads the Estonian product over a rainy
+window and asks three things of Surgavere's crescent —
+
+  1. what classes it puts there, against Harku's crescent on the same frames,
+  2. whether the classes fall off with range (the thing the range-graded
+     sensitivity is meant to correct), by 50 km rings from the dish,
+  3. how it compares with a NEIGHBOUR watching the same pixels from its own
+     side — Latvia and Lithuania cover much of Surgavere's crescent, Finland
+     covers Harku's — since one radar can only be called hot or cold against
+     another.
+
+Levels are the shared 0..96 ramp (6 classes x 16), so a level difference of
+16 is one whole class.
 """
 import base64
+import datetime as dt
 import io
 import sys
 
@@ -15,125 +25,141 @@ sys.path.insert(0, ".")
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from wxfusion.http import session  # noqa: E402
+from wxfusion import proj3059 as P, radar_store as R  # noqa: E402
+from wxfusion.scrape_maps import (SUB, draw_borders, lev_class,  # noqa: E402
+                                  pos_rain, ramp_lut)
 
-s = session()
-OWS = "https://ilmgs.envir.ee/geoserver/ows"
-COV = "ilm__cmp_cap"
-# our canvas in LEST-97 (EPSG:3301) — the Baltic bbox reprojected
-from pyproj import Transformer  # noqa: E402
+s3 = R.r2_client()
+DAY = dt.date(2026, 8, 24)
+LO, HI = 9, 17          # UTC hours to walk
+yy, xx = np.mgrid[0:P.H, 0:P.W]
 
-from wxfusion import proj3059 as P  # noqa: E402
-fwd = Transformer.from_crs("EPSG:3059", "EPSG:3301", always_xy=True)
-xs, ys = [], []
-for x in (P.X0, P.X1):
-    for y in (P.Y0, P.Y1):
-        a, b = fwd.transform(x, y)
-        xs.append(a)
-        ys.append(b)
-X0, X1, Y0, Y1 = min(xs), max(xs), min(ys), max(ys)
-print(f"our canvas in EPSG:3301: X {X0:.0f}..{X1:.0f}  Y {Y0:.0f}..{Y1:.0f}")
+sites = R._site_pixels_for("EE", on_canvas=True)
+D = {n: np.hypot(xx - sx, yy - sy) for n, sx, sy in sites}
+CRES = {}
+for n in D:
+    others = [v for k, v in D.items() if k != n]
+    CRES[n] = (D[n] <= R.SPLIT_RANGE_KM) & np.all(
+        [o > R.SPLIT_RANGE_KM for o in others], axis=0)
+for n, m in CRES.items():
+    print(f"{n:14s} crescent {int(m.sum()):6d} px")
+
+idx = R._load_index(s3, DAY)
+frames = {}
+for f in idx.get("frames", []):
+    t = dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=dt.timezone.utc)
+    if LO <= t.hour < HI:
+        frames.setdefault(f["code"], []).append((t, f))
 
 
-def fetch(tag, url):
-    try:
-        r = s.get(url, timeout=120)
-        print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B "
-              f"{r.headers.get('content-type','?')[:28]}")
-        if not r.ok:
-            import re as _re
-            body = _re.sub(r"\s+", " ", r.text)
-            for m in _re.finditer(r'exceptionCode="([^"]+)"|locator="([^"]+)"'
-                                  r'|<ows:ExceptionText>([^<]+)<', body):
-                print("     !", next(g for g in m.groups() if g)[:160])
-            return None
-        return r.content
-    except Exception as e:
-        print(f"\n--- {tag}: FAIL {type(e).__name__}")
+def nearest(code, when, tol=900):
+    best = None
+    for t, f in frames.get(code, []):
+        gap = abs((t - when).total_seconds())
+        if gap <= tol and (best is None or gap < best[0]):
+            best = (gap, t, f)
+    return best
+
+
+def stats(lev, mask):
+    v = lev[mask]
+    wet = v[v > 0]
+    if not wet.size:
         return None
+    cls = lev_class(wet)
+    hist = np.bincount(cls, minlength=7)[1:7]
+    return wet.size, float(np.median(wet)), hist
 
 
-import rasterio  # noqa: E402
-
-TIME = "2026-08-25T02:50:00.000Z"
-# The envelope reads axisLabels="Y X" with lowerCorner "5992826 40407", so
-# their X is the NORTHING and their Y the easting — the opposite way round
-# from the request I first sent, which is why every bbox came back as an
-# empty intersection. Try it both ways and keep whichever answers.
-AX = [("X", "Y", "swapped: X=northing"), ("Y", "X", "plain: X=easting")]
-print("\n=== which axis labels does it accept? ===")
-for ax, ay, note in AX:
-    # ax gets the NORTHING range, ay the easting range
-    u = (f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
-         f"&coverageId={COV}&format=image/tiff"
-         f"&subset={ax}({Y0:.0f},{Y1:.0f})&subset={ay}({X0:.0f},{X1:.0f})")
-    body = fetch(f"{note}", u)
-    if body:
-        with rasterio.open(io.BytesIO(body)) as ds:
-            print(f"    OK {ds.width}x{ds.height} {ds.crs} "
-                  f"px={abs(ds.transform.a):.0f} m")
-        AXIS = (ax, ay)
-        break
-else:
-    AXIS = ("X", "Y")
-
-print("\n=== and with a time slice ===")
-for tf in ('"{t}"', '{t}', '"2026-08-25T02:50:00Z"'):
-    t = tf.format(t=TIME)
-    body = fetch(f"time {t}",
-                 f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
-                 f"&coverageId={COV}&format=image/tiff"
-                 f"&subset={AXIS[0]}({Y0:.0f},{Y1:.0f})"
-                 f"&subset={AXIS[1]}({X0:.0f},{X1:.0f})"
-                 f"&subset=time({t})")
-    if body:
-        with rasterio.open(io.BytesIO(body)) as ds:
-            v = ds.read(1)
-            good = v[(v > -9000) & (v < 60000)]
-            wet = good[good > 0]
-            print(f"    OK {ds.width}x{ds.height} px={abs(ds.transform.a):.0f} m"
-                  f"  valid {good.size:,}  wet {wet.size:,}")
+print(f"\n=== {DAY} {LO:02d}-{HI:02d}Z, Estonia by crescent ===")
+print(f"{'slot':6s} {'Surgavere wet/med/classes':44s} {'Harku wet/med/classes'}")
+rings, ring_lab = {}, [(0, 50), (50, 100), (100, 150), (150, 200), (200, 250)]
+pairs = {}
+shot = None
+for hh in range(LO, HI):
+    for mm in (0, 30):
+        when = dt.datetime(DAY.year, DAY.month, DAY.day, hh, mm,
+                           tzinfo=dt.timezone.utc)
+        got = nearest("EE", when)
+        if not got:
+            continue
+        _, t, f = got
+        try:
+            lev, _ = R._feed_grid(s3, "EE", f)
+        except Exception as e:
+            print(f"{hh:02d}:{mm:02d}  load failed {type(e).__name__}")
+            continue
+        line = []
+        for n in ("EE Surgavere", "EE Harku"):
+            st = stats(lev, CRES[n])
+            line.append("-" if st is None else
+                        f"{st[0]:6d} med{st[1]:5.1f} " + "/".join(
+                            str(int(c)) for c in st[2]))
+        print(f"{hh:02d}:{mm:02d}  {line[0]:44s} {line[1]}")
+        # range rings inside Surgavere's crescent
+        m = CRES["EE Surgavere"]
+        for lo_, hi_ in ring_lab:
+            r = m & (D["EE Surgavere"] >= lo_) & (D["EE Surgavere"] < hi_)
+            v = lev[r]
+            wet = v[v > 0]
             if wet.size:
-                import numpy as _np
-                print("    wet percentiles 5/50/95/99:",
-                      [f"{x:.2f}" for x in
-                       _np.percentile(wet, [5, 50, 95, 99])],
-                      f" max {wet.max():.2f}")
-        break
+                rings.setdefault((lo_, hi_), []).append(
+                    (wet.size, float(np.median(wet)), int(r.sum())))
+        # neighbours over the same crescent
+        for code, who in (("LV", "EE Surgavere"), ("LT2", "EE Surgavere"),
+                          ("FI", "EE Harku")):
+            g2 = nearest(code, when)
+            if not g2:
+                continue
+            try:
+                lev2, _ = R._feed_grid(s3, code, g2[2])
+            except Exception:
+                continue
+            both = CRES[who] & (lev > 0) & (lev2 > 0)
+            if int(both.sum()) < 200:
+                continue
+            a = pos_rain((lev[both].astype(float) - 0.5) / 96)
+            b = pos_rain((lev2[both].astype(float) - 0.5) / 96)
+            pairs.setdefault((who, code), []).append(
+                (int(both.sum()), float(np.median(a) / max(1e-6,
+                                                           np.median(b)))))
+        if shot is None and stats(lev, CRES["EE Surgavere"]):
+            shot = (t, lev.copy())
 
-for tag, url in (
-    ("subset bbox",
-     f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage&coverageId={COV}"
-     f"&format=image/tiff"
-     f"&subset=X({X0:.0f},{X1:.0f})&subset=Y({Y0:.0f},{Y1:.0f})"),
-    ("subset bbox + time",
-     f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage&coverageId={COV}"
-     f"&format=image/tiff"
-     f"&subset=X({X0:.0f},{X1:.0f})&subset=Y({Y0:.0f},{Y1:.0f})"
-     f"&subset=time(\"{TIME}\")"),
-):
-    body = fetch(tag, url)
-    if not body:
+print("\n=== inside Surgavere's crescent, by range from the dish ===")
+for key in ring_lab:
+    v = rings.get(key)
+    if not v:
+        print(f"  {key[0]:3d}-{key[1]:3d} km: nothing")
         continue
-    with rasterio.open(io.BytesIO(body)) as ds:
-        v = ds.read(1)
-        good = v[(v > -9000) & (v < 60000)]
-        print(f"    {ds.width}x{ds.height} {v.dtype} {ds.crs} "
-              f"px={abs(ds.transform.a):.0f} m")
-        if good.size:
-            wet = good[good > 0]
-            print(f"    valid {good.size:,} px  min {good.min():.2f} "
-                  f"max {good.max():.2f}  zeros {(good == 0).sum():,}")
-            if wet.size:
-                q = np.percentile(wet, [5, 25, 50, 75, 95, 99])
-                print("    non-zero percentiles 5/25/50/75/95/99:",
-                      [f"{x:.2f}" for x in q], f"  n={wet.size:,}")
-        if tag.endswith("time"):
-            g = np.clip((v - 0) / max(1e-3, float(good.max() if good.size else 1)),
-                        0, 1)
-            g = np.where((v > -9000) & (v < 60000), g, 0)
-            im = Image.fromarray((255 - g * 255).astype(np.uint8), "L")
-            im.thumbnail((760, 760))
-            buf = io.BytesIO()
-            im.save(buf, "PNG", optimize=True)
-            print("@@IMG:ee_wcs:" + base64.b64encode(buf.getvalue()).decode())
+    wet = sum(x[0] for x in v)
+    area = v[0][2]
+    med = float(np.median([x[1] for x in v]))
+    print(f"  {key[0]:3d}-{key[1]:3d} km: {area:6d} px of crescent, "
+          f"wet {wet / len(v):8.0f} px/frame ({100 * wet / len(v) / max(1, area):4.1f}%), "
+          f"median level {med:5.1f}  (class {int(lev_class(med))})")
+
+print("\n=== against a neighbour watching the same pixels ===")
+for (who, code), v in sorted(pairs.items()):
+    n = sum(x[0] for x in v)
+    ratio = float(np.median([x[1] for x in v]))
+    print(f"  {who:14s} vs {code:4s}: {len(v)} frames, {n:,} co-wet px, "
+          f"median rate ratio {ratio:5.2f}x  "
+          f"({'EE reads high' if ratio > 1.15 else 'EE reads low' if ratio < 0.87 else 'in line'})")
+
+if shot is not None:
+    t, lev = shot
+    rgba = ramp_lut(False)[np.clip(lev, 0, 96).astype(np.uint8)]
+    rgba = rgba.copy()
+    for n, col in (("EE Surgavere", (255, 90, 90)), ("EE Harku", (90, 160, 255))):
+        edge = CRES[n] ^ (np.roll(CRES[n], 1, 0) & np.roll(CRES[n], 1, 1))
+        rgba[edge] = (*col, 255)
+    im = Image.fromarray(np.ascontiguousarray(rgba, np.uint8), "RGBA")
+    draw_borders(im)
+    bg = Image.new("RGB", im.size, (247, 245, 239))
+    bg.paste(im, (0, 0), im)
+    buf = io.BytesIO()
+    bg.save(buf, "PNG", optimize=True)
+    print(f"\nframe shown: {t:%H:%M}Z")
+    print("@@IMG:crescents:" + base64.b64encode(buf.getvalue()).decode())
