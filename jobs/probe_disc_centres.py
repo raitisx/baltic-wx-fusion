@@ -41,7 +41,11 @@ def fetch(tag, url):
         print(f"\n--- {tag}: {r.status_code} {len(r.content):,}B "
               f"{r.headers.get('content-type','?')[:28]}")
         if not r.ok:
-            print("    ", r.text[:300].replace("\n", " "))
+            import re as _re
+            body = _re.sub(r"\s+", " ", r.text)
+            for m in _re.finditer(r'exceptionCode="([^"]+)"|locator="([^"]+)"'
+                                  r'|<ows:ExceptionText>([^<]+)<', body):
+                print("     !", next(g for g in m.groups() if g)[:160])
             return None
         return r.content
     except Exception as e:
@@ -52,6 +56,46 @@ def fetch(tag, url):
 import rasterio  # noqa: E402
 
 TIME = "2026-08-25T02:50:00.000Z"
+AX = [("X", "Y"), ("Long", "Lat"), ("E", "N"), ("i", "j")]
+print("\n=== which axis labels does it accept? ===")
+for ax, ay in AX:
+    u = (f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
+         f"&coverageId={COV}&format=image/tiff"
+         f"&subset={ax}({X0:.0f},{X1:.0f})&subset={ay}({Y0:.0f},{Y1:.0f})")
+    body = fetch(f"axes {ax}/{ay}", u)
+    if body:
+        with rasterio.open(io.BytesIO(body)) as ds:
+            print(f"    OK {ds.width}x{ds.height} {ds.crs} "
+                  f"px={abs(ds.transform.a):.0f} m")
+        AXIS = (ax, ay)
+        break
+else:
+    AXIS = ("X", "Y")
+
+print("\n=== and with a time slice ===")
+for tf in ('"{t}"', '{t}', '"2026-08-25T02:50:00Z"'):
+    t = tf.format(t=TIME)
+    body = fetch(f"time {t}",
+                 f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
+                 f"&coverageId={COV}&format=image/tiff"
+                 f"&subset={AXIS[0]}({X0:.0f},{X1:.0f})"
+                 f"&subset={AXIS[1]}({Y0:.0f},{Y1:.0f})"
+                 f"&subset=time({t})")
+    if body:
+        with rasterio.open(io.BytesIO(body)) as ds:
+            v = ds.read(1)
+            good = v[(v > -9000) & (v < 60000)]
+            wet = good[good > 0]
+            print(f"    OK {ds.width}x{ds.height} px={abs(ds.transform.a):.0f} m"
+                  f"  valid {good.size:,}  wet {wet.size:,}")
+            if wet.size:
+                import numpy as _np
+                print("    wet percentiles 5/50/95/99:",
+                      [f"{x:.2f}" for x in
+                       _np.percentile(wet, [5, 50, 95, 99])],
+                      f" max {wet.max():.2f}")
+        break
+
 for tag, url in (
     ("subset bbox",
      f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage&coverageId={COV}"
