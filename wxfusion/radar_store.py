@@ -693,27 +693,27 @@ def _render_feed_slot(s3, code, t, f, when):
     out[f"{code} source"] = stag
 
     sites = _split_sites(code) if code in SPLIT_FEEDS else []
-    if len(sites) > 1:
-        # A panel holds the CRESCENT this antenna alone can see: inside its
-        # own range and outside every other antenna of the product.
+    if len(sites) > 0:
+        # A panel holds the DISC: the part of the product within range of this
+        # dish. Nothing more is claimable, and the two tidier-looking rules
+        # are both worse.
         #
-        # Neither of the obvious splits is honest about a composite. Nearest-
-        # antenna files Harku's echo 240 km into Latvia under Surgavere, range
-        # ring and all. Whole discs are true but overlap, so a pixel both
-        # dishes see appears twice and neither panel can be held to it. The
-        # crescent gives up the middle and keeps what is attributable — which
-        # is exactly what calibrating one radar against another needs, and
-        # what empties when that radar drops out.
+        # Nearest-antenna files Harku's echo 240 km into Latvia under
+        # Surgavere, range ring and all. The crescent — inside this dish and
+        # outside the others — cuts out everything both can see, and since
+        # Laukuva and Vilnius sit 222 km apart with ~250 km reach each, that
+        # is the whole middle of Lithuania: it left a country-sized hole in
+        # both panels that looked like missing data and was not. Estonia is
+        # worse still, its dishes 105 km apart, so Harku's crescent was a rim
+        # over the gulf.
+        #
+        # Discs overlap, and that is the truth about a composite: where two
+        # radars both see, the product is a merge and no panel owns it.
         yy, xx = np.mgrid[0:P.H, 0:P.W]
-        d = {name: np.hypot(xx - sx, yy - sy) for name, sx, sy in sites}
-        for name in d:
-            others = [v for k, v in d.items() if k != name]
-            only = (d[name] <= SPLIT_RANGE_KM) & np.all(
-                [o > SPLIT_RANGE_KM for o in others], axis=0)
-            out[name] = emit(np.where(only, grid, 0).astype(grid.dtype),
+        for name, sx, sy in sites:
+            near = np.hypot(xx - sx, yy - sy) <= SPLIT_RANGE_KM
+            out[name] = emit(np.where(near, grid, 0).astype(grid.dtype),
                              name.replace(" ", "-"))
-    elif sites:
-        out[sites[0][0]] = out[code]
     return out
 
 
@@ -738,7 +738,8 @@ def _row_parts(code):
     if code in SPLIT_FEEDS:
         for name, _, _ in _split_sites(code):
             parts.append({"key": name, "label": name.split(" ", 1)[-1],
-                          "what": "cut from the product by range"})
+                          "what": f"product within {SPLIT_RANGE_KM:.0f} km "
+                                  f"of this dish \u2014 overlaps the others"})
     return parts
 
 
