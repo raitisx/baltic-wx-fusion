@@ -2039,6 +2039,29 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
 # middle anchor. The nordic feeds carry their calibration in their decode
 # (radar_nordic: SMHI_DBZ_ADJ / FMI_RATE_DIV) — never scale them here.
 CAL_LEV_FACTOR = {"EE": 2.25, "LT2": 1.67, "LT": 1.67, "LV": 1.67}
+# Estonia's x2.25 is the crudest of these, and it is crude because the source
+# is a picture: a meteolapa EE frame holds EIGHT distinct RGBA values, so its
+# intensity arrives as ~6 colour steps and everything between them is our
+# invention (hue-placed pixels sit at the middle of their class).
+#
+# There IS a numeric Estonian source, found 25.08.2026 and deliberately not
+# wired up — recorded here so the search does not have to happen twice:
+#
+#   https://ilmgs.envir.ee/geoserver/ows?service=WCS&version=2.0.1
+#     &request=GetCoverage&coverageId=ilm__cmp_cap&format=image/tiff
+#     &subset=X(<northing lo>,<hi>)&subset=Y(<easting lo>,<hi>)
+#     &subset=time("2026-08-25T02:50:00.000Z")
+#
+# float32 on EPSG:3301 at 360 m, 5-min TIME axis reaching ~2 days back,
+# ~2,700 distinct values per frame against the palette's 8. Note the axis
+# labels are reversed from the obvious reading — their X is the northing —
+# which is why a sane-looking bbox returns "empty intersection".
+#
+# Why it was left alone: it is the same Harku+Surgavere COMPOSITE we already
+# have, so it separates nothing, and at 360 m against the palette's ~480 m it
+# is no more detailed than what we draw at 1 km. The only real gain is honest
+# intensity in place of this factor — worth doing the day EE's calibration
+# matters more than the work, and not before.
 
 
 def _calibrate_lev(lev, feed):
