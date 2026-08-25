@@ -826,6 +826,18 @@ def _feed_site_names(feed: str | None) -> tuple[str, ...]:
     return tuple(n for n, _, _ in RADAR_SITES if n.startswith((feed or "")[:2]))
 
 
+# Draw order IS weight. The canvas is alpha-composited in this sequence, so a
+# feed listed later covers every feed before it wherever both have echo — the
+# last one to paint a pixel owns it.
+#
+# Estonia is deliberately at the bottom, measured 22.08.2026 over 16 slots:
+# SE, FI and LT2 agree with each other within 3-6% on hundreds of thousands
+# of co-wet pixels, and Estonia reads 1.18x against SE, 1.73x against FI and
+# 2.08x against LT2 — a bias that is not even constant, because its intensity
+# arrives as ~6 palette steps pinned to class midpoints. So the Estonian
+# mosaic now shows only where nothing better covers the pixel.
+DRAW_ORDER = ("EE", "SE", "FI", "LT2", "LT", "LV")
+
 RADIAL_TOL_KM = 20      # how close the beam's line must pass to the antenna
 RADAR_RANGE_KM = 320    # beyond this a site cannot be the source
 
@@ -2039,6 +2051,18 @@ def _repair_beams_source(lev: np.ndarray, feed: str | None, sw, ne):
 # middle anchor. The nordic feeds carry their calibration in their decode
 # (radar_nordic: SMHI_DBZ_ADJ / FMI_RATE_DIV) — never scale them here.
 CAL_LEV_FACTOR = {"EE": 2.25, "LT2": 1.67, "LT": 1.67, "LV": 1.67}
+# NOT a source of calibration: the Surgavere crescent. Cutting the Estonian
+# composite at 250 km does not separate its two radars — the product's echo
+# reaches 307-374 km from Harku (measured 22.08.2026 on every wet sweep), so
+# Harku fills most of the crescent that carries Surgavere's name, and the
+# region pulsates frame to frame. Numbers taken there describe a patch of the
+# merged mosaic. Calibrate Estonia against neighbours over the WHOLE product,
+# or wait for per-radar volumes.
+#
+# Where the ring does agree: SE, FI and LT2 sit within 3-6% of each other on
+# 22.08 (FI/SE 1.05x near field, LT2/SE 1.03x), and against that trio Latvia
+# reads about 2x high (LT2/LV 0.48x, 0.52x near field) — its 1.67 above is
+# the next thing to revisit.
 # Estonia's x2.25 is the crudest of these, and it is crude because the source
 # is a picture: a meteolapa EE frame holds EIGHT distinct RGBA values, so its
 # intensity arrives as ~6 colour steps and everything between them is our
@@ -2598,14 +2622,18 @@ def radar_composite(frames_back: int = 3) -> None:
     # once four feeds are composited the pixels are blended.
     newest = None
     layers = []
-    # Neighbour feeds first, so the Baltic products draw over them where both
-    # have data. Best-effort: a neighbour outage never touches the composite.
+    # Best-effort: a neighbour outage never touches the composite. Where they
+    # land in the stack is DRAW_ORDER's business, not fetch order's — the
+    # layers are sorted into it before anything is drawn.
     try:
         from . import radar_nordic
         layers += radar_nordic.live_layers(s3)
     except Exception:
         log.exception("nordic feeds skipped")
-    for code, frames in sorted(by_code.items()):  # EE first, LV drawn on top
+    for code in DRAW_ORDER:                  # trust order, see DRAW_ORDER
+        frames = by_code.get(code)
+        if not frames:
+            continue
         use = frames[:frames_back]
         if not use:
             continue
@@ -2634,6 +2662,11 @@ def radar_composite(frames_back: int = 3) -> None:
     # Recolor once every feed is in, so the weak-echo fade knows which radars
     # are awake this frame (coverage-aware — see _weak_alpha_aware).
     act = active_feeds(layers)
+    # Sort the whole stack — nordic feeds arrive first from live_layers, the
+    # meteolapa ones are appended after, and neither order is the one that
+    # should decide who owns a shared pixel.
+    layers.sort(key=lambda cg: DRAW_ORDER.index(cg[0])
+                if cg[0] in DRAW_ORDER else len(DRAW_ORDER))
     for code, cur in layers:
         canvas.alpha_composite(_recolor(cur, cold, code, act))
 
