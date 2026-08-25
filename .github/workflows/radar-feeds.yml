@@ -11,6 +11,9 @@ on:
       to_h:
         description: "End UTC hour, exclusive (blank = end of day)"
         default: ""
+      tail:
+        description: "Instead of a day: top up the last N hours (e.g. 1.5)"
+        default: ""
 jobs:
   feeds:
     runs-on: ubuntu-latest
@@ -32,4 +35,5 @@ jobs:
           RADAR_FEEDS_DAY: ${{ github.event.inputs.day || '20260822' }}
           RADAR_FEEDS_FROM: ${{ github.event.inputs.from_h }}
           RADAR_FEEDS_TO: ${{ github.event.inputs.to_h }}
+          RADAR_FEEDS_TAIL: ${{ github.event.inputs.tail }}
         run: python jobs/run_radar_feeds.py
