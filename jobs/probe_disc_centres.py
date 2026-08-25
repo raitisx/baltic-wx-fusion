@@ -1,12 +1,14 @@
-"""Estonia, harder: what does their radar app actually call?
+"""Estonia, closer in: read the radar app's inline config verbatim.
 
-The tile server carries one layer (cmp_cap) and the S3 bucket refuses to
-list, but the app must ask something for the list of available frames — and
-publicapi.envir.ee answers (404s with XML, so the host is real). This pulls
-the radar page's own scripts and reads the endpoints out of them, enumerates
-that API, tries the bucket under its other S3 spellings, and walks the tile
-server from the root rather than from /tiles/ilm.
+The tiles URL and the S3 bucket both came from the radar page's own inline
+JavaScript, so that config is where the app's data endpoints live — how it
+lists available frames, what layers it can switch between, and whether any
+of them is a single radar. This dumps the config around those anchors, lists
+the WordPress REST routes (the site's own API surface), and knocks on the
+WSO2 gateway's developer portal, which is where an APIM host publishes what
+it actually serves.
 """
+import json
 import re
 import sys
 
@@ -15,78 +17,51 @@ sys.path.insert(0, ".")
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-RADAR_PAGE = "https://www.ilmateenistus.ee/ilm/ilmavaatlused/radar/"
+PAGE = "https://www.ilmateenistus.ee/ilm/ilmavaatlused/radar/"
 
 
-def get(tag, url, show=0, headers=None):
+def get(tag, url, show=0, **kw):
     try:
-        r = s.get(url, timeout=45, headers=headers or {})
-        ct = r.headers.get("content-type", "?")[:26]
-        print(f"  {tag:34s} {r.status_code} {len(r.content):>9,d}B {ct}  {url[:92]}")
+        r = s.get(url, timeout=45, **kw)
+        print(f"  {tag:32s} {r.status_code} {len(r.content):>9,d}B  "
+              f"{r.headers.get('content-type','?')[:24]}  {url[:88]}")
         if show and r.ok:
-            print("       ", r.text[:show].replace("\n", " ")[:show])
+            print("       ", r.text[:show].replace("\n", " "))
         return r
     except Exception as e:
-        print(f"  {tag:34s} FAIL {type(e).__name__}  {url[:92]}")
+        print(f"  {tag:32s} FAIL {type(e).__name__}  {url[:88]}")
         return None
 
 
-print("=== 1. the radar page's own scripts, read for endpoints ===")
-r = get("radar page", RADAR_PAGE)
-srcs = []
+print("=== 1. the inline config, verbatim around each anchor ===")
+r = get("radar page", PAGE)
 if r is not None and r.ok:
-    srcs = [u if u.startswith("http") else "https://www.ilmateenistus.ee" + u
-            for u in re.findall(r'<script[^>]+src="([^"]+)"', r.text)]
-    # inline config too
-    for m in re.finditer(r"(?s)<script[^>]*>(.{0,20000}?)</script>", r.text):
-        blob = m.group(1)
-        if re.search(r"radar|cmp_cap|tiles", blob, re.I):
-            for hit in sorted({h for h in re.findall(
-                    r'["\'](/[a-z0-9_\-/\.]{4,80}|https?://[^"\'\s]{8,110})["\']',
-                    blob, re.I)
-                    if re.search(r"radar|tile|api|json|time|ilm", h, re.I)}):
-                print("     inline:", hit[:110])
-print(f"   {len(srcs)} script files")
-for u in srcs:
-    rr = s.get(u, timeout=45)
-    if not rr.ok:
-        continue
-    hits = sorted({h for h in re.findall(
-        r'["\'](/[a-z0-9_\-/\.]{4,90}|https?://[^"\'\s]{8,120})["\']',
-        rr.text, re.I)
-        if re.search(r"radar|cmp_cap|tiles|timestamp|/api/|\.json", h, re.I)})
-    if hits:
-        print(f"   {u.rsplit('/', 1)[-1][:44]}:")
-        for h in hits[:25]:
-            print("       ", h[:115])
+    txt = r.text
+    for anchor in ("cmp_cap", "EE-radar", "pilw.io", "ilmtiles",
+                   "radarSettings", "layers", "timestamps"):
+        for m in list(re.finditer(re.escape(anchor), txt))[:2]:
+            a, b = max(0, m.start() - 700), min(len(txt), m.end() + 700)
+            blob = re.sub(r"\s+", " ", txt[a:b])
+            print(f"\n  --- {anchor} @ {m.start()} ---")
+            print("   ", blob[:1400])
 
-print("\n=== 2. publicapi.envir.ee — the host answers, so enumerate it ===")
-for path in ("", "v1", "v1/", "swagger", "swagger/index.html", "openapi.json",
-             "swagger/v1/swagger.json", "v1/radar", "v1/radars",
-             "v1/radarData", "v1/precipitation", "api", "api/v1/radar"):
-    get(f"publicapi /{path}", f"https://publicapi.envir.ee/{path}", show=220)
+print("\n\n=== 2. the site's own REST routes ===")
+r = get("wp-json index", "https://www.ilmateenistus.ee/wp-json/")
+if r is not None and r.ok:
+    try:
+        routes = json.loads(r.text).get("routes", {})
+    except Exception:
+        routes = {}
+    print(f"   {len(routes)} routes; namespaces:",
+          ", ".join(sorted({k.strip('/').split('/')[0] for k in routes})[:30]))
+    for k in sorted(routes):
+        if re.search(r"radar|ilm|kaart|map|obs|layer|tile", k, re.I):
+            print("    route:", k[:110])
 
-print("\n=== 3. the bucket, under its other spellings ===")
-for tag, url in (
-        ("path-style v1", "https://s3.pilw.io/rp-kemit-ilm04?prefix=EE-radar/"
-                          "&max-keys=40"),
-        ("vhost-style", "https://rp-kemit-ilm04.s3.pilw.io/?list-type=2"
-                        "&prefix=EE-radar/&max-keys=40"),
-        ("vhost root", "https://rp-kemit-ilm04.s3.pilw.io/"),
-        ("prefix as page", "https://s3.pilw.io/rp-kemit-ilm04/EE-radar/"),
-):
-    get(tag, url, show=300)
-
-print("\n=== 4. the tile server from its root ===")
-for path in ("", "tiles/", "tiles/ilm/", "tiles/radar/", "tiles/ilm2/"):
-    rr = get(f"ilmtiles /{path}", f"https://ilmtiles.envir.ee/{path}")
-    if rr is not None and rr.ok:
-        names = sorted(set(re.findall(r'<a href="([^"?][^"]*)"', rr.text)))
-        print("       entries:", ", ".join(n[:30] for n in names[:40]))
-
-print("\n=== 5. the national open-data portal's search API ===")
-for url in ("https://avaandmed.eesti.ee/api/datasets?limit=5&q=radar",
-            "https://avaandmed.eesti.ee/api/public/datasets?q=radar",
-            "https://avaandmed.eesti.ee/api/datasets/search?query=radar"):
-    get("avaandmed", url, show=300,
-        headers={"Accept": "application/json"})
+print("\n=== 3. the APIM gateway's portals ===")
+for path in ("devportal", "publisher", "store", "services", "api-docs",
+             "apis", "t/carbon.super/apis"):
+    get(f"/{path}", f"https://publicapi.envir.ee/{path}", show=180)
+for host in ("https://api.envir.ee/", "https://apim.envir.ee/",
+             "https://avaandmed.envir.ee/", "https://opendata.keskkonnaportaal.ee/"):
+    get(host, host, show=180)
