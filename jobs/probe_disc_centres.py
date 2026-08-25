@@ -56,13 +56,18 @@ def fetch(tag, url):
 import rasterio  # noqa: E402
 
 TIME = "2026-08-25T02:50:00.000Z"
-AX = [("X", "Y"), ("Long", "Lat"), ("E", "N"), ("i", "j")]
+# The envelope reads axisLabels="Y X" with lowerCorner "5992826 40407", so
+# their X is the NORTHING and their Y the easting — the opposite way round
+# from the request I first sent, which is why every bbox came back as an
+# empty intersection. Try it both ways and keep whichever answers.
+AX = [("X", "Y", "swapped: X=northing"), ("Y", "X", "plain: X=easting")]
 print("\n=== which axis labels does it accept? ===")
-for ax, ay in AX:
+for ax, ay, note in AX:
+    # ax gets the NORTHING range, ay the easting range
     u = (f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
          f"&coverageId={COV}&format=image/tiff"
-         f"&subset={ax}({X0:.0f},{X1:.0f})&subset={ay}({Y0:.0f},{Y1:.0f})")
-    body = fetch(f"axes {ax}/{ay}", u)
+         f"&subset={ax}({Y0:.0f},{Y1:.0f})&subset={ay}({X0:.0f},{X1:.0f})")
+    body = fetch(f"{note}", u)
     if body:
         with rasterio.open(io.BytesIO(body)) as ds:
             print(f"    OK {ds.width}x{ds.height} {ds.crs} "
@@ -78,8 +83,8 @@ for tf in ('"{t}"', '{t}', '"2026-08-25T02:50:00Z"'):
     body = fetch(f"time {t}",
                  f"{OWS}?service=WCS&version=2.0.1&request=GetCoverage"
                  f"&coverageId={COV}&format=image/tiff"
-                 f"&subset={AXIS[0]}({X0:.0f},{X1:.0f})"
-                 f"&subset={AXIS[1]}({Y0:.0f},{Y1:.0f})"
+                 f"&subset={AXIS[0]}({Y0:.0f},{Y1:.0f})"
+                 f"&subset={AXIS[1]}({X0:.0f},{X1:.0f})"
                  f"&subset=time({t})")
     if body:
         with rasterio.open(io.BytesIO(body)) as ds:
