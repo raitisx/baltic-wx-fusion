@@ -30,7 +30,7 @@ from wxfusion.scrape_maps import (SUB, draw_borders, lev_class,  # noqa: E402
                                   pos_rain, ramp_lut)
 
 s3 = R.r2_client()
-DAY = dt.date(2026, 8, 24)
+DAY = dt.date(2026, 8, 22)     # the storm day: 24.08 was dry, 7 wet px a frame
 LO, HI = 9, 17          # UTC hours to walk
 yy, xx = np.mgrid[0:P.H, 0:P.W]
 
@@ -117,7 +117,7 @@ for hh in range(LO, HI):
             except Exception:
                 continue
             both = CRES[who] & (lev > 0) & (lev2 > 0)
-            if int(both.sum()) < 200:
+            if int(both.sum()) < 100:
                 continue
             a = pos_rain((lev[both].astype(float) - 0.5) / 96)
             b = pos_rain((lev2[both].astype(float) - 0.5) / 96)
