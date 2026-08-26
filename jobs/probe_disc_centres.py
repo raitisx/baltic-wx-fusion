@@ -1,102 +1,68 @@
-"""Is Estonia's product one Harku disc, or Harku plus Surgavere?
+"""How far back do the per-radar archives actually go?
 
-The user recalls Harku appearing as a clean separate disc while Surgavere
-looked merged — and the arc fitting agrees: the strongest circle on nine of
-ten frames was Harku-centred, Surgavere-centred only once. If the product is
-in fact Harku alone, then the "Surgavere crescent" is empty by construction
-and every number measured in it is meaningless.
-
-That is decidable from the painted extent, not from where the rain happens to
-be. For each sweep this counts the product's painted pixels that:
-  - lie inside 250 km of Harku (Harku alone could explain them),
-  - lie OUTSIDE 250 km of Harku (only Surgavere can),
-  - lie outside 250 km of Surgavere (only Harku can),
-and reports the furthest painted pixel from each dish.
+Backfilling 22.08 stored nothing: FMI listed 67 sweeps for each radar and
+none landed in a slot, SMHI listed no volumes at all. Both need the same
+question answered — what is IN the listing for a given day, by stamp.
 """
 import datetime as dt
 import sys
 
 sys.path.insert(0, ".")
 
-import numpy as np  # noqa: E402
+from wxfusion import radar_nordic as N  # noqa: E402
 
-from wxfusion import proj3059 as P, radar_store as R  # noqa: E402
+s = N.session()
+today = dt.datetime.now(dt.timezone.utc).date()
+days = [today - dt.timedelta(days=k) for k in range(0, 6)]
 
-s3 = R.r2_client()
-DAY = dt.date(2026, 8, 22)
-yy, xx = np.mgrid[0:P.H, 0:P.W]
-D = {n: np.hypot(xx - sx, yy - sy)
-     for n, sx, sy in R._site_pixels_for("EE", on_canvas=True)}
-HAR, SUR = D["EE Harku"], D["EE Surgavere"]
-print("sites:", {n: (round(float(v.min()), 1)) for n, v in D.items()},
-      "(min distance on canvas)")
+print("=== FMI per-radar cappi (S3 mirror), site fikor ===")
+for d in days:
+    ent = N._fmi_site_entries(s, d, "fikor")
+    if ent:
+        first, last = ent[0][0], ent[-1][0]
+        gaps = [(ent[i + 1][0] - ent[i][0]).total_seconds() / 60
+                for i in range(len(ent) - 1)]
+        med = sorted(gaps)[len(gaps) // 2] if gaps else 0
+        print(f"  {d}  {len(ent):4d} sweeps  {first:%H:%M}..{last:%H:%M}Z  "
+              f"median gap {med:.0f} min")
+    else:
+        print(f"  {d}  none")
 
-idx = R._load_index(s3, DAY)
-ee = sorted((f for f in idx.get("frames", [])
-             if f.get("code") == "EE" and not f.get("grid3059")),
-            key=lambda f: f["time"])
-print(f"{len(ee)} EE sweeps stored on {DAY}\n")
-print(f"{'sweep':6s} {'painted':>9s} {'>250km from Harku':>19s} "
-      f"{'>250 from Surgavere':>21s} {'furthest: Harku':>17s} {'Surgavere':>11s}")
+print("\n=== FMI: is it the listing or the pagination? (raw key count) ===")
+for d in (days[0], days[-1]):
+    r = s.get(f"{N.FMI_S3}/?list-type=2&max-keys=1000"
+              f"&prefix={d:%Y/%m/%d}/fikor/", timeout=60)
+    import re
+    keys = re.findall(r"<Key>([^<]+)</Key>", r.text)
+    trunc = "<IsTruncated>true</IsTruncated>" in r.text
+    kinds = {}
+    for k in keys:
+        kinds[k.rsplit("_", 2)[-2] + "_" + k.rsplit("_", 1)[-1]] = \
+            kinds.get(k.rsplit("_", 2)[-2] + "_" + k.rsplit("_", 1)[-1], 0) + 1
+    print(f"  {d}  HTTP {r.status_code}  {len(keys)} keys  truncated={trunc}")
+    for kind, n in sorted(kinds.items(), key=lambda x: -x[1])[:6]:
+        print(f"       {n:4d}  ...{kind}")
 
-for f in ee[::max(1, len(ee) // 8)][:8]:
+print("\n=== SMHI per-radar volumes (qcvol), area hemse ===")
+for d in days:
+    url = f"{N.SMHI_SITE_API.format(site='hemse')}/{d:%Y/%m/%d}"
     try:
-        _, raw = R._feed_grid(s3, "EE", f)
+        r = s.get(url, timeout=45)
+        files = (r.json().get("files") or []) if r.ok else []
+        print(f"  {d}  HTTP {r.status_code}  {len(files)} files"
+              + (f"  {files[0]['valid']}..{files[-1]['valid']}"
+                 if files else ""))
+        if not r.ok:
+            print(f"       {r.text[:160]}")
     except Exception as e:
-        print(f"  {f['time']}: {type(e).__name__}")
-        continue
-    if raw is None:
-        print(f"  {f['time']}: no raw kept")
-        continue
-    painted = raw[..., 3] > 60
-    n = int(painted.sum())
-    only_sur = int((painted & (HAR > 250)).sum())
-    only_har = int((painted & (SUR > 250)).sum())
-    fh = float(HAR[painted].max()) if n else 0
-    fs = float(SUR[painted].max()) if n else 0
-    t = f["time"][11:16]
-    print(f"{t:6s} {n:9,d} {only_sur:12,d} ({100 * only_sur / max(1, n):4.1f}%)"
-          f" {only_har:13,d} ({100 * only_har / max(1, n):4.1f}%)"
-          f" {fh:14.0f} km {fs:8.0f} km")
+        print(f"  {d}  {type(e).__name__}: {e}")
 
-print("\nIf the product were Harku alone, the '>250 km from Harku' column "
-      "would be ~0\nand the furthest painted pixel from Harku would sit at "
-      "its range, ~245 km.")
-
-# ---- and the question that decides how to read all of it: is it CLIPPED?
-# Our canvas stops at 28.6E and 59.9N; the product's own image stops
-# wherever meteolapa cropped it. An arc that runs off either edge cannot be
-# fitted, which is exactly how one dish ends up looking like a clean disc
-# and the other like a merge.
-import io  # noqa: E402
-import math  # noqa: E402
-
-from PIL import Image  # noqa: E402
-
-from wxfusion import config  # noqa: E402
-
-print("\n=== clipping ===")
-f = ee[len(ee) // 2]
-(s_lat, s_lon), (n_lat, n_lon) = tuple(f["sw"]), tuple(f["ne"])
-print(f"product bounds  {s_lat:.3f}..{n_lat:.3f} N   {s_lon:.3f}..{n_lon:.3f} E")
-print(f"our canvas      {53.8:.3f}..{59.9:.3f} N   {20.0:.3f}..{28.6:.3f} E")
-for name, la, lo, rng in (("Harku", 59.398, 24.603, 245),
-                          ("Surgavere", 58.482, 25.519, 245)):
-    dlat = rng / 111.32
-    dlon = rng / (111.32 * math.cos(math.radians(la)))
-    print(f"  {name:10s} disc reaches {la - dlat:.2f}..{la + dlat:.2f} N  "
-          f"{lo - dlon:.2f}..{lo + dlon:.2f} E")
-    print(f"{'':13s}south arc {'INSIDE' if la - dlat > s_lat else 'CUT'} "
-          f"the product's own bottom edge ({s_lat:.2f} N), "
-          f"east arc {'inside' if lo + dlon < 28.6 else 'CUT'} our canvas")
-
-body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
-a = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
-pnt = a[..., 3] > 60
-H, W = pnt.shape
-edges = {"top": int(pnt[0].sum()), "bottom": int(pnt[-1].sum()),
-         "left": int(pnt[:, 0].sum()), "right": int(pnt[:, -1].sum())}
-print(f"\n  source image {W}x{H}, painted {int(pnt.sum()):,} px")
-print("  painted pixels touching each edge of the SOURCE image:", edges)
-print("  (a non-zero edge means the product itself is cut there)")
-
+print("\n=== SMHI: what does the product root say it holds? ===")
+r = s.get(N.SMHI_SITE_API.format(site="hemse"), timeout=45)
+print(f"  HTTP {r.status_code}")
+if r.ok:
+    j = r.json()
+    print("  keys:", list(j)[:12])
+    for k in ("periods", "validTime", "totalArchive", "archive"):
+        if k in j:
+            print(f"  {k}: {str(j[k])[:400]}")
