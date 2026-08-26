@@ -1,11 +1,9 @@
-"""Is the straight edge in the SE panel theirs, or ours?
+"""Southern Lithuania is empty in our render. Which stage empties it?
 
-The product's own footprint is a smooth curve (471x887 at 2 km, EPSG:25833),
-so a straight horizontal cut is not their coverage boundary. Take the stored
-SE frame for the slot in question and, row by row, compare where the ECHO
-stops against where the COVERAGE stops. Echo ending at the coverage wall is
-theirs; echo ending well inside it is ours — the fade, the cleaning, or the
-warp.
+The source paints echo down there; our LT2 render, and both antenna panels
+cut from it, are blank below roughly 55 N. Run one sweep through the whole
+chain and count the echo in that band at every stage, then look at what the
+source actually puts there, colour by colour.
 """
 import datetime as dt
 import io
@@ -17,51 +15,84 @@ import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from wxfusion import config, proj3059 as P, radar_store as R  # noqa: E402
+from wxfusion import scrape_maps as S  # noqa: E402
 
 s3 = R.r2_client()
-
-# The footprint as the composite stores it (km to the coverage edge).
-edge = None
-try:
-    body = s3.get_object(Bucket=config.R2_BUCKET,
-                         Key="maps/radar_src/se_edge_km.png")["Body"].read()
-    edge = np.array(Image.open(io.BytesIO(body)).convert("L"), np.uint8)
-    print(f"edge map {edge.shape}, covered (>0): {int((edge > 0).sum()):,} px")
-except Exception as e:
-    print("no edge map:", e)
+# The band the user circled: southern Lithuania and over the border.
+Y0, Y1, X0, X1 = 530, 690, 60, 470
+roi = np.zeros((P.H, P.W), bool)
+roi[Y0:Y1, X0:X1] = True
+print(f"ROI rows {Y0}..{Y1}, cols {X0}..{X1} "
+      f"({P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - Y1 * (P.Y1 - P.Y0) / P.H)[1]:.2f}"
+      f"..{P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - Y0 * (P.Y1 - P.Y0) / P.H)[1]:.2f} N)")
 
 
-def lat_of(j):
-    return P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - j * (P.Y1 - P.Y0) / P.H)[1]
+def n(a, m=None):
+    b = a > 0
+    return int((b & roi).sum()), int(b.sum())
 
 
 for day in (dt.date(2026, 8, 22), dt.date(2026, 8, 23)):
     idx = R._load_index(s3, day)
-    want = f"{day:%Y-%m-%d}T21:"
-    se = sorted((f for f in idx.get("frames", [])
-                 if f.get("code") == "SE" and f["time"].startswith(want)),
+    lt = sorted((f for f in idx.get("frames", [])
+                 if f.get("code") == "LT2" and not f.get("grid3059")),
                 key=lambda f: f["time"])
-    print(f"\n=== {day}: {len(se)} SE sweeps in the 21:00 hour ===")
-    if not se:
+    if not lt:
+        print(f"\n{day}: no LT2 frames")
         continue
-    f = min(se, key=lambda f: abs(int(f["time"][14:16]) - 15))
-    print("sweep", f["time"])
-    grid, _ = R._feed_grid(s3, "SE", f)
-    wet = grid > 0
-    print(f"echo {int(wet.sum()):,} px")
-    print(" row   lat     echo x-range      coverage x-range   "
-          "gap between them")
-    prev_stop = None
-    for j in range(0, P.H, 10):
-        xs = np.flatnonzero(wet[j])
-        cs = np.flatnonzero(edge[j] > 0) if edge is not None else np.array([])
-        if not xs.size:
-            continue
-        stop, cstop = int(xs.max()), (int(cs.max()) if cs.size else -1)
-        flag = ""
-        if prev_stop is not None and abs(stop - prev_stop) > 40:
-            flag = f"   <-- jumps {prev_stop} -> {stop}"
-        prev_stop = stop
-        print(f" {j:4d} {lat_of(j):5.2f}  {int(xs.min()):3d}..{stop:3d}"
-              f"        {int(cs.min()) if cs.size else -1:3d}..{cstop:3d}"
-              f"         {cstop - stop:4d} km{flag}")
+    tgt = dt.datetime.combine(day, dt.time(12, 13), tzinfo=dt.timezone.utc)
+    f = min(lt, key=lambda f: abs(
+        (dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ")
+         .replace(tzinfo=dt.timezone.utc) - tgt).total_seconds()))
+    print(f"\n=== {day} sweep {f['time']} ===")
+    body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
+    arr = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
+    sw, ne = tuple(f["sw"]), tuple(f["ne"])
+
+    raw = P.resample_mercator_image(arr, sw, ne)
+    painted = (raw[..., 3] > 60)
+    print(f"  source painted            ROI {int((painted & roi).sum()):7,d}"
+          f"   all {int(painted.sum()):8,d}")
+
+    plain = S._classify_intensity(arr, "LT2")
+    prep = S._prepare_source_raw(arr, "LT2", f)
+    cal = S._calibrate_lev(prep, "LT2")
+    for name, g in (("classify (source frame)", plain),
+                    ("after source beam work", prep),
+                    ("after calibration", cal)):
+        # these are in the SOURCE frame, so warp before counting on our grid
+        w = P.resample_mercator_image(g, sw, ne)
+        a, b = n(w)
+        print(f"  {name:25s} ROI {a:7,d}   all {b:8,d}")
+
+    grid = P.resample_mercator_image(cal, sw, ne)
+    stages = [("warped to canvas", grid)]
+    g = S._despeckle(grid);                stages.append(("despeckle", g))
+    g = S._remove_beams_polar(g);          stages.append(("beams polar", g))
+    g = S._remove_beam_lines(g);           stages.append(("beam lines", g))
+    g = S._despeckle_intensity(g);         stages.append(("despeckle intensity", g))
+    g = S._close_radial_spokes(g);         stages.append(("close spokes", g))
+    for name, gg in stages:
+        a, b = n(gg)
+        print(f"  {name:25s} ROI {a:7,d}   all {b:8,d}")
+
+    rgba = np.array(S._recolor(g, None, "LT2", None))
+    vis = rgba[..., 3] > 8
+    print(f"  {'after recolor + fade':25s} ROI {int((vis & roi).sum()):7,d}"
+          f"   all {int(vis.sum()):8,d}")
+
+    # What IS the source painting in that band, colour by colour?
+    src_roi = raw[roi & painted]
+    if src_roi.size:
+        cols, cnt = np.unique(src_roi[:, :3].reshape(-1, 3), axis=0,
+                              return_counts=True)
+        order = np.argsort(-cnt)[:12]
+        print("  top source colours in the ROI, and the level they classify to:")
+        for i in order:
+            c = cols[i]
+            px = np.zeros((1, 1, 4), np.uint8)
+            px[0, 0, :3] = c
+            px[0, 0, 3] = 255
+            lev = int(S._classify_intensity(px, "LT2")[0, 0])
+            print(f"    rgb{tuple(int(x) for x in c)}  {int(cnt[i]):6,d} px"
+                  f"   -> level {lev}{'   DROPPED' if lev == 0 else ''}")
