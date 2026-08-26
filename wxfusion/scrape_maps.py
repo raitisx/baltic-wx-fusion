@@ -763,6 +763,21 @@ def _fill_enclosed(cls: np.ndarray, opaque: np.ndarray, rounds: int = 3) -> np.n
 # the published site positions; an inaccurate one can only cause a missed
 # beam, never removal of real echo, because a candidate must already be thin,
 # straight and outside thick echo before the radial test is even applied.
+# How far each dish's product actually reaches, for the range rings the debug
+# page draws. SMHI's volumes stop at 480 bins x 500 m; FMI's per-radar cappi
+# is a 500 km box, so its circle is the inscribed 250 km. The Baltic
+# products publish no range at all — 250 km is their nominal reach and the
+# Estonian composite is painted well past it (echo out to 370 km), so those
+# rings say "about here", not "the data stops here".
+SITE_RANGE_KM_DEFAULT = 250.0
+SITE_RANGE_KM = {"SE Ase": 240.0, "SE Balsta": 240.0, "SE Vilebo": 240.0,
+                 "SE Karlskrona": 240.0, "SE Hudiksvall": 240.0}
+
+
+def site_range_km(name: str) -> float:
+    return SITE_RANGE_KM.get(name, SITE_RANGE_KM_DEFAULT)
+
+
 RADAR_SITES = [
     ("EE Surgavere", 58.482, 25.519),
     ("EE Harku", 59.398, 24.603),

@@ -730,22 +730,39 @@ def _row_parts(code):
     one per antenna) or, where no such source exists, as the part of the
     national product within range of that dish.
     """
-    from .scrape_maps import _feed_site_names
+    from .scrape_maps import _feed_site_names, site_range_km
+
+    def rings(names_src, radius=None):
+        """Where each dish sits on the canvas, and how far it reaches.
+
+        Every panel is on our 570x690 grid at 1 km/px, so a range in km is a
+        radius in pixels and the page can draw the rings itself.
+        """
+        return [{"n": n, "x": round(x, 1), "y": round(y, 1),
+                 "r": radius if radius is not None else site_range_km(n)}
+                for n, x, y in names_src]
+
+    own = _site_pixels_for(code, on_canvas=True)
     parts = [{"key": f"{code} source", "label": "SOURCE",
-              "what": "source, as served"},
+              "what": "source, as served", "rings": rings(own)},
              {"key": code, "label": code,
-              "what": "our render \u00b7 whole product"}]
+              "what": "our render \u00b7 whole product", "rings": rings(own)}]
     for sc in SITE_ROWS.get(code, ()):
-        if not _site_pixels_for(sc, on_canvas=True):
+        site = _site_pixels_for(sc, on_canvas=True)
+        if not site:
             continue                       # covers too little of the raster
         name = _feed_site_names(sc)[0]
         parts.append({"key": sc, "label": name.split(" ", 1)[-1],
-                      "what": "single radar, its own product"})
+                      "what": "single radar, its own product",
+                      "rings": rings(site)})
     if code in SPLIT_FEEDS:
-        for name, _, _ in _split_sites(code):
+        for name, sx, sy in _split_sites(code):
             parts.append({"key": name, "label": name.split(" ", 1)[-1],
                           "what": f"product within {SPLIT_RANGE_KM:.0f} km "
-                                  f"of this dish \u2014 overlaps the others"})
+                                  f"of this dish \u2014 overlaps the others",
+                          # the panel's own boundary, not the dish's reach
+                          "rings": rings([(name, sx, sy)],
+                                         radius=float(SPLIT_RANGE_KM))})
     return parts
 
 
