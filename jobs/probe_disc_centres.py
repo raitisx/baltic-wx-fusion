@@ -1,71 +1,67 @@
-"""Where does the straight edge in the SE composite come from?
+"""Is the straight edge in the SE panel theirs, or ours?
 
-A near-horizontal line runs across the Swedish product with echo above it
-and nothing below. That is either theirs (the product's own raster extent or
-its coverage mask) or ours (the warp, the fade, the canvas). The source is
-discarded at decode, so fetch one live composite and look at it directly.
+The product's own footprint is a smooth curve (471x887 at 2 km, EPSG:25833),
+so a straight horizontal cut is not their coverage boundary. Take the stored
+SE frame for the slot in question and, row by row, compare where the ECHO
+stops against where the COVERAGE stops. Echo ending at the coverage wall is
+theirs; echo ending well inside it is ours — the fade, the cleaning, or the
+warp.
 """
+import datetime as dt
 import io
 import sys
 
 sys.path.insert(0, ".")
 
 import numpy as np  # noqa: E402
-import rasterio  # noqa: E402
+from PIL import Image  # noqa: E402
 
-from wxfusion import proj3059 as P, radar_nordic as N  # noqa: E402
+from wxfusion import config, proj3059 as P, radar_store as R  # noqa: E402
 
-s = N.session()
-import datetime as dt  # noqa: E402
-day = dt.datetime.now(dt.timezone.utc).date()
-r = s.get(N.SMHI_LIST.format(d=day), timeout=45)
-files = r.json().get("files") or []
-tif = None
-for f in reversed(files):
-    tif = next((x["link"] for x in f.get("formats", []) if x.get("key") == "tif"),
-               None)
-    if tif:
-        print("sweep:", f["valid"])
-        break
-body = s.get(tif, timeout=120).content
+s3 = R.r2_client()
 
-with rasterio.open(io.BytesIO(body)) as ds:
-    v = ds.read(1)
-    print(f"native grid {ds.width}x{ds.height} {ds.crs}")
-    print("bounds:", [round(b) for b in ds.bounds])
-    print("value counts: 0 (clear)", int((v == 0).sum()),
-          " 255 (no coverage)", int((v == 255).sum()),
-          " data", int(((v > 0) & (v < 255)).sum()))
-    cov_native = v != 255
-    # A straight edge in the NATIVE grid shows up as a row/column where the
-    # covered count changes abruptly.
-    rows = cov_native.sum(1)
-    jumps = [(i, int(rows[i - 1]), int(rows[i]))
-             for i in range(1, len(rows))
-             if abs(int(rows[i]) - int(rows[i - 1])) > ds.width // 20]
-    print(f"native rows with a big coverage jump: {len(jumps)}")
-    for i, a, b in jumps[:8]:
-        y = ds.bounds.top + i * ds.transform.e
-        print(f"  row {i:5d} (north {y:,.0f} m): {a:5d} -> {b:5d} px covered")
-    cov = N._warp_rr_to_grid(cov_native.astype(np.float32),
-                             ds.transform, ds.crs) > 0.5
+# The footprint as the composite stores it (km to the coverage edge).
+edge = None
+try:
+    body = s3.get_object(Bucket=config.R2_BUCKET,
+                         Key="maps/radar_src/se_edge_km.png")["Body"].read()
+    edge = np.array(Image.open(io.BytesIO(body)).convert("L"), np.uint8)
+    print(f"edge map {edge.shape}, covered (>0): {int((edge > 0).sum()):,} px")
+except Exception as e:
+    print("no edge map:", e)
 
-print(f"\non our canvas: {int(cov.sum()):,} of {P.W * P.H:,} px covered")
-rows = cov.sum(1)
-print("row (lat)      covered px      what changes")
-prev = None
-for j in range(P.H):
-    n = int(rows[j])
-    if prev is not None and abs(n - prev) > 25:
-        lat = P.to_lonlat((P.X0 + P.X1) / 2,
-                          P.Y1 - j * (P.Y1 - P.Y0) / P.H)[1]
-        print(f"  y={j:3d} ({lat:5.2f} N)  {prev:5d} -> {n:5d}")
-    prev = n
 
-print("\nedges of the covered area, every 40th row:")
-for j in range(0, P.H, 40):
-    xs = np.flatnonzero(cov[j])
-    if xs.size:
-        print(f"  y={j:3d}  x {xs.min():3d}..{xs.max():3d}  ({xs.size} px)")
-    else:
-        print(f"  y={j:3d}  none")
+def lat_of(j):
+    return P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - j * (P.Y1 - P.Y0) / P.H)[1]
+
+
+for day in (dt.date(2026, 8, 22), dt.date(2026, 8, 23)):
+    idx = R._load_index(s3, day)
+    want = f"{day:%Y-%m-%d}T21:"
+    se = sorted((f for f in idx.get("frames", [])
+                 if f.get("code") == "SE" and f["time"].startswith(want)),
+                key=lambda f: f["time"])
+    print(f"\n=== {day}: {len(se)} SE sweeps in the 21:00 hour ===")
+    if not se:
+        continue
+    f = min(se, key=lambda f: abs(int(f["time"][14:16]) - 15))
+    print("sweep", f["time"])
+    grid, _ = R._feed_grid(s3, "SE", f)
+    wet = grid > 0
+    print(f"echo {int(wet.sum()):,} px")
+    print(" row   lat     echo x-range      coverage x-range   "
+          "gap between them")
+    prev_stop = None
+    for j in range(0, P.H, 10):
+        xs = np.flatnonzero(wet[j])
+        cs = np.flatnonzero(edge[j] > 0) if edge is not None else np.array([])
+        if not xs.size:
+            continue
+        stop, cstop = int(xs.max()), (int(cs.max()) if cs.size else -1)
+        flag = ""
+        if prev_stop is not None and abs(stop - prev_stop) > 40:
+            flag = f"   <-- jumps {prev_stop} -> {stop}"
+        prev_stop = stop
+        print(f" {j:4d} {lat_of(j):5.2f}  {int(xs.min()):3d}..{stop:3d}"
+              f"        {int(cs.min()) if cs.size else -1:3d}..{cstop:3d}"
+              f"         {cstop - stop:4d} km{flag}")
