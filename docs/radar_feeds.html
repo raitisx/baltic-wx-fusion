@@ -35,6 +35,8 @@
   .rings circle { fill:none; stroke:#1d2635; stroke-opacity:.5;
                   stroke-width:2.5; stroke-dasharray:9 8; }
   .rings path { stroke:#1d2635; stroke-opacity:.65; stroke-width:2.5; }
+  .rings circle.weak { stroke:#a8442f; stroke-opacity:.45;
+                       stroke-dasharray:3 9; }
   .rings text { fill:#1d2635; fill-opacity:.75; font:600 18px system-ui; }
   body.norings .rings { display:none; }
   .missing { position:absolute; inset:0; display:flex; align-items:center;
@@ -65,6 +67,10 @@
     split &mdash; Estonia&rsquo;s echo runs past 370 km, well beyond any cut
     &mdash; so do not read intensity off them. Estonia shows composite +
     Harku only.
+    The faint red inner circle is where the two LIGHTEST classes are cut to
+    nothing (LT/EE 180 km, LV 250 km): between it and the range ring only
+    green and heavier survives, so light rain out there is missing by rule,
+    not by dropout.
     The dashed circle is how far that dish reaches: SMHI’s own 240 km,
     FMI’s 250 km box, the cut that made a disc panel — and for the
     Baltic products a nominal 250 km, which Estonia paints past.
@@ -110,7 +116,13 @@ function ringsSvg(rings) {
   if (!rings || !rings.length) return "";
   const body = rings.map(r => {
     const nm = r.n.split(" ").slice(1).join(" ");
-    return `<circle cx="${r.x}" cy="${r.y}" r="${r.r}"/>` +
+    // The inner ring is where WEAK echo (the two lightest classes) is cut to
+    // nothing. Light rain simply stops there while the heavy cores carry on,
+    // which looks like missing data until you can see the boundary.
+    return (r.w ? `<circle class="weak" cx="${r.x}" cy="${r.y}" r="${r.w}">` +
+                  `<title>${nm}: light echo faded out by ${r.w} km</title>` +
+                  `</circle>` : "") +
+           `<circle cx="${r.x}" cy="${r.y}" r="${r.r}"/>` +
            `<path d="M${r.x - 8} ${r.y}h16M${r.x} ${r.y - 8}v16"/>` +
            `<text x="${r.x + 11}" y="${r.y - 11}">${nm}</text>`;
   }).join("");
