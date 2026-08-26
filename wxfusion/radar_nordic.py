@@ -30,6 +30,7 @@ import io
 import json
 import logging
 import re
+import urllib.parse
 
 import numpy as np
 from PIL import Image
@@ -321,12 +322,33 @@ FI_SITES = {
 # side (radar_store.MIN_COVER_PX).
 
 
+def _fmi_s3_keys(s, prefix):
+    """Every key under a prefix, following the listing's continuation token.
+
+    One radar publishes several products per sweep, so a day's folder runs to
+    a few thousand keys — well past the 1000 a single listing returns. Taking
+    the first page only silently truncated every backfill to the first
+    ~5.5 hours of the day (keys sort by stamp), which read as "the archive
+    does not go back that far" rather than as a bug.
+    """
+    keys, token = [], None
+    while True:
+        url = f"{FMI_S3}/?list-type=2&max-keys=1000&prefix={prefix}"
+        if token:
+            url += f"&continuation-token={urllib.parse.quote(token, safe='')}"
+        r = s.get(url, timeout=60)
+        keys += re.findall(r"<Key>([^<]+)</Key>", r.text)
+        m = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>",
+                      r.text)
+        if not m or "<IsTruncated>true</IsTruncated>" not in r.text:
+            return keys
+        token = m.group(1)
+
+
 def _fmi_site_entries(s, day, site):
     """(stamp, url) pairs for one day of ONE FMI radar's cappi product."""
-    r = s.get(f"{FMI_S3}/?list-type=2&max-keys=1000"
-              f"&prefix={day:%Y/%m/%d}/{site}/", timeout=60)
     out = []
-    for k in re.findall(r"<Key>([^<]+)</Key>", r.text):
+    for k in _fmi_s3_keys(s, f"{day:%Y/%m/%d}/{site}/"):
         m = re.search(rf"/(\d{{12}})_{site}_cappi_600_dbzh", k)
         if m:
             out.append((dt.datetime.strptime(m.group(1), "%Y%m%d%H%M")
@@ -357,10 +379,8 @@ def fetch_fmi_site(code):
 
 def _fmi_s3_entries(s, day):
     """(stamp, url) pairs for one day's finrad composites on the S3 mirror."""
-    r = s.get(f"{FMI_S3}/?list-type=2&max-keys=1000"
-              f"&prefix={day:%Y/%m/%d}/finrad/", timeout=60)
     out = []
-    for k in re.findall(r"<Key>([^<]+)</Key>", r.text):
+    for k in _fmi_s3_keys(s, f"{day:%Y/%m/%d}/finrad/"):
         m = re.search(r"/(\d{12})_composite_cappi_600_dbzh", k)
         if m:
             out.append((dt.datetime.strptime(m.group(1), "%Y%m%d%H%M")
@@ -520,6 +540,13 @@ def backfill_sites(s3, day, fi=True, se=True, overwrite=False):
     Finland is cheap (one 250 km cappi per radar per 5 min). Sweden is not:
     a qcvol volume is 15-20 MB and three radars over a day is several GB,
     which is why fi and se are separate switches.
+
+    Sweden also cannot be filled in far after the fact. SMHI keeps the
+    per-site volumes for about a day — 26.08.2026 listed 134 files for
+    hemse, 23.08 listed none at all, and the days between answered 503 —
+    so se=True is worth setting for today and yesterday and no further
+    back. The national composite has a much longer archive; it is the
+    single radars that are ephemeral.
     """
     s = session()
     idx_cache, dirty = {}, set()
