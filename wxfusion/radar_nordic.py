@@ -250,33 +250,44 @@ def _decode_smhi_vol(body, dbz_adj=None):
     return _to_lev(rr), (lat, lon), name
 
 
+def _smhi_site_entries(s, day, site):
+    """(stamp, url) pairs for one day of ONE SMHI radar's volumes."""
+    out = []
+    try:
+        r = s.get(f"{SMHI_SITE_API.format(site=site)}/{day:%Y/%m/%d}",
+                  timeout=45)
+        files = (r.json().get("files") or []) if r.ok else []
+    except Exception as e:
+        log.warning("SMHI %s listing %s: %s", site, day, e)
+        return out
+    for f in files:
+        url = next((x["link"] for x in f.get("formats", [])
+                    if x.get("key") == "h5"), None)
+        if url:
+            out.append((dt.datetime.strptime(f["valid"], "%Y-%m-%d %H:%M")
+                        .replace(tzinfo=dt.timezone.utc), url))
+    return sorted(out)
+
+
+def _decode_smhi_vol_lev(body):
+    """The volume decoder as _backfill_slots wants it: bytes -> level grid."""
+    return _decode_smhi_vol(body)[0]
+
+
 def fetch_smhi_site(code):
     """Latest volume of one SMHI radar -> (stamp, level grid) or None."""
     site = SE_SITES[code][0]
     s = session()
     now = dt.datetime.now(dt.timezone.utc)
-    files = []
+    ent = []
     for day in (now.date(), (now - dt.timedelta(days=1)).date()):
-        try:
-            r = s.get(f"{SMHI_SITE_API.format(site=site)}/{day:%Y/%m/%d}",
-                      timeout=45)
-            if r.ok:
-                files += r.json().get("files") or []
-        except Exception:
-            continue
-        if files:
+        ent += _smhi_site_entries(s, day, site)
+        if ent:
             break
-    if not files:
+    if not ent:
         return None
-    newest = max(files, key=lambda f: f.get("valid", ""))
-    url = next((f["link"] for f in newest.get("formats", [])
-                if f.get("key") == "h5"), None)
-    if not url:
-        return None
-    stamp = dt.datetime.strptime(newest["valid"], "%Y-%m-%d %H:%M").replace(
-        tzinfo=dt.timezone.utc)
-    lev, _, _ = _decode_smhi_vol(s.get(url, timeout=120).content)
-    return stamp, lev
+    stamp, url = max(ent)
+    return stamp, _decode_smhi_vol_lev(s.get(url, timeout=120).content)
 
 
 def _pair_fmi(urls, stamps):
@@ -496,6 +507,42 @@ def _backfill_slots(s3, s, code, entries, decode, idx_cache, dirty,
         log.info("backfill %s %s: day done (%d stored so far)",
                  code, day, stored)
     return stored
+
+
+def backfill_sites(s3, day, fi=True, se=True, overwrite=False):
+    """Per-radar SE/FI frames for ONE past day.
+
+    The single radars only started being fetched on 23.08.2026, so any day
+    before that has the national composites and nothing else — the debug
+    page shows NO FRAME down every antenna row. Both archives reach back
+    well past that, so a day worth studying can be filled in after the fact.
+
+    Finland is cheap (one 250 km cappi per radar per 5 min). Sweden is not:
+    a qcvol volume is 15-20 MB and three radars over a day is several GB,
+    which is why fi and se are separate switches.
+    """
+    s = session()
+    idx_cache, dirty = {}, set()
+    n = 0
+    if fi:
+        for code, (site, *_) in FI_SITES.items():
+            ent = _fmi_site_entries(s, day, site)
+            log.info("backfill sites: %s (%s) %d sweeps listed on %s",
+                     code, site, len(ent), day)
+            n += _backfill_slots(s3, s, code, ent, _decode_fmi_dbzh,
+                                 idx_cache, dirty, overwrite=overwrite)
+    if se:
+        for code, (site, *_) in SE_SITES.items():
+            ent = _smhi_site_entries(s, day, site)
+            log.info("backfill sites: %s (%s) %d volumes listed on %s",
+                     code, site, len(ent), day)
+            n += _backfill_slots(s3, s, code, ent, _decode_smhi_vol_lev,
+                                 idx_cache, dirty, overwrite=overwrite)
+    for d in sorted(dirty):
+        _save_day_idx(s3, d, idx_cache[d])
+    log.info("backfill sites: %d frames stored for %s, %d day indexes updated",
+             n, day, len(dirty))
+    return n
 
 
 def topup(s3, hours=3):
