@@ -1,0 +1,54 @@
+name: nordic-sites
+# Per-radar SE/FI frames for a past day, then the debug page's frames for it.
+# The single radars have only been fetched live since 23.08.2026, so an
+# earlier day shows NO FRAME down every antenna row until it is filled in.
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "UTC day to fill in (YYYYMMDD)"
+        default: "20260822"
+      fi:
+        description: "Finland's four radars (cheap: one 250 km cappi per 5 min)"
+        default: "1"
+      se:
+        description: "Sweden's three radars (heavy: 15-20 MB per volume)"
+        default: "0"
+      overwrite:
+        description: "Re-decode frames already stored for that day"
+        default: "0"
+      render_feeds:
+        description: "Render the debug page's frames for the day afterwards"
+        default: "1"
+jobs:
+  sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dependencies
+        run: pip install -r requirements.txt && pip install pillow numpy pyproj scipy scikit-image rasterio h5py
+      - name: Per-radar frames for the day
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          NORDIC_SITES_DAY: ${{ github.event.inputs.day || '20260822' }}
+          NORDIC_SITES_FI: ${{ github.event.inputs.fi || '1' }}
+          NORDIC_SITES_SE: ${{ github.event.inputs.se || '0' }}
+          NORDIC_SITES_OVERWRITE: ${{ github.event.inputs.overwrite || '0' }}
+        run: python jobs/run_nordic_sites.py
+      - name: Debug page frames for the day
+        if: ${{ github.event.inputs.render_feeds != '0' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
+          RADAR_FEEDS_DAY: ${{ github.event.inputs.day || '20260822' }}
+        run: python jobs/run_radar_feeds.py
