@@ -121,18 +121,115 @@ def _decode_smhi(body):
         return _to_lev(_warp_rr_to_grid(rr, ds.transform, ds.crs))
 
 
+SE_COV_KEY = "maps/radar_src/se_cov.png"        # the footprint, accumulated
+SE_COV_META_KEY = "maps/radar_src/se_cov.json"  # when this union was started
+SE_COV_MAX_AGE_DAYS = 30
+SE_EDGE_KEY = "maps/radar_src/se_edge_km.png"
+
+
+def _put_png(s3, key, arr):
+    buf = io.BytesIO()
+    Image.fromarray(arr, "L").save(buf, "PNG", optimize=True)
+    s3.put_object(Bucket=config.R2_BUCKET, Key=key, Body=buf.getvalue(),
+                  ContentType="image/png")
+
+
 def store_edge_map(s3):
     """km-to-edge map of the SE product footprint -> R2, for the composite's
-    SE fade (scrape_maps SE_EDGE_KEY). Called after an SE decode; cheap
-    (~20 kB), so it simply overwrites and the footprint stays current."""
+    SE fade (scrape_maps SE_EDGE_KEY).
+
+    SMHI's 255 is not a fixed footprint: it is "no data here, this sweep", so
+    a sweep with radars down comes back covering far less of the map. This
+    used to overwrite the map with whatever the last decode saw, and the fade
+    then cut EVERY render — historical ones included — along the outline of
+    one unrelated sweep. Measured 26.08.2026: the 11:15 sweep covered 57,853
+    px of our canvas with a hole at 59.5-59.8 N, while the frame stored for
+    22.08 21:15 carries echo up to 146 km outside it. That echo was being
+    erased at render.
+
+    So the footprint is accumulated instead: each sweep is unioned into the
+    stored one, which converges on the real coverage within a few sweeps. The
+    union is restarted after SE_COV_MAX_AGE_DAYS so a radar that is retired
+    for good does not haunt it forever.
+    """
     if _last_se_cov is None:
         return
     from scipy.ndimage import distance_transform_edt
-    edge = np.clip(distance_transform_edt(_last_se_cov), 0, 255).astype(np.uint8)
-    buf = io.BytesIO()
-    Image.fromarray(edge, "L").save(buf, "PNG", optimize=True)
-    s3.put_object(Bucket=config.R2_BUCKET, Key="maps/radar_src/se_edge_km.png",
-                  Body=buf.getvalue(), ContentType="image/png")
+    cov = np.asarray(_last_se_cov, bool)
+    today = dt.datetime.now(dt.timezone.utc).date()
+    since = None
+    try:
+        meta = json.loads(s3.get_object(Bucket=config.R2_BUCKET,
+                                        Key=SE_COV_META_KEY)["Body"].read())
+        started = dt.date.fromisoformat(meta["since"])
+        if (today - started).days <= SE_COV_MAX_AGE_DAYS:
+            old = np.array(Image.open(io.BytesIO(s3.get_object(
+                Bucket=config.R2_BUCKET,
+                Key=SE_COV_KEY)["Body"].read())).convert("L")) > 0
+            if old.shape == cov.shape:
+                since = started
+                cov = cov | old
+    except Exception:
+        since = None
+    if since is None:
+        since = today
+        log.info("SE footprint: starting a fresh union")
+    _put_png(s3, SE_COV_KEY, (cov * 255).astype(np.uint8))
+    s3.put_object(Bucket=config.R2_BUCKET, Key=SE_COV_META_KEY,
+                  Body=json.dumps({"since": since.isoformat()}).encode(),
+                  ContentType="application/json")
+    log.info("SE footprint: %d px this sweep, %d px accumulated since %s",
+             int(np.asarray(_last_se_cov, bool).sum()), int(cov.sum()), since)
+    _put_png(s3, SE_EDGE_KEY,
+             np.clip(distance_transform_edt(cov), 0, 255).astype(np.uint8))
+
+
+def rebuild_edge_map(s3, hours=24):
+    """Union the coverage of every SE sweep in a window, then store the map.
+
+    Accumulating one sweep per tick converges on the true footprint, but
+    slowly, and a day being re-rendered now cannot wait for it. The
+    composites are 31 kB each, so a whole day of them is a few MB — cheap
+    enough to simply read them all and union what they cover.
+    """
+    global _last_se_cov
+    s = session()
+    now = dt.datetime.now(dt.timezone.utc)
+    lo = now - dt.timedelta(hours=hours)
+    ent = []
+    for back in range(int(hours // 24) + 1, -1, -1):
+        day = (now - dt.timedelta(days=back)).date()
+        try:
+            r = s.get(SMHI_LIST.format(d=day), timeout=45)
+            for f in (r.json().get("files") or []) if r.ok else []:
+                t = dt.datetime.strptime(f["valid"], "%Y-%m-%d %H:%M").replace(
+                    tzinfo=dt.timezone.utc)
+                tif = next((x["link"] for x in f.get("formats", [])
+                            if x.get("key") == "tif"), None)
+                if tif and lo <= t <= now:
+                    ent.append((t, tif))
+        except Exception as e:
+            log.warning("SE footprint listing %s: %s", day, e)
+    ent.sort()
+    log.info("SE footprint: %d sweeps in the last %g h", len(ent), hours)
+    union, n = None, 0
+    for t, url in ent:
+        try:
+            _decode_smhi(s.get(url, timeout=120).content)
+        except Exception as e:
+            log.warning("SE footprint %s: %s", t, e)
+            continue
+        cov = np.asarray(_last_se_cov, bool)
+        union = cov if union is None else (union | cov)
+        n += 1
+        if n % 24 == 0:
+            log.info("  %d sweeps unioned, %d px covered", n, int(union.sum()))
+    if union is None:
+        log.warning("SE footprint: nothing read, map left alone")
+        return 0
+    _last_se_cov = union
+    store_edge_map(s3)
+    return int(union.sum())
 
 
 def _decode_fmi(body):
