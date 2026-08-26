@@ -730,7 +730,19 @@ def _row_parts(code):
     one per antenna) or, where no such source exists, as the part of the
     national product within range of that dish.
     """
-    from .scrape_maps import _feed_site_names, site_range_km
+    from .scrape_maps import (WEAK_RANGE_KM, _feed_site_names, site_range_km)
+
+    def weak_km(fc):
+        """Where this feed's WEAK echo (classes 1-2) is cut to nothing.
+
+        _recolor fades classes 1-2 out over the last WEAK_FADE_KM before
+        WEAK_RANGE_KM and deletes them past it — so inside the range ring
+        there is a second, much tighter boundary where the light echo stops
+        while the heavy cores carry on. Unexplained, that reads as a hole in
+        the data. Sweden's weak fade is measured from the product edge
+        instead of from a dish, so it has no ring.
+        """
+        return None if fc == "SE" else WEAK_RANGE_KM.get(fc, 250.0)
 
     def rings(names_src, radius=None):
         """Where each dish sits on the canvas, and how far it reaches.
@@ -742,11 +754,16 @@ def _row_parts(code):
                  "r": radius if radius is not None else site_range_km(n)}
                 for n, x, y in names_src]
 
+    def with_weak(rs, fc):
+        w = weak_km(fc)
+        return [dict(r, w=w) for r in rs] if w else rs
+
     own = _site_pixels_for(code, on_canvas=True)
     parts = [{"key": f"{code} source", "label": "SOURCE",
               "what": "source, as served", "rings": rings(own)},
              {"key": code, "label": code,
-              "what": "our render \u00b7 whole product", "rings": rings(own)}]
+              "what": "our render \u00b7 whole product",
+              "rings": with_weak(rings(own), code)}]
     for sc in SITE_ROWS.get(code, ()):
         site = _site_pixels_for(sc, on_canvas=True)
         if not site:
@@ -754,15 +771,16 @@ def _row_parts(code):
         name = _feed_site_names(sc)[0]
         parts.append({"key": sc, "label": name.split(" ", 1)[-1],
                       "what": "single radar, its own product",
-                      "rings": rings(site)})
+                      "rings": with_weak(rings(site), sc)})
     if code in SPLIT_FEEDS:
         for name, sx, sy in _split_sites(code):
             parts.append({"key": name, "label": name.split(" ", 1)[-1],
                           "what": f"product within {SPLIT_RANGE_KM:.0f} km "
                                   f"of this dish \u2014 overlaps the others",
                           # the panel's own boundary, not the dish's reach
-                          "rings": rings([(name, sx, sy)],
-                                         radius=float(SPLIT_RANGE_KM))})
+                          "rings": with_weak(
+                              rings([(name, sx, sy)],
+                                    radius=float(SPLIT_RANGE_KM)), code)})
     return parts
 
 
