@@ -28,6 +28,15 @@
   .wrap { position:relative; aspect-ratio:570/690; background:#f7f5ef; }
   .wrap img { position:absolute; inset:0; width:100%; height:100%;
               object-fit:contain; }
+  /* display:flex/absolute would win over the hidden attribute otherwise */
+  .wrap img[hidden], .missing[hidden] { display:none !important; }
+  .rings { position:absolute; inset:0; width:100%; height:100%;
+           pointer-events:none; }
+  .rings circle { fill:none; stroke:#1d2635; stroke-opacity:.5;
+                  stroke-width:2.5; stroke-dasharray:9 8; }
+  .rings path { stroke:#1d2635; stroke-opacity:.65; stroke-width:2.5; }
+  .rings text { fill:#1d2635; fill-opacity:.75; font:600 18px system-ui; }
+  body.norings .rings { display:none; }
   .missing { position:absolute; inset:0; display:flex; align-items:center;
              justify-content:center; color:#c0392b; font-weight:700;
              background:repeating-linear-gradient(45deg,#f7f5ef,#f7f5ef 8px,
@@ -56,10 +65,15 @@
     split &mdash; Estonia&rsquo;s echo runs past 370 km, well beyond any cut
     &mdash; so do not read intensity off them. Estonia shows composite +
     Harku only.
+    The dashed circle is how far that dish reaches: SMHI’s own 240 km,
+    FMI’s 250 km box, the cut that made a disc panel — and for the
+    Baltic products a nominal 250 km, which Estonia paints past.
     <span class="none">NO FRAME</span> = no sweep for the slot;
     <span class="held">amber time</span> = sweep held over from the fill ring
     (&gt;8 min away). <a href="?whole=1">products only</a></span>
   <span class="nav" id="days"></span>
+  <label class="hint" style="display:flex;gap:5px;align-items:center">
+    <input type="checkbox" id="ringbox" checked> radar range</label>
   <span class="hint" id="meta"></span>
 </header>
 <div class="grid" id="grid"></div>
@@ -86,6 +100,35 @@ const WANT_DAY = /^\d{8}$/.test(QS.get("day") || "") ? QS.get("day") : null;
 let ARCH = null, KEYS = [], PANELS = [];
 
 function id(p) { return "p_" + p.replace(/[^A-Za-z0-9]/g, "_"); }
+
+// Every panel is our 570x690 canvas at 1 km/px, so a range in km is a radius
+// in viewBox units and the ring can be drawn over the picture as it is.
+// SE rings are the volume's own 240 km; a disc panel's ring is the cut that
+// MADE it; the Baltic products publish no range, so theirs is nominal — the
+// Estonian composite paints well past its own.
+function ringsSvg(rings) {
+  if (!rings || !rings.length) return "";
+  const body = rings.map(r => {
+    const nm = r.n.split(" ").slice(1).join(" ");
+    return `<circle cx="${r.x}" cy="${r.y}" r="${r.r}"/>` +
+           `<path d="M${r.x - 8} ${r.y}h16M${r.x} ${r.y - 8}v16"/>` +
+           `<text x="${r.x + 11}" y="${r.y - 11}">${nm}</text>`;
+  }).join("");
+  return `<svg class="rings" viewBox="0 0 570 690" ` +
+         `preserveAspectRatio="xMidYMid meet">${body}</svg>`;
+}
+
+function wireRings() {
+  const box = document.getElementById("ringbox");
+  let want = true;
+  try { want = localStorage.getItem("rings") !== "0"; } catch (e) {}
+  box.checked = want;
+  document.body.classList.toggle("norings", !want);
+  box.addEventListener("change", () => {
+    document.body.classList.toggle("norings", !box.checked);
+    try { localStorage.setItem("rings", box.checked ? "1" : "0"); } catch (e) {}
+  });
+}
 
 function buildPanels(panels) {
   PANELS = [];
@@ -119,7 +162,9 @@ function buildPanels(panels) {
         `<figcaption><span class="code">${part.label}</span>` +
         `<span class="stamp" id="s_${id(part.key)}">\u2014</span>` +
         `<span style="margin-left:auto;color:#7a8395">${part.what}</span>` +
-        `</figcaption><div class="wrap" id="w_${id(part.key)}"></div>`;
+        `</figcaption><div class="wrap" id="w_${id(part.key)}">` +
+        `<img alt="" hidden><div class="missing" hidden>NO FRAME</div>` +
+        ringsSvg(part.rings) + `</div>`;
       strip.appendChild(fig);
     }
     grid.appendChild(row);
@@ -144,12 +189,15 @@ function show(i) {
     const wrap = document.getElementById("w_" + id(c));
     const stamp = document.getElementById("s_" + id(c));
     const vtag = slot[c];
+    const img = wrap.querySelector("img");
+    const gone = wrap.querySelector(".missing");
     if (!vtag) {
-      wrap.innerHTML = '<div class="missing">NO FRAME</div>';
+      img.hidden = true; gone.hidden = false;
       stamp.textContent = "no sweep";
       stamp.className = "none";
       continue;
     }
+    img.hidden = false; gone.hidden = true;
     const p = picked[c] || "";
     // The stamp must not change WIDTH between slots: appending "(held)"
     // reflowed every caption and the whole grid jumped as you dragged. The
@@ -158,9 +206,6 @@ function show(i) {
     stamp.className = p.endsWith("*") ? "held" : "stamp";
     stamp.title = p.endsWith("*") ? "held over from the fill ring (>8 min)" : "";
     const url = `${MAPS_BASE}/${ARCH.path}/${vtag}.png?v=${ARCH.generated_at}`;
-    let img = wrap.querySelector("img");
-    if (!img) { wrap.innerHTML = ""; img = document.createElement("img");
-                wrap.appendChild(img); }
     if (img.getAttribute("src") !== url) img.src = url;
   }
   markUrl(key);
@@ -269,6 +314,7 @@ function render(a) {
     if (first || !PANELS.length)
       buildPanels(a.panels || ["LV", "EE", "LT2", "SE", "FI"].map(
         c => ({code: c, sites: []})));
+    if (first) wireRings();
     ARCH = a;
     if (first)
       fetchJson("maps/radar/feeds/days.json", "[")
