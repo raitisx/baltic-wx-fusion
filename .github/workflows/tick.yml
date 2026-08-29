@@ -18,7 +18,12 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 was chosen when the tick was "~2 min a run". It now also walks the
+    # quarter-hour backlog (budgeted at 9 min) and renders the per-feed debug
+    # frames for today, which leaves no room for a model catch-up to fire —
+    # and those only fire when a models pass was already missed, so being
+    # killed there is exactly the wrong time to run out of budget.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
