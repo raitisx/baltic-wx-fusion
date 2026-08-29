@@ -33,6 +33,8 @@ import datetime as dt
 import io
 import json
 import logging
+import os
+import time
 
 from PIL import Image
 
@@ -171,6 +173,18 @@ def _pick(cands, tol_s):
 # After this only the round-hour sweeps stay (for the year), which is all the
 # hourly archive ever needed.
 QUARTER_DAYS = 14
+# The quarters pass walks QUARTER_DAYS x 96 slots on every run, so a backlog
+# is worked off oldest-frontier-first over several runs rather than in one.
+# Two rules keep that honest, learned from a stall that ran from 25.08 to
+# 29.08.2026: the index is saved as it goes, and the pass gives up its slot in
+# the tick before the job's timeout does it for us.
+#
+# The archive used to be written once, after the loop. A run killed inside the
+# loop had uploaded its frames and recorded none of them, so the next run
+# found the same slots missing and rendered them again — every tick burning
+# 20 minutes to make no progress, and every step after this one skipped.
+QUARTER_FLUSH_EVERY = 20
+QUARTER_BUDGET_S = float(os.environ.get("RADAR_RENDER_BUDGET_S", "540"))
 
 
 def store_sources(hours_back: int = 6, per_hour: int = 1) -> int:
@@ -340,8 +354,17 @@ def render_stored(hours_back: int = 336, force: bool = False,
     qcut = (now - dt.timedelta(days=QUARTER_DAYS)).strftime("%Y%m%dT%H%M")
     for k in [k for k in quarters if k < qcut]:
         del quarters[k]
-    q_done = 0
+    def save_arch():
+        s3.put_object(Bucket=config.R2_BUCKET, Key=ARCHIVE_KEY,
+                      Body=json.dumps(arch).encode(),
+                      ContentType="application/json",
+                      CacheControl="public, max-age=300")
+
+    q_done, t0, ran_out = 0, time.monotonic(), False
     for back in range(QUARTER_DAYS * 24 * 4):
+        if time.monotonic() - t0 > QUARTER_BUDGET_S:
+            ran_out = True
+            break
         slot = now - dt.timedelta(minutes=SLOT_MIN * back)
         if slot.minute == 0:
             continue                                 # the hourly pass owns :00
@@ -380,10 +403,13 @@ def render_stored(hours_back: int = 336, force: bool = False,
         quarters[qkey] = vtag
         arch.setdefault("rev", {})[qkey] = rev
         q_done += 1
-    s3.put_object(Bucket=config.R2_BUCKET, Key=ARCHIVE_KEY,
-                  Body=json.dumps(arch).encode(),
-                  ContentType="application/json",
-                  CacheControl="public, max-age=300")
+        if q_done % QUARTER_FLUSH_EVERY == 0:
+            save_arch()       # so a kill costs this batch, not the whole run
+    save_arch()
+    if ran_out:
+        log.warning("radar render: quarters pass hit its %.0f s budget with "
+                    "%d rendered — the rest waits for the next run",
+                    QUARTER_BUDGET_S, q_done)
     log.info("radar render: %d hourly + %d quarter composites from stored sources",
              done, q_done)
     return done + q_done
