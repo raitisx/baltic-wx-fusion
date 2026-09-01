@@ -13,12 +13,19 @@
           flex-wrap:wrap; }
   /* The fused map is 570x690 in the three-column view. This page is the same
      map on its own at twice that, which is the whole point of it. */
-  .mapbox { position:relative; width:1140px; max-width:100%;
+  /* The map is the page: give it the whole column height and let the
+     570:690 aspect set its width, so it is as large as the window allows
+     rather than a fixed 2x. */
+  .mapbox { position:relative; height:calc(100dvh - 190px); min-height:420px;
             aspect-ratio:570/690; background:#f7f5ef; border:1px solid var(--line);
-            border-radius:8px; overflow:hidden; }
-  .mapbox img, .mapbox svg { position:absolute; inset:0;
-                             width:100%; height:100%; }
-  .mapbox img { object-fit:fill; }
+            border-radius:8px; overflow:hidden; touch-action:none;
+            cursor:grab; }
+  .mapbox.drag { cursor:grabbing; }
+  /* One transformed layer holds both the picture and the zones, so they
+     cannot drift apart at any zoom. */
+  .pan { position:absolute; inset:0; transform-origin:0 0; }
+  .pan img, .pan svg { position:absolute; inset:0; width:100%; height:100%; }
+  .pan img { object-fit:fill; }
   .side { flex:1; min-width:260px; max-width:420px; }
   .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
          margin:0 0 8px; }
@@ -60,9 +67,17 @@
 <div class="wrap">
   <div>
     <div class="ctl" id="filters"></div>
+    <div class="ctl">
+      <button id="zin" title="zoom in">+</button>
+      <button id="zout" title="zoom out">&minus;</button>
+      <button id="zreset" title="fit the whole map">reset</button>
+      <span class="hint" id="zoomlab">1.0&times; &middot; scroll to zoom, drag to pan</span>
+    </div>
     <div class="mapbox" id="box">
-      <img id="base" alt="">
-      <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
+      <div class="pan" id="pan">
+        <img id="base" alt="">
+        <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
+      </div>
     </div>
     <input type="range" id="seek" min="0" max="0" value="0" step="1">
     <div class="stamp" id="stamp">loading…</div>
@@ -93,7 +108,52 @@ const COLOUR = {
 };
 const ORDER = ["PROHIBITED", "REQ_AUTHORISATION", "CONDITIONAL", "NO_RESTRICTION"];
 const off = new Set();
-let GZ = null, FUSED = null, HOURS = [], sel = null;
+let GZ = null, MAN = {}, HOURS = [], sel = null;
+
+// The "Baltic fused" column is NOT the fused manifest: it is MEPS for its
+// +66 h horizon, then the fused blend, then GFS. Reading fused/latest.json
+// straight put the interpolated blend under the zones for hours where the
+// meteo page shows native MEPS — which is why it looked like GFS. Same
+// order here, so both pages draw the same picture for the same hour.
+function pickSrc(iso) {
+  const tag = vtag(iso);
+  const meps = MAN.meps, fused = MAN.fused, gfs = MAN.gfs;
+  const thrOf = (m, want) => {
+    const t = m?.thresholds;
+    return t && t.length
+      ? t.reduce((a, b) => Math.abs(b - want) < Math.abs(a - want) ? b : a)
+      : want;
+  };
+  if (meps?.hours?.includes(iso))
+    return {url: `${MAPS_BASE}/${meps.path}/${tag}_alt${thrOf(meps, 300)}.png${vq(meps)}`,
+            cap: "MEPS 2.5 km"};
+  const mArch = MAN.mepsArchive?.hours?.[tag];
+  if (mArch)
+    return {url: `${MAPS_BASE}/maps/meps/${mArch}/${tag}_alt${thrOf(meps, 300)}.png${vq(meps)}`,
+            cap: "MEPS · archived"};
+  if (fused?.hours?.includes(iso))
+    return {url: `${MAPS_BASE}/${fused.path}/${tag}_alt${thrOf(fused, 300)}.png${vq(fused)}`,
+            cap: "fused blend (ICON+MEPS+IFS+GFS+UKMO)"};
+  const fArch = MAN.fusedArchive?.hours?.[tag];
+  if (fArch)
+    return {url: `${MAPS_BASE}/maps/fused/${fArch}/${tag}_alt${thrOf(fused, 300)}.png${vq(fused)}`,
+            cap: "fused blend · archived"};
+  if (gfs?.hours?.length) {
+    // GFS runs every few hours and is carried forward between frames.
+    const ts = Date.parse(iso), step = (gfs.step_h || 3) * 3600e3;
+    let best = null;
+    for (const h of gfs.hours) {
+      const d = ts - Date.parse(h);
+      if (d >= 0 && d <= step && (best === null || Date.parse(h) > Date.parse(best)))
+        best = h;
+    }
+    if (best)
+      return {url: `${MAPS_BASE}/${gfs.path}/${vtag(best)}_alt${thrOf(gfs, 300)}.png${vq(gfs)}`,
+              cap: "GFS 0.25°"};
+  }
+  return null;
+}
+function vq(m) { return "?v=" + encodeURIComponent(m?.generated_at || m?.run || "0"); }
 
 async function json(path) {
   const r = await fetch(`${MAPS_BASE}/${path}?v=${Date.now()}`);
@@ -135,7 +195,11 @@ function draw() {
       p.setAttribute("class", "zone" + (sel === z.id ? " sel" : ""));
       p.setAttribute("fill", col);
       p.setAttribute("stroke", col);
-      p.addEventListener("click", e => { e.stopPropagation(); pick(z); });
+      p.addEventListener("click", e => {
+        e.stopPropagation();
+        if (dragged) { dragged = false; return; }
+        pick(z);
+      });
       g.appendChild(p);
     }
     ov.appendChild(g);
@@ -189,34 +253,109 @@ function buildFilters() {
 
 function showHour() {
   const iso = HOURS[+seek.value];
+  const src = iso ? pickSrc(iso) : null;
   document.getElementById("stamp").textContent =
-    iso ? fmt(iso) : "no fused map published";
-  if (iso && FUSED) {
-    const thr = (FUSED.thresholds || [300])[0];
-    document.getElementById("base").src =
-      `${MAPS_BASE}/${FUSED.path}/${vtag(iso)}_alt${thr}.png` +
-      `?v=${encodeURIComponent(FUSED.generated_at || FUSED.run || "0")}`;
-  }
+    iso ? `${fmt(iso)}${src ? " · " + src.cap : " · no map for this hour"}`
+        : "no map hours published";
+  const img = document.getElementById("base");
+  if (src) { img.style.opacity = ""; if (img.src !== src.url) img.src = src.url; }
+  else { img.removeAttribute("src"); img.style.opacity = "0"; }
   draw();
 }
+
+// ---- pan and zoom -------------------------------------------------------
+// One transform on the layer that holds BOTH the picture and the zones, so
+// they cannot drift apart, and the SVG keeps its own 570x690 units at every
+// scale (stroke widths stay honest through vector-effect).
+const V = {k: 1, x: 0, y: 0};
+const MINK = 1, MAXK = 12;
+const box = document.getElementById("box"), pan = document.getElementById("pan");
+function apply() {
+  // Never let the map be dragged off its own frame: at k=1 it is pinned.
+  const w = box.clientWidth, h = box.clientHeight;
+  V.k = Math.min(MAXK, Math.max(MINK, V.k));
+  V.x = Math.min(0, Math.max(w - w * V.k, V.x));
+  V.y = Math.min(0, Math.max(h - h * V.k, V.y));
+  pan.style.transform = `translate(${V.x}px, ${V.y}px) scale(${V.k})`;
+  document.getElementById("zoomlab").textContent =
+    `${V.k.toFixed(1)}\u00d7 \u00b7 scroll to zoom, drag to pan`;
+}
+function fit() { V.k = 1; V.x = 0; V.y = 0; apply(); }
+function zoomAt(px, py, factor) {
+  const k0 = V.k, k1 = Math.min(MAXK, Math.max(MINK, k0 * factor));
+  if (k1 === k0) return;
+  // Keep the point under the cursor where it is.
+  V.x = px - (px - V.x) * (k1 / k0);
+  V.y = py - (py - V.y) * (k1 / k0);
+  V.k = k1;
+  apply();
+}
+box.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = box.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, {passive: false});
+let drag = null;
+box.addEventListener("pointerdown", e => {
+  drag = {x: e.clientX, y: e.clientY, ox: V.x, oy: V.y, moved: 0};
+  box.setPointerCapture(e.pointerId);
+  box.classList.add("drag");
+});
+box.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy));
+  V.x = drag.ox + dx;
+  V.y = drag.oy + dy;
+  apply();
+});
+function endDrag() { box.classList.remove("drag"); }
+// A drag must not count as a click on whatever ended up under the cursor.
+// stopPropagation on pointerup does not prevent the click that follows, so
+// the click handlers check this instead.
+let dragged = false;
+box.addEventListener("pointerup", () => {
+  dragged = !!(drag && drag.moved > 4);
+  drag = null; endDrag();
+});
+box.addEventListener("pointercancel", () => { drag = null; endDrag(); });
+document.getElementById("zin").addEventListener("click",
+  () => zoomAt(box.clientWidth / 2, box.clientHeight / 2, 1.4));
+document.getElementById("zout").addEventListener("click",
+  () => zoomAt(box.clientWidth / 2, box.clientHeight / 2, 1 / 1.4));
+document.getElementById("zreset").addEventListener("click", fit);
+addEventListener("resize", apply);
 
 const seek = document.getElementById("seek");
 seek.addEventListener("input", showHour);
 document.getElementById("box").addEventListener("click", () => {
+  if (dragged) { dragged = false; return; }
   sel = null;
   document.getElementById("detail").innerHTML =
     "<h2>No zone selected</h2><div class=\"msg\">Click a zone on the map.</div>";
   draw();
 });
 
+const MANIFESTS = {
+  meps: "maps/meps/latest.json", mepsArchive: "maps/meps/archive.json",
+  fused: "maps/fused/latest.json", fusedArchive: "maps/fused/archive.json",
+  gfs: "maps/gfs/latest.json",
+};
+const NAMES = Object.keys(MANIFESTS);
 Promise.allSettled([json("maps/geozones/current.json"),
-                    json("maps/fused/latest.json")]).then(([g, f]) => {
+                    ...NAMES.map(k => json(MANIFESTS[k]))]).then(res => {
+  const g = res[0];
   if (g.status === "fulfilled") GZ = g.value;
-  if (f.status === "fulfilled") FUSED = f.value;
+  NAMES.forEach((k, i) => {
+    if (res[i + 1].status === "fulfilled") MAN[k] = res[i + 1].value;
+  });
   document.getElementById("credit").textContent =
     (GZ?.credit || "Latvijas Gaisa Satiksme / CAA of Latvia") +
     (GZ ? ` · ${GZ.zones.length} zones, read ${GZ.generated_at}` : "");
-  HOURS = (FUSED?.hours || []).slice();
+  // The hour axis is the union of what any of them can draw, so the slider
+  // never lands on an hour with no picture at all.
+  HOURS = [...new Set([...(MAN.meps?.hours || []), ...(MAN.fused?.hours || []),
+                       ...(MAN.gfs?.hours || [])])].sort();
   seek.max = Math.max(0, HOURS.length - 1);
   // Open on now, not on the start of the run: the question this page answers
   // is almost always "what is active at the moment".
@@ -224,6 +363,7 @@ Promise.allSettled([json("maps/geozones/current.json"),
   let at = HOURS.findIndex(h => Date.parse(h) >= now);
   seek.value = at < 0 ? Math.max(0, HOURS.length - 1) : at;
   buildFilters();
+  fit();
   if (!GZ) document.getElementById("counts").innerHTML =
     "<h2>No zones</h2><div class=\"msg\">maps/geozones/current.json is not " +
     "published yet — the geozones workflow writes it after each ingest.</div>";
