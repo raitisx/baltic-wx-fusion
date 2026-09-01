@@ -1,98 +1,116 @@
-"""Southern Lithuania is empty in our render. Which stage empties it?
+"""Can we draw Latvian NOTAMs and drone geozones on the map?
 
-The source paints echo down there; our LT2 render, and both antenna panels
-cut from it, are blank below roughly 55 N. Run one sweep through the whole
-chain and count the echo in that band at every stage, then look at what the
-source actually puts there, colour by colour.
+Two questions, both about whether a machine-readable feed exists at all:
+  - UAS geographical zones: EU 2019/947 Art 15 makes states publish these in
+    a common digital format, and EASA points at EUROCAE ED-269 (JSON). LGS
+    has a viewer that refreshes every 5 min, so something behind it is live.
+  - NOTAM: normally behind a briefing login (ibs.lgs.lv), but ais.lgs.lv
+    appears to serve plain "in force" listings without one.
+
+This just knocks on the doors and reports what comes back.
 """
-import datetime as dt
-import io
+import json
+import re
 import sys
 
 sys.path.insert(0, ".")
 
-import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
+from wxfusion.http import session  # noqa: E402
 
-from wxfusion import config, proj3059 as P, radar_store as R  # noqa: E402
-from wxfusion import scrape_maps as S  # noqa: E402
+s = session()
+s.headers.update({"User-Agent": "Mozilla/5.0 (compatible; ttaero-meteo/1.0)"})
 
-s3 = R.r2_client()
-# The band the user circled: southern Lithuania and over the border.
-Y0, Y1, X0, X1 = 530, 690, 60, 470
-roi = np.zeros((P.H, P.W), bool)
-roi[Y0:Y1, X0:X1] = True
-print(f"ROI rows {Y0}..{Y1}, cols {X0}..{X1} "
-      f"({P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - Y1 * (P.Y1 - P.Y0) / P.H)[1]:.2f}"
-      f"..{P.to_lonlat((P.X0 + P.X1) / 2, P.Y1 - Y0 * (P.Y1 - P.Y0) / P.H)[1]:.2f} N)")
+PAGES = [
+    ("AIS root", "https://ais.lgs.lv/"),
+    ("UAS geozones page", "https://ais.lgs.lv/page/UAS_geozones"),
+    ("NOTAM in force for a day",
+     "https://ais.lgs.lv/notam/displayfile/In force for a day"),
+    ("NOTAM in force", "https://ais.lgs.lv/notam/displayfile/In force"),
+    ("eUARV viewer", "https://airspace.lv/drones/en"),
+    ("CAA geozones", "https://droni.caa.gov.lv/uas-geografiskas-zonas/"),
+]
 
+URL_RE = re.compile(r"""["'(]((?:https?:)?/[^"'()\s]{4,200})["')]""")
+found = set()
 
-def n(a, m=None):
-    b = a > 0
-    return int((b & roi).sum()), int(b.sum())
-
-
-for day in (dt.date(2026, 8, 22), dt.date(2026, 8, 23)):
-    idx = R._load_index(s3, day)
-    lt = sorted((f for f in idx.get("frames", [])
-                 if f.get("code") == "LT2" and not f.get("grid3059")),
-                key=lambda f: f["time"])
-    if not lt:
-        print(f"\n{day}: no LT2 frames")
+for name, url in PAGES:
+    print(f"\n=== {name}\n    {url}")
+    try:
+        r = s.get(url, timeout=60)
+    except Exception as e:
+        print(f"    {type(e).__name__}: {e}")
         continue
-    tgt = dt.datetime.combine(day, dt.time(12, 13), tzinfo=dt.timezone.utc)
-    f = min(lt, key=lambda f: abs(
-        (dt.datetime.strptime(f["time"], "%Y-%m-%dT%H:%M:%SZ")
-         .replace(tzinfo=dt.timezone.utc) - tgt).total_seconds()))
-    print(f"\n=== {day} sweep {f['time']} ===")
-    body = s3.get_object(Bucket=config.R2_BUCKET, Key=f["key"])["Body"].read()
-    arr = np.array(Image.open(io.BytesIO(body)).convert("RGBA"))
-    sw, ne = tuple(f["sw"]), tuple(f["ne"])
+    ct = r.headers.get("content-type", "?")
+    print(f"    HTTP {r.status_code}  {ct}  {len(r.content):,} bytes")
+    if not r.ok:
+        print("   ", r.text[:200].replace("\n", " "))
+        continue
+    txt = r.text
+    if "json" in ct:
+        try:
+            j = json.loads(txt)
+            print("    JSON keys:", list(j)[:15] if isinstance(j, dict)
+                  else f"list of {len(j)}")
+        except Exception as e:
+            print("    not parseable:", e)
+        continue
+    if "html" not in ct and "xml" not in ct:
+        print("    (binary/other, first bytes)", r.content[:60])
+        continue
+    # Every link and every URL-shaped string in the scripts.
+    links = re.findall(r'(?:href|src|action)="([^"]+)"', txt)
+    interesting = [u for u in links
+                   if re.search(r"\.(json|geojson|kml|kmz|zip|xml|csv|txt)"
+                                r"($|\?)", u, re.I)
+                   or re.search(r"(geozone|uas|notam|download|api|export)",
+                                u, re.I)]
+    for u in list(dict.fromkeys(interesting))[:25]:
+        print("    link:", u)
+        found.add((url, u))
+    api = [u for u in dict.fromkeys(URL_RE.findall(txt))
+           if re.search(r"(api|geozone|zones|notam|json|wfs|wms|arcgis|"
+                        r"features|layer)", u, re.I)]
+    for u in api[:25]:
+        print("    script url:", u)
+        found.add((url, u))
+    # A page with no markup worth reading: show its text, it may BE the data.
+    body = re.sub(r"<[^>]+>", " ", txt)
+    body = re.sub(r"\s+", " ", body).strip()
+    if len(body) < 4000 and body:
+        print("    text:", body[:600])
+    elif "NOTAM" in txt.upper():
+        m = re.search(r"([A-Z]\d{4}/\d{2}[\s\S]{0,400})", body)
+        if m:
+            print("    looks like NOTAM text:", m.group(1)[:400])
 
-    raw = P.resample_mercator_image(arr, sw, ne)
-    painted = (raw[..., 3] > 60)
-    print(f"  source painted            ROI {int((painted & roi).sum()):7,d}"
-          f"   all {int(painted.sum()):8,d}")
+print("\n\n=== following the candidates that look like data ===")
+from urllib.parse import urljoin  # noqa: E402
 
-    plain = S._classify_intensity(arr, "LT2")
-    prep = S._prepare_source_raw(arr, "LT2", f)
-    cal = S._calibrate_lev(prep, "LT2")
-    for name, g in (("classify (source frame)", plain),
-                    ("after source beam work", prep),
-                    ("after calibration", cal)):
-        # these are in the SOURCE frame, so warp before counting on our grid
-        w = P.resample_mercator_image(g, sw, ne)
-        a, b = n(w)
-        print(f"  {name:25s} ROI {a:7,d}   all {b:8,d}")
-
-    grid = P.resample_mercator_image(cal, sw, ne)
-    stages = [("warped to canvas", grid)]
-    g = S._despeckle(grid);                stages.append(("despeckle", g))
-    g = S._remove_beams_polar(g);          stages.append(("beams polar", g))
-    g = S._remove_beam_lines(g);           stages.append(("beam lines", g))
-    g = S._despeckle_intensity(g);         stages.append(("despeckle intensity", g))
-    g = S._close_radial_spokes(g);         stages.append(("close spokes", g))
-    for name, gg in stages:
-        a, b = n(gg)
-        print(f"  {name:25s} ROI {a:7,d}   all {b:8,d}")
-
-    rgba = np.array(S._recolor(g, None, "LT2", None))
-    vis = rgba[..., 3] > 8
-    print(f"  {'after recolor + fade':25s} ROI {int((vis & roi).sum()):7,d}"
-          f"   all {int(vis.sum()):8,d}")
-
-    # What IS the source painting in that band, colour by colour?
-    src_roi = raw[roi & painted]
-    if src_roi.size:
-        cols, cnt = np.unique(src_roi[:, :3].reshape(-1, 3), axis=0,
-                              return_counts=True)
-        order = np.argsort(-cnt)[:12]
-        print("  top source colours in the ROI, and the level they classify to:")
-        for i in order:
-            c = cols[i]
-            px = np.zeros((1, 1, 4), np.uint8)
-            px[0, 0, :3] = c
-            px[0, 0, 3] = 255
-            lev = int(S._classify_intensity(px, "LT2")[0, 0])
-            print(f"    rgb{tuple(int(x) for x in c)}  {int(cnt[i]):6,d} px"
-                  f"   -> level {lev}{'   DROPPED' if lev == 0 else ''}")
+for base, u in sorted(found):
+    full = urljoin(base, u)
+    if not re.search(r"\.(json|geojson|kml|kmz|zip|xml)($|\?)|api|export|"
+                     r"features", full, re.I):
+        continue
+    try:
+        r = s.get(full, timeout=90)
+    except Exception as e:
+        print(f"  {full}\n    {type(e).__name__}: {e}")
+        continue
+    ct = r.headers.get("content-type", "?")
+    print(f"  {full}\n    HTTP {r.status_code}  {ct}  {len(r.content):,} bytes")
+    if r.ok and ("json" in ct or full.lower().endswith((".json", ".geojson"))):
+        try:
+            j = json.loads(r.text)
+        except Exception as e:
+            print("    not parseable:", e)
+            continue
+        if isinstance(j, dict):
+            print("    keys:", list(j)[:15])
+            # ED-269 shape: {"features":[{"geometry":..., "applicability":...}]}
+            feats = j.get("features") or j.get("geozone") or []
+            if isinstance(feats, list) and feats:
+                print(f"    {len(feats)} features; first:")
+                print("   ", json.dumps(feats[0], ensure_ascii=False)[:900])
+        else:
+            print(f"    list of {len(j)}; first:",
+                  json.dumps(j[0], ensure_ascii=False)[:600] if j else "")
