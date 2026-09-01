@@ -1,0 +1,41 @@
+name: geozones
+# Latvian UAS geographical zones (ED-269) -> Postgres, twice a day.
+#
+# The schedule the user asked for is 06:00 and 17:00 LOCAL. Cron here is UTC
+# only and Riga moves between UTC+2 and UTC+3, so fire at all four candidate
+# hours and let the job check the Riga clock; the two that are not the local
+# hour exit in a few seconds without making a request.
+on:
+  schedule:
+    - cron: "0 3,4,14,15 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run regardless of the local hour"
+        default: "1"
+      keep_days:
+        description: "Days of withdrawn-zone history to keep"
+        default: "365"
+
+concurrency:
+  group: geozones
+  cancel-in-progress: false
+
+jobs:
+  geozones:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Dependencies
+        run: pip install -r requirements.txt
+      - name: UAS geozones -> DB
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GEOZONES_FORCE: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.force || '1') || '0' }}
+          GEOZONES_KEEP_DAYS: ${{ github.event.inputs.keep_days || '365' }}
+        run: python jobs/run_geozones.py

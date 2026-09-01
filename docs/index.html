@@ -359,7 +359,17 @@
       Sources: <a href="https://open-meteo.com/">Open-Meteo</a> (CC-BY 4.0) &middot; MET Norway MEPS (CC-BY) &middot; ICM UW meteo.pl UM (advisory)
       &middot; radar LVĢMC / Keskkonnaagentuur (<a href="https://www.ilmateenistus.ee/">ilmateenistus.ee</a>) / LHMT
       (<a href="https://www.meteo.lt/">meteo.lt</a>, CC BY-SA 4.0) via meteolapa.lv / SMHI (<a href="https://opendata.smhi.se/">Öppna Data</a>, CC BY 4.0) / FMI (<a href="https://en.ilmatieteenlaitos.fi/open-data">open data</a>, CC BY 4.0)
-      &middot; observations LVĢMC (data.gov.lv, CC0), METAR via Iowa State IEM.
+      &middot; observations LVĢMC (data.gov.lv, CC0), METAR via Iowa State IEM
+      &middot; UAS geographical zones
+      <a href="https://ais.lgs.lv/page/UAS_geozones">Latvijas Gaisa Satiksme</a>
+      / <a href="https://droni.caa.gov.lv/uas-geografiskas-zonas/">Civil Aviation
+      Agency of Latvia</a>, published under EU 2019/947 Art 15 (EUROCAE ED-269).
+    </div>
+    <div class="mapnote">
+      Airspace and drone-zone information here is <b>not a briefing</b>. Fly
+      against the official sources: the
+      <a href="https://ais.lgs.lv/">AIS of Latvia</a> and the CAA&rsquo;s
+      <a href="https://e.caa.gov.lv/">UAS information system</a>.
     </div>
   </div>
 </div>
@@ -3130,7 +3140,7 @@ async function initMapsViewer(){
     if(i>=0 && (i!==MV.idx || MV.q)) mapShow(i, 0);
   };
   const diag=[
-    "page v149",
+    "page v150",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
