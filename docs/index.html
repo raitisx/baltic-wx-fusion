@@ -363,7 +363,8 @@
       &middot; UAS geographical zones
       <a href="https://ais.lgs.lv/page/UAS_geozones">Latvijas Gaisa Satiksme</a>
       / <a href="https://droni.caa.gov.lv/uas-geografiskas-zonas/">Civil Aviation
-      Agency of Latvia</a>, published under EU 2019/947 Art 15 (EUROCAE ED-269).
+      Agency of Latvia</a>, published under EU 2019/947 Art 15 (EUROCAE ED-269)
+      &mdash; drawn on their own page, <a href="geozones.html">drone zones</a>.
     </div>
     <div class="mapnote">
       Airspace and drone-zone information here is <b>not a briefing</b>. Fly
@@ -3140,7 +3141,7 @@ async function initMapsViewer(){
     if(i>=0 && (i!==MV.idx || MV.q)) mapShow(i, 0);
   };
   const diag=[
-    "page v150",
+    "page v151",
     "points: "+POINTS.length,
     "fused: "+(MV.loaded.fused?`${MV.loaded.fused.hours.length}h (run ${MV.loaded.fused.run})`:"—"),
     "meps: "+(MV.loaded.meps?`${MV.loaded.meps.hours.length}h (run ${MV.loaded.meps.run})`:"—"),
