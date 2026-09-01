@@ -188,6 +188,115 @@ def ingest(doc: dict, name: str, eff: dt.datetime, crc: str | None,
     return out
 
 
+PUBLISH_KEY = "maps/geozones/current.json"
+CIRCLE_STEPS = 64
+
+
+def _rings_px(geometry):
+    """ED-269 geometry -> rings in canvas pixels, ready for the page's SVG.
+
+    Every map on the site is the same 570x690 EPSG:3059 raster, and the page
+    overlays it with a viewBox in exactly those units — so projecting here
+    means the page draws the zones with no geodesy of its own, and they line
+    up with the weather by construction.
+    """
+    import math
+
+    from . import proj3059 as P
+
+    def px(lon, lat):
+        x, y = P.to_xy(float(lon), float(lat))
+        return (round((x - P.X0) / (P.X1 - P.X0) * P.W, 1),
+                round((P.Y1 - y) / (P.Y1 - P.Y0) * P.H, 1))
+
+    out = []
+    for g in geometry or []:
+        hp = g.get("horizontalProjection") or {}
+        kind = (hp.get("type") or "").lower()
+        if kind == "circle" or (hp.get("radius") and hp.get("center")):
+            lon, lat = (hp.get("center") or hp.get("centre"))[:2]
+            rad = float(hp["radius"])          # metres, per ED-269
+            dlat = rad / 111_320.0
+            dlon = dlat / max(0.05, math.cos(math.radians(float(lat))))
+            ring = [px(float(lon) + dlon * math.cos(2 * math.pi * i / CIRCLE_STEPS),
+                       float(lat) + dlat * math.sin(2 * math.pi * i / CIRCLE_STEPS))
+                    for i in range(CIRCLE_STEPS)]
+            out.append(ring + [ring[0]])
+            continue
+        polys = hp.get("coordinates") or []
+        if kind == "polygon":
+            polys = [polys]
+        elif kind != "multipolygon":
+            continue
+        for poly in polys:
+            for ring in poly:
+                pts, last = [], None
+                for c in ring:
+                    q = px(c[0], c[1])
+                    if q != last:                # drop repeats after rounding
+                        pts.append(q)
+                        last = q
+                if len(pts) >= 3:
+                    out.append(pts)
+    return out
+
+
+def publish(s3=None) -> dict:
+    """The live zones -> one JSON on R2 for docs/geozones.html.
+
+    Read from the table rather than from the document, so the page shows
+    exactly what was stored and a failed fetch cannot blank the map.
+    """
+    import json as _json
+
+    from . import config as _config
+    from .radar_store import r2_client
+
+    s3 = s3 or r2_client()
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("""select identifier, name, restriction, zone_type,
+                              other_reason, permanent, starts_at, ends_at,
+                              lower_limit, lower_ref, upper_limit, upper_ref,
+                              uom, geometry, zone, last_seen
+                         from wx.uas_geozones_current
+                        order by identifier""")
+        rows = cur.fetchall()
+    zones, dropped = [], 0
+    for (zid, name, restr, ztype, other, perm, starts, ends,
+         lo, lo_ref, up, up_ref, uom, geom, zone, seen) in rows:
+        rings = _rings_px(geom)
+        if not rings:
+            dropped += 1
+            continue
+        auth = (zone.get("zoneAuthority") or [{}])[0] or {}
+        zones.append({
+            "id": zid, "name": (name or "").strip(), "restriction": restr,
+            "type": ztype, "reason": other, "permanent": bool(perm),
+            "from": starts.isoformat() if starts else None,
+            "to": ends.isoformat() if ends else None,
+            "lower": lo, "lower_ref": lo_ref,
+            "upper": up, "upper_ref": up_ref, "uom": uom,
+            "msg": zone.get("message"),
+            "auth": auth.get("name"), "auth_service": auth.get("service"),
+            "auth_email": auth.get("email"), "auth_phone": auth.get("phone"),
+            "rings": rings,
+        })
+    from . import proj3059 as P
+    doc = {
+        "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M"),
+        "canvas": {"w": P.W, "h": P.H},
+        "credit": CREDIT,
+        "zones": zones,
+    }
+    body = _json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
+    s3.put_object(Bucket=_config.R2_BUCKET, Key=PUBLISH_KEY, Body=body,
+                  ContentType="application/json",
+                  CacheControl="public, max-age=300")
+    log.info("geozones: published %d zones (%d with no drawable geometry), "
+             "%.0f kB", len(zones), dropped, len(body) / 1024)
+    return {"zones": len(zones), "dropped": dropped, "bytes": len(body)}
+
+
 def prune(keep_days: int = KEEP_DAYS) -> dict:
     """A year of history, no more.
 
@@ -212,6 +321,10 @@ def run(keep_days: int = KEEP_DAYS) -> dict:
     doc, name, eff, crc, md5 = fetch()
     out = ingest(doc, name, eff, crc, md5)
     out["pruned"] = prune(keep_days)
+    try:
+        out["published"] = publish()
+    except Exception:
+        log.exception("geozones: the JSON for the page was not published")
     log.info("geozones: %d zones (%d new versions, %d withdrawn), "
              "snapshot %s%s, pruned %s",
              out["zones"], out["new"], out["withdrawn"], eff,

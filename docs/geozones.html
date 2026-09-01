@@ -1,0 +1,232 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>UAS geozones over the fused map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light; --ink:#1d2635; --dim:#6b7688; --line:#d8dde6; }
+  body { margin:0; background:#f2f4f7; color:var(--ink);
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding:12px 16px 6px; }
+  h1 { font-size:17px; margin:0 0 4px; font-weight:700; }
+  .hint { color:var(--dim); font-size:12px; max-width:none; }
+  .wrap { display:flex; gap:16px; align-items:flex-start; padding:0 16px 20px;
+          flex-wrap:wrap; }
+  /* The fused map is 570x690 in the three-column view. This page is the same
+     map on its own at twice that, which is the whole point of it. */
+  .mapbox { position:relative; width:1140px; max-width:100%;
+            aspect-ratio:570/690; background:#f7f5ef; border:1px solid var(--line);
+            border-radius:8px; overflow:hidden; }
+  .mapbox img, .mapbox svg { position:absolute; inset:0;
+                             width:100%; height:100%; }
+  .mapbox img { object-fit:fill; }
+  .side { flex:1; min-width:260px; max-width:420px; }
+  .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+         margin:0 0 8px; }
+  button, select { font:inherit; font-size:12px; padding:3px 8px;
+                   border:1px solid var(--line); border-radius:5px;
+                   background:#fff; color:var(--ink); cursor:pointer; }
+  button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .key { display:flex; gap:6px; align-items:center; font-size:12px; }
+  .sw { width:14px; height:14px; border-radius:3px; display:inline-block; }
+  .zone { fill-opacity:.22; stroke-width:1.6; vector-effect:non-scaling-stroke;
+          cursor:pointer; }
+  .zone:hover { fill-opacity:.42; }
+  .zone.sel { fill-opacity:.55; stroke-width:3; }
+  .card { border:1px solid var(--line); border-radius:8px; background:#fff;
+          padding:10px 12px; margin-bottom:10px; }
+  .card h2 { font-size:13px; margin:0 0 6px; }
+  .card dl { margin:0; display:grid; grid-template-columns:auto 1fr;
+             gap:2px 10px; font-size:12px; }
+  .card dt { color:var(--dim); }
+  .card dd { margin:0; }
+  .msg { font-size:12px; color:var(--dim); margin-top:8px; }
+  .stamp { text-align:center; font-weight:600; padding-top:6px; }
+  input[type=range] { width:100%; }
+  a { color:#2a6db5; }
+  @media (max-width:1200px) { .mapbox { width:100%; } }
+</style>
+<header>
+  <h1>UAS geographical zones &mdash; Latvia</h1>
+  <div class="hint">
+    The Baltic fused map at twice the size, with the drone zones over it.
+    Drag the slider to move both: the map to that hour, and the zones to
+    the ones <b>in force at that hour</b>. Colour is the restriction, not the
+    severity of the weather. Click a zone for its limits and who to ask.
+    <b>This is not a briefing</b> &mdash; fly against the
+    <a href="https://ais.lgs.lv/">AIS of Latvia</a> and the CAA&rsquo;s
+    <a href="https://e.caa.gov.lv/">UAS information system</a>.
+  </div>
+</header>
+<div class="wrap">
+  <div>
+    <div class="ctl" id="filters"></div>
+    <div class="mapbox" id="box">
+      <img id="base" alt="">
+      <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
+    </div>
+    <input type="range" id="seek" min="0" max="0" value="0" step="1">
+    <div class="stamp" id="stamp">loading…</div>
+  </div>
+  <div class="side">
+    <div class="card" id="detail"><h2>No zone selected</h2>
+      <div class="msg">Click a zone on the map.</div></div>
+    <div class="card" id="counts"></div>
+    <div class="card"><h2>Source</h2><div class="msg" id="credit"></div></div>
+  </div>
+</div>
+<script>
+const QS = new URLSearchParams(location.search);
+const MAPS_BASE = QS.get("maps") || (() => {
+  const p = location.pathname.replace(/\/[^\/]*$/, "").replace(/\/+$/, "");
+  if (p.endsWith("/meteo")) return location.origin + p;
+  if (/^meteo\./i.test(location.hostname)) return location.origin;
+  return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
+})();
+
+// Restriction is the only thing worth colouring: it is what decides whether
+// you may fly, and it is the one field every zone carries.
+const COLOUR = {
+  PROHIBITED:        "#c0392b",
+  REQ_AUTHORISATION: "#d98324",
+  CONDITIONAL:       "#3d7ea6",
+  NO_RESTRICTION:    "#4a8f5b",
+};
+const ORDER = ["PROHIBITED", "REQ_AUTHORISATION", "CONDITIONAL", "NO_RESTRICTION"];
+const off = new Set();
+let GZ = null, FUSED = null, HOURS = [], sel = null;
+
+async function json(path) {
+  const r = await fetch(`${MAPS_BASE}/${path}?v=${Date.now()}`);
+  if (!r.ok) throw new Error(`${path} -> HTTP ${r.status}`);
+  return r.json();
+}
+function vtag(iso) { return iso.replace(/[-:]/g, "").slice(0, 11); }
+function fmt(iso) {
+  return new Date(iso).toLocaleString("en-GB", {
+    weekday: "short", day: "2-digit", month: "2-digit",
+    hour: "2-digit", minute: "2-digit", timeZone: "Europe/Riga"}) + " Riga";
+}
+
+// A zone counts as in force when the hour on the slider falls inside its
+// applicability window. An open end means it is standing, not expired — the
+// ED-269 permanent flag is never set in the Latvian file, so the window is
+// the only honest test.
+function live(z, t) {
+  const a = z.from ? Date.parse(z.from) : -Infinity;
+  const b = z.to ? Date.parse(z.to) : Infinity;
+  return t >= a && t <= b;
+}
+
+function draw() {
+  const t = Date.parse(HOURS[+seek.value] || HOURS[0] || Date.now());
+  const ov = document.getElementById("ov");
+  ov.textContent = "";
+  const tally = {};
+  for (const z of (GZ?.zones || [])) {
+    tally[z.restriction] = tally[z.restriction] || {live: 0, total: 0};
+    tally[z.restriction].total++;
+    if (!live(z, t) || off.has(z.restriction)) continue;
+    tally[z.restriction].live++;
+    const col = COLOUR[z.restriction] || "#7a8395";
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    for (const ring of z.rings) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      p.setAttribute("points", ring.map(c => c.join(",")).join(" "));
+      p.setAttribute("class", "zone" + (sel === z.id ? " sel" : ""));
+      p.setAttribute("fill", col);
+      p.setAttribute("stroke", col);
+      p.addEventListener("click", e => { e.stopPropagation(); pick(z); });
+      g.appendChild(p);
+    }
+    ov.appendChild(g);
+  }
+  document.getElementById("counts").innerHTML =
+    "<h2>In force at this hour</h2><dl>" + ORDER.map(k =>
+      `<dt><span class="sw" style="background:${COLOUR[k]}"></span> ${k.replace(/_/g, " ").toLowerCase()}</dt>` +
+      `<dd>${(tally[k]?.live) || 0} <span style="color:var(--dim)">of ${(tally[k]?.total) || 0}</span></dd>`
+    ).join("") + "</dl>";
+}
+
+function pick(z) {
+  sel = z.id;
+  const alt = (lo, loRef, up, upRef, uom) => {
+    const u = (uom || "M").toLowerCase() === "ft" ? "ft" : "m";
+    return `${lo ?? "?"} ${loRef || ""} – ${up ?? "?"} ${upRef || ""} (${u})`;
+  };
+  document.getElementById("detail").innerHTML =
+    `<h2>${z.name || z.id}</h2><dl>` +
+    `<dt>restriction</dt><dd>${z.restriction}</dd>` +
+    `<dt>reason</dt><dd>${z.reason || "—"}</dd>` +
+    `<dt>vertical</dt><dd>${alt(z.lower, z.lower_ref, z.upper, z.upper_ref, z.uom)}</dd>` +
+    `<dt>from</dt><dd>${z.from ? fmt(z.from) : "—"}</dd>` +
+    `<dt>until</dt><dd>${z.to ? fmt(z.to) : "open-ended"}</dd>` +
+    `<dt>authority</dt><dd>${z.auth || "—"}${z.auth_service ? "<br>" + z.auth_service : ""}` +
+    `${z.auth_email ? "<br>" + z.auth_email : ""}${z.auth_phone ? "<br>" + z.auth_phone : ""}</dd>` +
+    `<dt>id</dt><dd>${z.id}</dd></dl>` +
+    (z.msg ? `<div class="msg">${z.msg}</div>` : "");
+  draw();
+}
+
+function buildFilters() {
+  const box = document.getElementById("filters");
+  box.textContent = "";
+  for (const k of ORDER) {
+    const b = document.createElement("button");
+    b.className = "on";
+    b.innerHTML = `<span class="sw" style="background:${COLOUR[k]}"></span> ` +
+                  k.replace(/_/g, " ").toLowerCase();
+    b.style.display = "inline-flex";
+    b.style.gap = "6px";
+    b.style.alignItems = "center";
+    b.addEventListener("click", () => {
+      if (off.has(k)) { off.delete(k); b.classList.add("on"); }
+      else { off.add(k); b.classList.remove("on"); }
+      draw();
+    });
+    box.appendChild(b);
+  }
+}
+
+function showHour() {
+  const iso = HOURS[+seek.value];
+  document.getElementById("stamp").textContent =
+    iso ? fmt(iso) : "no fused map published";
+  if (iso && FUSED) {
+    const thr = (FUSED.thresholds || [300])[0];
+    document.getElementById("base").src =
+      `${MAPS_BASE}/${FUSED.path}/${vtag(iso)}_alt${thr}.png` +
+      `?v=${encodeURIComponent(FUSED.generated_at || FUSED.run || "0")}`;
+  }
+  draw();
+}
+
+const seek = document.getElementById("seek");
+seek.addEventListener("input", showHour);
+document.getElementById("box").addEventListener("click", () => {
+  sel = null;
+  document.getElementById("detail").innerHTML =
+    "<h2>No zone selected</h2><div class=\"msg\">Click a zone on the map.</div>";
+  draw();
+});
+
+Promise.allSettled([json("maps/geozones/current.json"),
+                    json("maps/fused/latest.json")]).then(([g, f]) => {
+  if (g.status === "fulfilled") GZ = g.value;
+  if (f.status === "fulfilled") FUSED = f.value;
+  document.getElementById("credit").textContent =
+    (GZ?.credit || "Latvijas Gaisa Satiksme / CAA of Latvia") +
+    (GZ ? ` · ${GZ.zones.length} zones, read ${GZ.generated_at}` : "");
+  HOURS = (FUSED?.hours || []).slice();
+  seek.max = Math.max(0, HOURS.length - 1);
+  // Open on now, not on the start of the run: the question this page answers
+  // is almost always "what is active at the moment".
+  const now = Date.now();
+  let at = HOURS.findIndex(h => Date.parse(h) >= now);
+  seek.value = at < 0 ? Math.max(0, HOURS.length - 1) : at;
+  buildFilters();
+  if (!GZ) document.getElementById("counts").innerHTML =
+    "<h2>No zones</h2><div class=\"msg\">maps/geozones/current.json is not " +
+    "published yet — the geozones workflow writes it after each ingest.</div>";
+  showHour();
+});
+</script>

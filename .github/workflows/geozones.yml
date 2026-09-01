@@ -32,10 +32,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt && pip install pyproj
       - name: UAS geozones -> DB
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: baltic-wx
           GEOZONES_FORCE: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.force || '1') || '0' }}
           GEOZONES_KEEP_DAYS: ${{ github.event.inputs.keep_days || '365' }}
         run: python jobs/run_geozones.py
