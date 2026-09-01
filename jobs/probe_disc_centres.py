@@ -1,13 +1,15 @@
-"""Does the ED-269 geozone file actually download, and what is in it?
+"""Are the PERMANENT UAS geozones also published in the AIP?
 
-The listing page is public and names the current file, but the API root
-answers 401 — so the question is whether the file itself is open, and
-whether it carries what a map layer needs: geometry, vertical limits, and
-an applicability window that says when a zone is ACTIVE.
+The ED-269 file carries permanent and temporary zones together. If the
+permanent ones are the AIP's own restricted/prohibited/danger areas, then
+they have published names, limits and an AIRAC cycle behind them, and the
+ED-269 record is a redistribution rather than a separate truth. Walk the
+eAIP the user linked: find ENR 5.1 (prohibited, restricted, danger) and
+anything naming UAS, and list what those sections actually hold.
 """
-import json
 import re
 import sys
+from urllib.parse import urljoin
 
 sys.path.insert(0, ".")
 
@@ -15,69 +17,76 @@ from wxfusion.http import session  # noqa: E402
 
 s = session()
 s.headers.update({"User-Agent": "Mozilla/5.0 (compatible; ttaero-meteo/1.0)"})
+ROOT = ("https://ais.lgs.lv/eAIPfiles/2026_005_09-JUL-2026/data/"
+        "2026-07-09/html/index.html")
 
-idx = s.get("https://drz.lv/api/v1/export-history/iframe-eng", timeout=60)
-names = re.findall(r"(UASZoneVersion_[A-Za-z0-9_]+\.json)", idx.text)
-print("listing names the file(s):", names)
 
-base = "https://drz.lv/api/v1/export-history/UASZoneVersion"
-tries = [base]
-tries += [f"{base}/{n}" for n in names]
-tries += [f"https://drz.lv/api/v1/export-history/{n}" for n in names]
-
-doc = None
-for u in tries:
+def get(u):
     try:
-        r = s.get(u, timeout=120)
+        return s.get(u, timeout=60)
     except Exception as e:
-        print(f"  {u}\n    {type(e).__name__}: {e}")
-        continue
-    ct = r.headers.get("content-type", "?")
-    print(f"  {u}\n    HTTP {r.status_code}  {ct}  {len(r.content):,} bytes")
-    if r.ok and len(r.content) > 200:
-        try:
-            doc = r.json()
-            print("    ^ parsed as JSON")
-            break
-        except Exception:
-            body = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r.text)).strip()
-            print("    not JSON:", body[:300])
+        print(f"    {type(e).__name__}: {e}")
+        return None
 
-if doc is None:
-    raise SystemExit("\nno JSON retrieved")
 
-print("\n=== the document ===")
-print("top-level keys:", list(doc) if isinstance(doc, dict) else type(doc))
-feats = doc.get("features") if isinstance(doc, dict) else None
-if not isinstance(feats, list):
-    print(json.dumps(doc, ensure_ascii=False)[:1500])
+def text_of(html):
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    t = re.sub(r"<[^>]+>", " ", t)
+    return re.sub(r"[ \t\xa0]+", " ", t)
+
+
+print("=== eAIP index ===")
+r = get(ROOT)
+print(f"  HTTP {r.status_code if r else '-'}  {len(r.content) if r else 0:,} B")
+if not r or not r.ok:
     raise SystemExit
-print(f"{len(feats)} zones")
-kinds, restr, perm = {}, {}, {"permanent": 0, "timed": 0}
-for f in feats:
-    kinds[f.get("type")] = kinds.get(f.get("type"), 0) + 1
-    restr[f.get("restriction")] = restr.get(f.get("restriction"), 0) + 1
-    ap = f.get("applicability") or []
-    if any((a or {}).get("permanent") == "YES" for a in ap):
-        perm["permanent"] += 1
-    else:
-        perm["timed"] += 1
-print("type:       ", kinds)
-print("restriction:", restr)
-print("timing:     ", perm)
+# The index is usually a frameset; follow the menu/toc frames too.
+frames = re.findall(r'(?:src|href)="([^"]+\.html?)"', r.text)
+pages = {urljoin(ROOT, f) for f in frames}
+print(f"  {len(pages)} linked pages in the index")
 
-geo = {}
-for f in feats:
-    for g in f.get("geometry") or []:
-        hp = g.get("horizontalProjection") or {}
-        geo[hp.get("type")] = geo.get(hp.get("type"), 0) + 1
-print("geometry:   ", geo)
+# Collect the whole link graph one level deeper, looking for ENR 5 and UAS.
+seen, hits = set(), {}
+todo = list(pages)[:12]
+while todo:
+    u = todo.pop(0)
+    if u in seen:
+        continue
+    seen.add(u)
+    rr = get(u)
+    if rr is None or not rr.ok or "html" not in rr.headers.get("content-type", ""):
+        continue
+    for href in re.findall(r'href="([^"]+\.html?)"', rr.text):
+        full = urljoin(u, href)
+        name = full.rsplit("/", 1)[-1]
+        if re.search(r"ENR-5\.[15]|UAS|RMZ|GEN-", name, re.I):
+            hits[name] = full
+        if full not in seen and len(seen) < 14:
+            todo.append(full)
 
-print("\n--- one zone verbatim ---")
-print(json.dumps(feats[0], ensure_ascii=False, indent=1)[:1800])
-timed = next((f for f in feats
-              if not any((a or {}).get("permanent") == "YES"
-                         for a in (f.get("applicability") or []))), None)
-if timed:
-    print("\n--- one TIMED zone (the ones worth showing as active/not) ---")
-    print(json.dumps(timed, ensure_ascii=False, indent=1)[:1800])
+print("\n=== sections that could hold the zones ===")
+for name, full in sorted(hits.items()):
+    print("  ", name)
+
+want = {n: u for n, u in hits.items() if re.search(r"ENR-5\.1|UAS", n, re.I)}
+if not want:
+    # fall back to the conventional eAIP file naming
+    for guess in ("EV-ENR-5.1-en-GB.html", "EV-ENR-5.5-en-GB.html",
+                  "EV-ENR-1.1-en-GB.html"):
+        want[guess] = urljoin(ROOT, "eAIP/" + guess)
+
+for name, full in sorted(want.items()):
+    print(f"\n=== {name}\n    {full}")
+    rr = get(full)
+    if rr is None or not rr.ok:
+        print(f"    HTTP {rr.status_code if rr else '-'}")
+        continue
+    body = text_of(rr.text)
+    print(f"    HTTP {rr.status_code}  {len(rr.content):,} B")
+    ids = re.findall(r"\bEV\s?[PRD]\s?-?\s?\d{1,3}\b", body)
+    print(f"    area designators found: {len(ids)}  {sorted(set(ids))[:20]}")
+    if re.search(r"UAS|unmanned|bezpilota", body, re.I):
+        for m in re.finditer(r"(.{0,180}(?:UAS|unmanned).{0,220})", body, re.I):
+            print("    ...", re.sub(r"\s+", " ", m.group(1)).strip()[:380])
+            break
+    print("    first 700 chars:", re.sub(r"\s+", " ", body).strip()[:700])
