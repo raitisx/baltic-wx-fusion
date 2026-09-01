@@ -32,8 +32,15 @@ jobs:
           # own name at the bucket ROOT, because both Workers proxy
           # "/<anything>" to "<anything>" verbatim — so a new page is reachable
           # the moment it is uploaded, with no Worker redeploy.
-          for src, key in (("docs/index.html", "app/index.html"),
-                           ("docs/radar_feeds.html", "radar_feeds.html")):
+          #
+          # The list used to be written out by hand, which meant adding a page
+          # and pushing it changed nothing: the workflow fired on docs/*.html
+          # and then uploaded the same two files (geozones.html, 01.09.2026).
+          # Whatever the trigger matches is what gets published.
+          import glob
+          for src in sorted(glob.glob("docs/*.html")):
+              name = os.path.basename(src)
+              key = "app/index.html" if name == "index.html" else name
               s3.upload_file(src, "baltic-wx", key, ExtraArgs=args)
-              print("published", key)
+              print("published", src, "->", key)
           EOF
