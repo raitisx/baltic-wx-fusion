@@ -32,7 +32,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Dependencies
-        run: pip install -r requirements.txt && pip install pyproj
+        # pyproj + numpy for the EPSG:3059 projection in publish();
+        # deliberately NOT Pillow/SciPy — no raster work happens here.
+        run: pip install -r requirements.txt && pip install pyproj numpy
       - name: UAS geozones -> DB
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
