@@ -250,7 +250,9 @@ def publish(s3=None) -> dict:
     import json as _json
 
     from . import config as _config
-    from .radar_store import r2_client
+    # archive's client, not radar_store's: that module imports Pillow and
+    # SciPy for the radar chain, and this job has no reason to install them.
+    from .archive import r2_client
 
     s3 = s3 or r2_client()
     with db.connect() as conn, conn.cursor() as cur:
