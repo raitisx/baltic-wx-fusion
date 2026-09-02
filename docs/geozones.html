@@ -21,11 +21,15 @@
             border-radius:8px; overflow:hidden; touch-action:none;
             cursor:grab; }
   .mapbox.drag { cursor:grabbing; }
-  /* One transformed layer holds both the picture and the zones, so they
-     cannot drift apart at any zoom. */
+  /* The picture is a raster and is scaled by a CSS transform. The zones are
+     NOT: a CSS transform on an ancestor scales the whole SVG as a unit, and
+     vector-effect only compensates for transforms INSIDE the SVG — which is
+     why the outlines came out as slabs at 6x. The overlay is driven by its
+     own viewBox instead, so it stays a vector at every zoom. */
   .pan { position:absolute; inset:0; transform-origin:0 0; }
-  .pan img, .pan svg { position:absolute; inset:0; width:100%; height:100%; }
-  .pan img { object-fit:fill; }
+  .pan img { position:absolute; inset:0; width:100%; height:100%;
+             object-fit:fill; image-rendering:pixelated; }
+  #ov { position:absolute; inset:0; width:100%; height:100%; }
   .side { flex:1; min-width:260px; max-width:420px; }
   .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
          margin:0 0 8px; }
@@ -74,10 +78,8 @@
       <span class="hint" id="zoomlab">1.0&times; &middot; scroll to zoom, drag to pan</span>
     </div>
     <div class="mapbox" id="box">
-      <div class="pan" id="pan">
-        <img id="base" alt="">
-        <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
-      </div>
+      <div class="pan" id="pan"><img id="base" alt=""></div>
+      <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
     <input type="range" id="seek" min="0" max="0" value="0" step="1">
     <div class="stamp" id="stamp">loading…</div>
@@ -273,10 +275,19 @@ const box = document.getElementById("box"), pan = document.getElementById("pan")
 function apply() {
   // Never let the map be dragged off its own frame: at k=1 it is pinned.
   const w = box.clientWidth, h = box.clientHeight;
+  if (!w || !h) return;                    // called before layout: nothing to do
   V.k = Math.min(MAXK, Math.max(MINK, V.k));
   V.x = Math.min(0, Math.max(w - w * V.k, V.x));
   V.y = Math.min(0, Math.max(h - h * V.k, V.y));
   pan.style.transform = `translate(${V.x}px, ${V.y}px) scale(${V.k})`;
+  // The same window, expressed as the overlay's viewBox. Solving
+  //   (cx - vx)/vw * w  ==  V.x + k * cx * w / 570
+  // for all cx gives vw = 570/k and vx = -V.x * 570 / (k * w).
+  const ov = document.getElementById("ov");
+  ov.setAttribute("viewBox",
+    `${(-V.x * 570 / (V.k * w)).toFixed(3)} ` +
+    `${(-V.y * 690 / (V.k * h)).toFixed(3)} ` +
+    `${(570 / V.k).toFixed(3)} ${(690 / V.k).toFixed(3)}`);
   document.getElementById("zoomlab").textContent =
     `${V.k.toFixed(1)}\u00d7 \u00b7 scroll to zoom, drag to pan`;
 }
@@ -297,14 +308,22 @@ box.addEventListener("wheel", e => {
 }, {passive: false});
 let drag = null;
 box.addEventListener("pointerdown", e => {
-  drag = {x: e.clientX, y: e.clientY, ox: V.x, oy: V.y, moved: 0};
-  box.setPointerCapture(e.pointerId);
-  box.classList.add("drag");
+  // Deliberately NOT setPointerCapture here. Capturing on pointerdown makes
+  // the box the target of the click that follows, so every click landed on
+  // the background and no zone could ever be selected. Capture only once the
+  // pointer has actually moved, which is when a drag really starts.
+  drag = {x: e.clientX, y: e.clientY, ox: V.x, oy: V.y, moved: 0, id: e.pointerId};
 });
 box.addEventListener("pointermove", e => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy));
+  const was = drag.moved;
+  drag.moved = Math.max(was, Math.abs(dx) + Math.abs(dy));
+  if (was <= 4 && drag.moved > 4) {
+    try { box.setPointerCapture(drag.id); } catch (err) { /* fine without */ }
+    box.classList.add("drag");
+  }
+  if (drag.moved <= 4) return;              // a steady hand is still a click
   V.x = drag.ox + dx;
   V.y = drag.oy + dy;
   apply();
