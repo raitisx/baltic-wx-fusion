@@ -1,94 +1,67 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>UAS geozones over the fused map</title>
+<title>UAS geozones — Latvia</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
 <style>
   :root { color-scheme: light; --ink:#1d2635; --dim:#6b7688; --line:#d8dde6; }
+  html, body { height:100%; }
   body { margin:0; background:#f2f4f7; color:var(--ink);
-         font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-  header { padding:12px 16px 6px; }
-  h1 { font-size:17px; margin:0 0 4px; font-weight:700; }
-  .hint { color:var(--dim); font-size:12px; max-width:none; }
-  .wrap { display:flex; gap:16px; align-items:flex-start; padding:0 16px 20px;
-          flex-wrap:wrap; }
-  /* The fused map is 570x690 in the three-column view. This page is the same
-     map on its own at twice that, which is the whole point of it. */
-  /* The map is the page: give it the whole column height and let the
-     570:690 aspect set its width, so it is as large as the window allows
-     rather than a fixed 2x. */
-  .mapbox { position:relative; height:calc(100dvh - 190px); min-height:420px;
-            aspect-ratio:570/690; background:#f7f5ef; border:1px solid var(--line);
-            border-radius:8px; overflow:hidden; touch-action:none;
-            cursor:grab;
-            /* Dragging a map must pan it, not sweep a text/image selection
-               across the page. */
-            user-select:none; -webkit-user-select:none; }
-  .mapbox.drag { cursor:grabbing; }
-  /* The picture is a raster and is scaled by a CSS transform. The zones are
-     NOT: a CSS transform on an ancestor scales the whole SVG as a unit, and
-     vector-effect only compensates for transforms INSIDE the SVG — which is
-     why the outlines came out as slabs at 6x. The overlay is driven by its
-     own viewBox instead, so it stays a vector at every zoom. */
-  .pan { position:absolute; inset:0; transform-origin:0 0; }
-  /* pointer-events:none so the picture can never start a native image drag,
-     and so every pointer goes to the overlay or the box. */
-  .pan img { position:absolute; inset:0; width:100%; height:100%;
-             object-fit:fill; image-rendering:pixelated;
-             pointer-events:none; -webkit-user-drag:none; }
-  #ov { position:absolute; inset:0; width:100%; height:100%; }
-  .side { flex:1; min-width:260px; max-width:420px; }
-  .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
-         margin:0 0 8px; }
-  button, select { font:inherit; font-size:12px; padding:3px 8px;
-                   border:1px solid var(--line); border-radius:5px;
-                   background:#fff; color:var(--ink); cursor:pointer; }
-  button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
-  .key { display:flex; gap:6px; align-items:center; font-size:12px; }
-  .sw { width:14px; height:14px; border-radius:3px; display:inline-block; }
-  .zone { fill-opacity:.22; stroke-width:1.6; vector-effect:non-scaling-stroke;
-          cursor:pointer; }
-  .zone:hover { fill-opacity:.42; }
-  .zone.sel { fill-opacity:.55; stroke-width:3; }
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+         display:flex; flex-direction:column; }
+  header { padding:10px 14px 6px; flex:0 0 auto; }
+  h1 { font-size:17px; margin:0 0 3px; font-weight:700; }
+  .hint { color:var(--dim); font-size:12px; }
+  .wrap { flex:1 1 auto; display:flex; gap:12px; padding:0 14px 12px;
+          min-height:0; }
+  .left { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; }
+  #map { flex:1 1 auto; min-height:320px; border:1px solid var(--line);
+         border-radius:8px; background:#e8eaee; }
+  .side { flex:0 0 340px; overflow:auto; }
+  @media (max-width:900px) {
+    .wrap { flex-direction:column; } .side { flex:0 0 auto; }
+    #map { min-height:60vh; }
+  }
+  .ctl { display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+         margin:0 0 6px; }
+  button { font:inherit; font-size:12px; padding:3px 8px; display:inline-flex;
+           gap:6px; align-items:center; border:1px solid var(--line);
+           border-radius:5px; background:#fff; color:var(--ink);
+           cursor:pointer; opacity:.45; }
+  button.on { opacity:1; border-color:#9aa3b5; }
+  .sw { width:13px; height:13px; border-radius:3px; display:inline-block; }
   .card { border:1px solid var(--line); border-radius:8px; background:#fff;
           padding:10px 12px; margin-bottom:10px; }
   .card h2 { font-size:13px; margin:0 0 6px; }
   .card dl { margin:0; display:grid; grid-template-columns:auto 1fr;
              gap:2px 10px; font-size:12px; }
   .card dt { color:var(--dim); }
-  .card dd { margin:0; }
+  .card dd { margin:0; word-break:break-word; }
   .msg { font-size:12px; color:var(--dim); margin-top:8px; }
-  .stamp { text-align:center; font-weight:600; padding-top:6px; }
+  .stamp { text-align:center; font-weight:600; padding:5px 0 0; font-size:13px; }
   input[type=range] { width:100%; }
   a { color:#2a6db5; }
-  @media (max-width:1200px) { .mapbox { width:100%; } }
+  .leaflet-container { border-radius:8px; font:inherit; }
 </style>
 <header>
   <h1>UAS geographical zones &mdash; Latvia</h1>
   <div class="hint">
-    The Baltic fused map at twice the size, with the drone zones over it.
-    Drag the slider to move both: the map to that hour, and the zones to
-    the ones <b>in force at that hour</b>. Colour is the restriction, not the
-    severity of the weather. Click a zone for its limits and who to ask.
+    Drone zones on an OpenStreetMap base. The slider picks an hour and the map
+    shows the zones <b>in force then</b>; colour is the restriction. Click a
+    zone for its limits and who to ask.
     <b>This is not a briefing</b> &mdash; fly against the
     <a href="https://ais.lgs.lv/">AIS of Latvia</a> and the CAA&rsquo;s
     <a href="https://e.caa.gov.lv/">UAS information system</a>.
   </div>
 </header>
 <div class="wrap">
-  <div>
+  <div class="left">
     <div class="ctl" id="filters"></div>
-    <div class="ctl">
-      <button id="zin" title="zoom in">+</button>
-      <button id="zout" title="zoom out">&minus;</button>
-      <button id="zreset" title="fit the whole map">reset</button>
-      <span class="hint" id="zoomlab">1.0&times; &middot; scroll to zoom, drag to pan</span>
-    </div>
-    <div class="mapbox" id="box">
-      <div class="pan" id="pan"><img id="base" alt="" draggable="false"></div>
-      <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
-    </div>
+    <div id="map"></div>
     <input type="range" id="seek" min="0" max="0" value="0" step="1">
-    <div class="stamp" id="stamp">loading…</div>
+    <div class="stamp" id="stamp">loading&hellip;</div>
   </div>
   <div class="side">
     <div class="card" id="detail"><h2>No zone selected</h2>
@@ -97,6 +70,9 @@
     <div class="card"><h2>Source</h2><div class="msg" id="credit"></div></div>
   </div>
 </div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
 <script>
 const QS = new URLSearchParams(location.search);
 const MAPS_BASE = QS.get("maps") || (() => {
@@ -106,8 +82,8 @@ const MAPS_BASE = QS.get("maps") || (() => {
   return "https://pub-29a41af0b6de4fe9a0d144b6a88fa144.r2.dev";
 })();
 
-// Restriction is the only thing worth colouring: it is what decides whether
-// you may fly, and it is the one field every zone carries.
+// Restriction is the only thing worth colouring: it decides whether you may
+// fly, and every zone carries it.
 const COLOUR = {
   PROHIBITED:        "#c0392b",
   REQ_AUTHORISATION: "#d98324",
@@ -116,133 +92,89 @@ const COLOUR = {
 };
 const ORDER = ["PROHIBITED", "REQ_AUTHORISATION", "CONDITIONAL", "NO_RESTRICTION"];
 const off = new Set();
-let GZ = null, MAN = {}, HOURS = [], sel = null;
+let GZ = null, HOURS = [], sel = null, layer = null;
 
-// The "Baltic fused" column is NOT the fused manifest: it is MEPS for its
-// +66 h horizon, then the fused blend, then GFS. Reading fused/latest.json
-// straight put the interpolated blend under the zones for hours where the
-// meteo page shows native MEPS — which is why it looked like GFS. Same
-// order here, so both pages draw the same picture for the same hour.
-function pickSrc(iso) {
-  const tag = vtag(iso);
-  const meps = MAN.meps, fused = MAN.fused, gfs = MAN.gfs;
-  const thrOf = (m, want) => {
-    const t = m?.thresholds;
-    return t && t.length
-      ? t.reduce((a, b) => Math.abs(b - want) < Math.abs(a - want) ? b : a)
-      : want;
-  };
-  if (meps?.hours?.includes(iso))
-    return {url: `${MAPS_BASE}/${meps.path}/${tag}_alt${thrOf(meps, 300)}.png${vq(meps)}`,
-            cap: "MEPS 2.5 km"};
-  const mArch = MAN.mepsArchive?.hours?.[tag];
-  if (mArch)
-    return {url: `${MAPS_BASE}/maps/meps/${mArch}/${tag}_alt${thrOf(meps, 300)}.png${vq(meps)}`,
-            cap: "MEPS · archived"};
-  if (fused?.hours?.includes(iso))
-    return {url: `${MAPS_BASE}/${fused.path}/${tag}_alt${thrOf(fused, 300)}.png${vq(fused)}`,
-            cap: "fused blend (ICON+MEPS+IFS+GFS+UKMO)"};
-  const fArch = MAN.fusedArchive?.hours?.[tag];
-  if (fArch)
-    return {url: `${MAPS_BASE}/maps/fused/${fArch}/${tag}_alt${thrOf(fused, 300)}.png${vq(fused)}`,
-            cap: "fused blend · archived"};
-  if (gfs?.hours?.length) {
-    // GFS runs every few hours and is carried forward between frames.
-    const ts = Date.parse(iso), step = (gfs.step_h || 3) * 3600e3;
-    let best = null;
-    for (const h of gfs.hours) {
-      const d = ts - Date.parse(h);
-      if (d >= 0 && d <= step && (best === null || Date.parse(h) > Date.parse(best)))
-        best = h;
-    }
-    if (best)
-      return {url: `${MAPS_BASE}/${gfs.path}/${vtag(best)}_alt${thrOf(gfs, 300)}.png${vq(gfs)}`,
-              cap: "GFS 0.25°"};
-  }
-  return null;
-}
-function vq(m) { return "?v=" + encodeURIComponent(m?.generated_at || m?.run || "0"); }
+const map = L.map("map", {preferCanvas: true}).setView([56.9, 24.6], 7);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18, attribution:
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+}).addTo(map);
+// preferCanvas: 412 zones, many with hundreds of vertices. As SVG paths that
+// is thousands of DOM nodes and panning stutters; on canvas it does not.
 
-async function json(path) {
-  const r = await fetch(`${MAPS_BASE}/${path}?v=${Date.now()}`);
-  if (!r.ok) throw new Error(`${path} -> HTTP ${r.status}`);
-  return r.json();
-}
-function vtag(iso) { return iso.replace(/[-:]/g, "").slice(0, 11); }
 function fmt(iso) {
   return new Date(iso).toLocaleString("en-GB", {
     weekday: "short", day: "2-digit", month: "2-digit",
     hour: "2-digit", minute: "2-digit", timeZone: "Europe/Riga"}) + " Riga";
 }
-
-// A zone counts as in force when the hour on the slider falls inside its
-// applicability window. An open end means it is standing, not expired — the
-// ED-269 permanent flag is never set in the Latvian file, so the window is
-// the only honest test.
-function live(z, t) {
-  const a = z.from ? Date.parse(z.from) : -Infinity;
-  const b = z.to ? Date.parse(z.to) : Infinity;
+// In force = the hour falls inside the applicability window. An open end is
+// standing, not expired: the Latvian file never sets the ED-269 permanent
+// flag, so the window is the only honest test.
+function live(p, t) {
+  const a = p.from ? Date.parse(p.from) : -Infinity;
+  const b = p.to ? Date.parse(p.to) : Infinity;
   return t >= a && t <= b;
+}
+function style(f) {
+  const c = COLOUR[f.properties.restriction] || "#7a8395";
+  const on = sel === f.properties.id;
+  return {color: c, weight: on ? 3 : 1.4, opacity: 1,
+          fillColor: c, fillOpacity: on ? .5 : .2};
 }
 
 function draw() {
-  const t = Date.parse(HOURS[+seek.value] || HOURS[0] || Date.now());
-  const ov = document.getElementById("ov");
-  ov.textContent = "";
+  const t = Date.parse(HOURS[+seek.value] || Date.now());
   const tally = {};
-  for (const z of (GZ?.zones || [])) {
-    tally[z.restriction] = tally[z.restriction] || {live: 0, total: 0};
-    tally[z.restriction].total++;
-    if (!live(z, t) || off.has(z.restriction)) continue;
-    tally[z.restriction].live++;
-    const col = COLOUR[z.restriction] || "#7a8395";
-    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    // One path per polygon, every ring a subpath, fill-rule evenodd — so the
-    // rings after the first are cut OUT of the zone instead of drawn as more
-    // of it. 42 zones carry such holes.
-    for (const poly of (z.polys || (z.rings ? [z.rings] : []))) {
-      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      p.setAttribute("d", poly.map(
-        r => "M" + r.map(c => c.join(",")).join("L") + "Z").join(""));
-      p.setAttribute("fill-rule", "evenodd");
-      p.setAttribute("class", "zone" + (sel === z.id ? " sel" : ""));
-      p.setAttribute("fill", col);
-      p.setAttribute("stroke", col);
-      p.addEventListener("click", e => {
-        e.stopPropagation();
-        if (dragged) { dragged = false; return; }
-        pick(z);
-      });
-      g.appendChild(p);
-    }
-    ov.appendChild(g);
+  const shown = [];
+  for (const f of (GZ?.features || [])) {
+    const p = f.properties;
+    tally[p.restriction] = tally[p.restriction] || {live: 0, total: 0};
+    tally[p.restriction].total++;
+    if (!live(p, t) || off.has(p.restriction)) continue;
+    tally[p.restriction].live++;
+    shown.push(f);
   }
+  if (layer) map.removeLayer(layer);
+  layer = L.geoJSON({type: "FeatureCollection", features: shown}, {
+    style,
+    onEachFeature: (f, lyr) => lyr.on("click", e => {
+      L.DomEvent.stopPropagation(e);
+      pick(f.properties);
+    }),
+  }).addTo(map);
   document.getElementById("counts").innerHTML =
     "<h2>In force at this hour</h2><dl>" + ORDER.map(k =>
-      `<dt><span class="sw" style="background:${COLOUR[k]}"></span> ${k.replace(/_/g, " ").toLowerCase()}</dt>` +
-      `<dd>${(tally[k]?.live) || 0} <span style="color:var(--dim)">of ${(tally[k]?.total) || 0}</span></dd>`
-    ).join("") + "</dl>";
+      `<dt><span class="sw" style="background:${COLOUR[k]}"></span> ` +
+      `${k.replace(/_/g, " ").toLowerCase()}</dt>` +
+      `<dd>${(tally[k]?.live) || 0} <span style="color:var(--dim)">of ` +
+      `${(tally[k]?.total) || 0}</span></dd>`).join("") + "</dl>";
 }
 
-function pick(z) {
-  sel = z.id;
-  const alt = (lo, loRef, up, upRef, uom) => {
-    const u = (uom || "M").toLowerCase() === "ft" ? "ft" : "m";
-    return `${lo ?? "?"} ${loRef || ""} – ${up ?? "?"} ${upRef || ""} (${u})`;
-  };
+function pick(p) {
+  sel = p.id;
+  const u = (p.uom || "M").toLowerCase() === "ft" ? "ft" : "m";
   document.getElementById("detail").innerHTML =
-    `<h2>${z.name || z.id}</h2><dl>` +
-    `<dt>restriction</dt><dd>${z.restriction}</dd>` +
-    `<dt>reason</dt><dd>${z.reason || "—"}</dd>` +
-    `<dt>vertical</dt><dd>${alt(z.lower, z.lower_ref, z.upper, z.upper_ref, z.uom)}</dd>` +
-    `<dt>from</dt><dd>${z.from ? fmt(z.from) : "—"}</dd>` +
-    `<dt>until</dt><dd>${z.to ? fmt(z.to) : "open-ended"}</dd>` +
-    `<dt>authority</dt><dd>${z.auth || "—"}${z.auth_service ? "<br>" + z.auth_service : ""}` +
-    `${z.auth_email ? "<br>" + z.auth_email : ""}${z.auth_phone ? "<br>" + z.auth_phone : ""}</dd>` +
-    `<dt>id</dt><dd>${z.id}</dd></dl>` +
-    (z.msg ? `<div class="msg">${z.msg}</div>` : "");
+    `<h2>${p.name || p.id}</h2><dl>` +
+    `<dt>restriction</dt><dd>${p.restriction}</dd>` +
+    `<dt>reason</dt><dd>${p.reason || "—"}</dd>` +
+    `<dt>vertical</dt><dd>${p.lower ?? "?"} ${p.lower_ref || ""} – ` +
+      `${p.upper ?? "?"} ${p.upper_ref || ""} (${u})</dd>` +
+    `<dt>from</dt><dd>${p.from ? fmt(p.from) : "—"}</dd>` +
+    `<dt>until</dt><dd>${p.to ? fmt(p.to) : "open-ended"}</dd>` +
+    `<dt>authority</dt><dd>${p.auth || "—"}` +
+      `${p.auth_service ? "<br>" + p.auth_service : ""}` +
+      `${p.auth_email ? "<br>" + p.auth_email : ""}` +
+      `${p.auth_phone ? "<br>" + p.auth_phone : ""}</dd>` +
+    `<dt>id</dt><dd>${p.id}</dd></dl>` +
+    (p.msg ? `<div class="msg">${p.msg}</div>` : "");
   draw();
 }
+map.on("click", () => {
+  sel = null;
+  document.getElementById("detail").innerHTML =
+    '<h2>No zone selected</h2><div class="msg">Click a zone on the map.</div>';
+  draw();
+});
 
 function buildFilters() {
   const box = document.getElementById("filters");
@@ -252,9 +184,6 @@ function buildFilters() {
     b.className = "on";
     b.innerHTML = `<span class="sw" style="background:${COLOUR[k]}"></span> ` +
                   k.replace(/_/g, " ").toLowerCase();
-    b.style.display = "inline-flex";
-    b.style.gap = "6px";
-    b.style.alignItems = "center";
     b.addEventListener("click", () => {
       if (off.has(k)) { off.delete(k); b.classList.add("on"); }
       else { off.add(k); b.classList.remove("on"); }
@@ -264,150 +193,41 @@ function buildFilters() {
   }
 }
 
-function showHour() {
-  const iso = HOURS[+seek.value];
-  const src = iso ? pickSrc(iso) : null;
-  document.getElementById("stamp").textContent =
-    iso ? `${fmt(iso)}${src ? " · " + src.cap : " · no map for this hour"}`
-        : "no map hours published";
-  const img = document.getElementById("base");
-  if (src) { img.style.opacity = ""; if (img.src !== src.url) img.src = src.url; }
-  else { img.removeAttribute("src"); img.style.opacity = "0"; }
-  draw();
-}
-
-// ---- pan and zoom -------------------------------------------------------
-// One transform on the layer that holds BOTH the picture and the zones, so
-// they cannot drift apart, and the SVG keeps its own 570x690 units at every
-// scale (stroke widths stay honest through vector-effect).
-const V = {k: 1, x: 0, y: 0};
-const MINK = 1, MAXK = 12;
-const box = document.getElementById("box"), pan = document.getElementById("pan");
-function apply() {
-  // Never let the map be dragged off its own frame: at k=1 it is pinned.
-  const w = box.clientWidth, h = box.clientHeight;
-  if (!w || !h) return;                    // called before layout: nothing to do
-  V.k = Math.min(MAXK, Math.max(MINK, V.k));
-  V.x = Math.min(0, Math.max(w - w * V.k, V.x));
-  V.y = Math.min(0, Math.max(h - h * V.k, V.y));
-  pan.style.transform = `translate(${V.x}px, ${V.y}px) scale(${V.k})`;
-  // The same window, expressed as the overlay's viewBox. Solving
-  //   (cx - vx)/vw * w  ==  V.x + k * cx * w / 570
-  // for all cx gives vw = 570/k and vx = -V.x * 570 / (k * w).
-  const ov = document.getElementById("ov");
-  ov.setAttribute("viewBox",
-    `${(-V.x * 570 / (V.k * w)).toFixed(3)} ` +
-    `${(-V.y * 690 / (V.k * h)).toFixed(3)} ` +
-    `${(570 / V.k).toFixed(3)} ${(690 / V.k).toFixed(3)}`);
-  document.getElementById("zoomlab").textContent =
-    `${V.k.toFixed(1)}\u00d7 \u00b7 scroll to zoom, drag to pan`;
-}
-function fit() { V.k = 1; V.x = 0; V.y = 0; apply(); }
-function zoomAt(px, py, factor) {
-  const k0 = V.k, k1 = Math.min(MAXK, Math.max(MINK, k0 * factor));
-  if (k1 === k0) return;
-  // Keep the point under the cursor where it is.
-  V.x = px - (px - V.x) * (k1 / k0);
-  V.y = py - (py - V.y) * (k1 / k0);
-  V.k = k1;
-  apply();
-}
-box.addEventListener("wheel", e => {
-  e.preventDefault();
-  const r = box.getBoundingClientRect();
-  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
-}, {passive: false});
-let drag = null;
-box.addEventListener("dragstart", e => e.preventDefault());
-box.addEventListener("pointerdown", e => {
-  // No preventDefault here: on pointerdown it can suppress the click that
-  // follows, which is what has to reach a zone. user-select:none on the box
-  // already stops the selection sweep, and the image cannot be dragged.
-  // Deliberately NOT setPointerCapture here. Capturing on pointerdown makes
-  // the box the target of the click that follows, so every click landed on
-  // the background and no zone could ever be selected. Capture only once the
-  // pointer has actually moved, which is when a drag really starts.
-  drag = {x: e.clientX, y: e.clientY, ox: V.x, oy: V.y, moved: 0, id: e.pointerId};
-});
-box.addEventListener("pointermove", e => {
-  if (!drag) return;
-  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  const was = drag.moved;
-  drag.moved = Math.max(was, Math.abs(dx) + Math.abs(dy));
-  if (was <= 4 && drag.moved > 4) {
-    try { box.setPointerCapture(drag.id); } catch (err) { /* fine without */ }
-    box.classList.add("drag");
-  }
-  if (drag.moved <= 4) return;              // a steady hand is still a click
-  V.x = drag.ox + dx;
-  V.y = drag.oy + dy;
-  apply();
-});
-function endDrag() { box.classList.remove("drag"); }
-// A drag must not count as a click on whatever ended up under the cursor.
-// stopPropagation on pointerup does not prevent the click that follows, so
-// the click handlers check this instead.
-let dragged = false;
-box.addEventListener("pointerup", () => {
-  dragged = !!(drag && drag.moved > 4);
-  drag = null; endDrag();
-});
-box.addEventListener("pointercancel", () => { drag = null; endDrag(); });
-// Releasing outside the map still ends the drag; without this the state
-// stayed half-open and the next click was swallowed as "that was a drag".
-addEventListener("pointerup", () => {
-  if (!drag) return;
-  dragged = drag.moved > 4;
-  drag = null; endDrag();
-});
-document.getElementById("zin").addEventListener("click",
-  () => zoomAt(box.clientWidth / 2, box.clientHeight / 2, 1.4));
-document.getElementById("zout").addEventListener("click",
-  () => zoomAt(box.clientWidth / 2, box.clientHeight / 2, 1 / 1.4));
-document.getElementById("zreset").addEventListener("click", fit);
-addEventListener("resize", apply);
-
 const seek = document.getElementById("seek");
-seek.addEventListener("input", showHour);
-document.getElementById("box").addEventListener("click", () => {
-  if (dragged) { dragged = false; return; }
-  sel = null;
-  document.getElementById("detail").innerHTML =
-    "<h2>No zone selected</h2><div class=\"msg\">Click a zone on the map.</div>";
+seek.addEventListener("input", () => {
+  document.getElementById("stamp").textContent = fmt(HOURS[+seek.value]);
   draw();
 });
 
-const MANIFESTS = {
-  meps: "maps/meps/latest.json", mepsArchive: "maps/meps/archive.json",
-  fused: "maps/fused/latest.json", fusedArchive: "maps/fused/archive.json",
-  gfs: "maps/gfs/latest.json",
-};
-const NAMES = Object.keys(MANIFESTS);
-Promise.allSettled([json("maps/geozones/current.json"),
-                    ...NAMES.map(k => json(MANIFESTS[k]))]).then(res => {
-  const g = res[0];
-  if (g.status === "fulfilled") GZ = g.value;
-  NAMES.forEach((k, i) => {
-    if (res[i + 1].status === "fulfilled") MAN[k] = res[i + 1].value;
+// The hours are this page's own: with no weather raster behind it there is
+// no model to borrow an axis from. A week forward from the top of this hour,
+// hourly, which covers the single-day danger-area activations.
+function hours() {
+  const t0 = new Date();
+  t0.setUTCMinutes(0, 0, 0);
+  return Array.from({length: 24 * 7 + 1},
+                    (_, i) => new Date(+t0 + i * 3600e3).toISOString());
+}
+
+fetch(`${MAPS_BASE}/maps/geozones/current.json?v=${Date.now()}`)
+  .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+  .then(g => {
+    GZ = g;
+    document.getElementById("credit").innerHTML =
+      `${g.credit || ""} · ${g.features.length} zones, read ${g.generated_at}` +
+      '<br>Base map &copy; <a href="https://www.openstreetmap.org/copyright">' +
+      'OpenStreetMap</a> contributors.';
+    HOURS = hours();
+    seek.max = HOURS.length - 1;
+    seek.value = 0;
+    document.getElementById("stamp").textContent = fmt(HOURS[0]);
+    buildFilters();
+    draw();
+    if (layer && layer.getLayers().length) map.fitBounds(layer.getBounds());
+  })
+  .catch(e => {
+    document.getElementById("stamp").textContent =
+      "maps/geozones/current.json is not readable (" + e.message + ")";
+    buildFilters();
   });
-  document.getElementById("credit").textContent =
-    (GZ?.credit || "Latvijas Gaisa Satiksme / CAA of Latvia") +
-    (GZ ? ` · ${GZ.zones.length} zones, read ${GZ.generated_at}` : "");
-  // The hour axis is the union of what any of them can draw, so the slider
-  // never lands on an hour with no picture at all.
-  HOURS = [...new Set([...(MAN.meps?.hours || []), ...(MAN.fused?.hours || []),
-                       ...(MAN.gfs?.hours || [])])].sort();
-  seek.max = Math.max(0, HOURS.length - 1);
-  // Open on now, not on the start of the run: the question this page answers
-  // is almost always "what is active at the moment".
-  const now = Date.now();
-  let at = HOURS.findIndex(h => Date.parse(h) >= now);
-  seek.value = at < 0 ? Math.max(0, HOURS.length - 1) : at;
-  buildFilters();
-  fit();
-  if (!GZ) document.getElementById("counts").innerHTML =
-    "<h2>No zones</h2><div class=\"msg\">maps/geozones/current.json is not " +
-    "published yet — the geozones workflow writes it after each ingest.</div>";
-  showHour();
-});
 </script>
