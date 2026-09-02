@@ -208,8 +208,11 @@ def _polys_lonlat(geometry):
     """
     import math
 
+    # 5 decimals is ~1 m, which is finer than any of these boundaries is
+    # surveyed and a fifth off the payload against 6. Cloudflare compresses
+    # the JSON on the way out, so this is about parse cost, not transfer.
     def px(lon, lat):
-        return (round(float(lon), 6), round(float(lat), 6))
+        return (round(float(lon), 5), round(float(lat), 5))
 
     out = []
     for g in geometry or []:
