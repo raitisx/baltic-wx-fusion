@@ -192,8 +192,13 @@ PUBLISH_KEY = "maps/geozones/current.json"
 CIRCLE_STEPS = 64
 
 
-def _rings_px(geometry):
-    """ED-269 geometry -> rings in canvas pixels, ready for the page's SVG.
+def _polys_px(geometry):
+    """ED-269 geometry -> polygons in canvas pixels, ready for the page's SVG.
+
+    Rings are kept GROUPED BY POLYGON, because after the first ring they are
+    holes, not more zones. Flattening them lost that: 42 of the 412 zones
+    carry inner rings (one has five), and each came out as a solid patch
+    sitting inside the zone it should have been cut out of.
 
     Every map on the site is the same 570x690 EPSG:3059 raster, and the page
     overlays it with a viewBox in exactly those units — so projecting here
@@ -221,7 +226,7 @@ def _rings_px(geometry):
             ring = [px(float(lon) + dlon * math.cos(2 * math.pi * i / CIRCLE_STEPS),
                        float(lat) + dlat * math.sin(2 * math.pi * i / CIRCLE_STEPS))
                     for i in range(CIRCLE_STEPS)]
-            out.append(ring + [ring[0]])
+            out.append([ring + [ring[0]]])
             continue
         polys = hp.get("coordinates") or []
         if kind == "polygon":
@@ -229,6 +234,7 @@ def _rings_px(geometry):
         elif kind != "multipolygon":
             continue
         for poly in polys:
+            rings = []
             for ring in poly:
                 pts, last = [], None
                 for c in ring:
@@ -237,7 +243,9 @@ def _rings_px(geometry):
                         pts.append(q)
                         last = q
                 if len(pts) >= 3:
-                    out.append(pts)
+                    rings.append(pts)
+            if rings:
+                out.append(rings)
     return out
 
 
@@ -266,8 +274,8 @@ def publish(s3=None) -> dict:
     zones, dropped = [], 0
     for (zid, name, restr, ztype, other, perm, starts, ends,
          lo, lo_ref, up, up_ref, uom, geom, zone, seen) in rows:
-        rings = _rings_px(geom)
-        if not rings:
+        polys = _polys_px(geom)
+        if not polys:
             dropped += 1
             continue
         auth = (zone.get("zoneAuthority") or [{}])[0] or {}
@@ -281,7 +289,9 @@ def publish(s3=None) -> dict:
             "msg": zone.get("message"),
             "auth": auth.get("name"), "auth_service": auth.get("service"),
             "auth_email": auth.get("email"), "auth_phone": auth.get("phone"),
-            "rings": rings,
+            # [[outer, hole, ...], ...] — the page draws one path per
+            # polygon with fill-rule evenodd, so the holes are holes.
+            "polys": polys,
         })
     from . import proj3059 as P
     doc = {
