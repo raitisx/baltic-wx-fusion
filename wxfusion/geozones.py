@@ -192,27 +192,24 @@ PUBLISH_KEY = "maps/geozones/current.json"
 CIRCLE_STEPS = 64
 
 
-def _polys_px(geometry):
-    """ED-269 geometry -> polygons in canvas pixels, ready for the page's SVG.
+def _polys_lonlat(geometry):
+    """ED-269 geometry -> polygons as [[outer, hole, ...], ...] in lon/lat.
 
     Rings are kept GROUPED BY POLYGON, because after the first ring they are
     holes, not more zones. Flattening them lost that: 42 of the 412 zones
     carry inner rings (one has five), and each came out as a solid patch
     sitting inside the zone it should have been cut out of.
 
-    Every map on the site is the same 570x690 EPSG:3059 raster, and the page
-    overlays it with a viewBox in exactly those units — so projecting here
-    means the page draws the zones with no geodesy of its own, and they line
-    up with the weather by construction.
+    The coordinates stay WGS84, as published. They used to be projected to
+    our EPSG:3059 canvas so the page could draw them over the weather raster
+    in its own pixel units; the page is on an OpenStreetMap base now, which
+    is Web Mercator, so the map library does the projecting and the honest
+    thing to ship is the source coordinates.
     """
     import math
 
-    from . import proj3059 as P
-
     def px(lon, lat):
-        x, y = P.to_xy(float(lon), float(lat))
-        return (round((x - P.X0) / (P.X1 - P.X0) * P.W, 1),
-                round((P.Y1 - y) / (P.Y1 - P.Y0) * P.H, 1))
+        return (round(float(lon), 6), round(float(lat), 6))
 
     out = []
     for g in geometry or []:
@@ -274,31 +271,33 @@ def publish(s3=None) -> dict:
     zones, dropped = [], 0
     for (zid, name, restr, ztype, other, perm, starts, ends,
          lo, lo_ref, up, up_ref, uom, geom, zone, seen) in rows:
-        polys = _polys_px(geom)
+        polys = _polys_lonlat(geom)
         if not polys:
             dropped += 1
             continue
         auth = (zone.get("zoneAuthority") or [{}])[0] or {}
         zones.append({
-            "id": zid, "name": (name or "").strip(), "restriction": restr,
-            "type": ztype, "reason": other, "permanent": bool(perm),
-            "from": starts.isoformat() if starts else None,
-            "to": ends.isoformat() if ends else None,
-            "lower": lo, "lower_ref": lo_ref,
-            "upper": up, "upper_ref": up_ref, "uom": uom,
-            "msg": zone.get("message"),
-            "auth": auth.get("name"), "auth_service": auth.get("service"),
-            "auth_email": auth.get("email"), "auth_phone": auth.get("phone"),
-            # [[outer, hole, ...], ...] — the page draws one path per
-            # polygon with fill-rule evenodd, so the holes are holes.
-            "polys": polys,
+            "type": "Feature",
+            "geometry": {"type": "MultiPolygon",
+                         "coordinates": [[[list(p) for p in ring]
+                                          for ring in poly] for poly in polys]},
+            "properties": {
+                "id": zid, "name": (name or "").strip(), "restriction": restr,
+                "kind": ztype, "reason": other, "permanent": bool(perm),
+                "from": starts.isoformat() if starts else None,
+                "to": ends.isoformat() if ends else None,
+                "lower": lo, "lower_ref": lo_ref,
+                "upper": up, "upper_ref": up_ref, "uom": uom,
+                "msg": zone.get("message"),
+                "auth": auth.get("name"), "auth_service": auth.get("service"),
+                "auth_email": auth.get("email"), "auth_phone": auth.get("phone"),
+            },
         })
-    from . import proj3059 as P
     doc = {
+        "type": "FeatureCollection",
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M"),
-        "canvas": {"w": P.W, "h": P.H},
         "credit": CREDIT,
-        "zones": zones,
+        "features": zones,
     }
     body = _json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
     s3.put_object(Bucket=_config.R2_BUCKET, Key=PUBLISH_KEY, Body=body,
