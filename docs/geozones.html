@@ -19,7 +19,10 @@
   .mapbox { position:relative; height:calc(100dvh - 190px); min-height:420px;
             aspect-ratio:570/690; background:#f7f5ef; border:1px solid var(--line);
             border-radius:8px; overflow:hidden; touch-action:none;
-            cursor:grab; }
+            cursor:grab;
+            /* Dragging a map must pan it, not sweep a text/image selection
+               across the page. */
+            user-select:none; -webkit-user-select:none; }
   .mapbox.drag { cursor:grabbing; }
   /* The picture is a raster and is scaled by a CSS transform. The zones are
      NOT: a CSS transform on an ancestor scales the whole SVG as a unit, and
@@ -27,8 +30,11 @@
      why the outlines came out as slabs at 6x. The overlay is driven by its
      own viewBox instead, so it stays a vector at every zoom. */
   .pan { position:absolute; inset:0; transform-origin:0 0; }
+  /* pointer-events:none so the picture can never start a native image drag,
+     and so every pointer goes to the overlay or the box. */
   .pan img { position:absolute; inset:0; width:100%; height:100%;
-             object-fit:fill; image-rendering:pixelated; }
+             object-fit:fill; image-rendering:pixelated;
+             pointer-events:none; -webkit-user-drag:none; }
   #ov { position:absolute; inset:0; width:100%; height:100%; }
   .side { flex:1; min-width:260px; max-width:420px; }
   .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
@@ -78,7 +84,7 @@
       <span class="hint" id="zoomlab">1.0&times; &middot; scroll to zoom, drag to pan</span>
     </div>
     <div class="mapbox" id="box">
-      <div class="pan" id="pan"><img id="base" alt=""></div>
+      <div class="pan" id="pan"><img id="base" alt="" draggable="false"></div>
       <svg id="ov" viewBox="0 0 570 690" preserveAspectRatio="none"></svg>
     </div>
     <input type="range" id="seek" min="0" max="0" value="0" step="1">
@@ -307,7 +313,11 @@ box.addEventListener("wheel", e => {
   zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
 }, {passive: false});
 let drag = null;
+box.addEventListener("dragstart", e => e.preventDefault());
 box.addEventListener("pointerdown", e => {
+  // No preventDefault here: on pointerdown it can suppress the click that
+  // follows, which is what has to reach a zone. user-select:none on the box
+  // already stops the selection sweep, and the image cannot be dragged.
   // Deliberately NOT setPointerCapture here. Capturing on pointerdown makes
   // the box the target of the click that follows, so every click landed on
   // the background and no zone could ever be selected. Capture only once the
@@ -338,6 +348,13 @@ box.addEventListener("pointerup", () => {
   drag = null; endDrag();
 });
 box.addEventListener("pointercancel", () => { drag = null; endDrag(); });
+// Releasing outside the map still ends the drag; without this the state
+// stayed half-open and the next click was swallowed as "that was a drag".
+addEventListener("pointerup", () => {
+  if (!drag) return;
+  dragged = drag.moved > 4;
+  drag = null; endDrag();
+});
 document.getElementById("zin").addEventListener("click",
   () => zoomAt(box.clientWidth / 2, box.clientHeight / 2, 1.4));
 document.getElementById("zout").addEventListener("click",
