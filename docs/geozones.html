@@ -197,9 +197,14 @@ function draw() {
     tally[z.restriction].live++;
     const col = COLOUR[z.restriction] || "#7a8395";
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    for (const ring of z.rings) {
-      const p = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-      p.setAttribute("points", ring.map(c => c.join(",")).join(" "));
+    // One path per polygon, every ring a subpath, fill-rule evenodd — so the
+    // rings after the first are cut OUT of the zone instead of drawn as more
+    // of it. 42 zones carry such holes.
+    for (const poly of (z.polys || (z.rings ? [z.rings] : []))) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", poly.map(
+        r => "M" + r.map(c => c.join(",")).join("L") + "Z").join(""));
+      p.setAttribute("fill-rule", "evenodd");
       p.setAttribute("class", "zone" + (sel === z.id ? " sel" : ""));
       p.setAttribute("fill", col);
       p.setAttribute("stroke", col);
