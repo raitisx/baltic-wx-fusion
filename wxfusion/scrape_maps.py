@@ -43,6 +43,10 @@ from .maps_meps import (RAIN_LEVELS, RAIN_ANCHORS, SNOW_ANCHORS,
 log = logging.getLogger(__name__)
 
 BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
+# How many CONSECUTIVE empty leads end a UM run. One is not enough: ICM
+# serves isolated blank leads mid-forecast (3, 6 and 12 as of 03.09.2026),
+# and treating the first as the horizon truncated the scrape to two frames.
+UM_HORIZON_BLANKS = 4
 GWC = "https://mapy.meteo.pl/geoserver/gwc/service/wms"
 ZOOM = 6
 TILE_SLEEP = 0.3
@@ -427,24 +431,38 @@ def um_run(hours: list[int] | None = None) -> None:
         from . import proj3059 as P
         sw, ne = _tilegrid_bounds_latlon()
         seen = False           # stored any real frame in this run yet?
+        blanks = 0             # consecutive empty leads since the last frame
         for h in hours:
             img = fetch_um_frame(layer, run, h)
             if img is None:
                 log.warning("%s: no tiles for +%dh", name, h)
                 continue
-            # A blank frame means two different things depending on where it is.
-            # ICM leaves the first ~2 forecast hours empty, so a blank BEFORE any
-            # data is a leading gap to skip. Past the model horizon the tile
-            # server also answers with transparent tiles, so a blank AFTER data
-            # is the horizon — stop there rather than indexing empty frames.
+            # A blank frame means two different things depending on where it
+            # is. ICM leaves the first forecast hours empty, so a blank BEFORE
+            # any data is a leading gap to skip. Past the model horizon the
+            # tile server also answers transparent, so a blank AFTER data
+            # means the run has ended.
+            #
+            # But a blank after data is NOT proof of the horizon: as of
+            # 03.09.2026 leads 3, 6 and 12 come back empty in every run while
+            # their neighbours are 92-99% covered, so the first of them ended
+            # the scrape at +3 and stored two frames out of a hundred. Only a
+            # RUN of empties is a horizon; isolated holes are stepped over.
             probe = np.array(img)
             if probe.shape[-1] == 4 and not probe[..., 3].any():
-                if seen:
-                    log.info("%s: +%dh is empty — horizon reached", name, h)
+                if not seen:
+                    log.info("%s: +%dh is empty — leading blank, skipping",
+                             name, h)
+                    continue
+                blanks += 1
+                if blanks >= UM_HORIZON_BLANKS:
+                    log.info("%s: +%dh empty, %d in a row — horizon reached",
+                             name, h, blanks)
                     break
-                log.info("%s: +%dh is empty — leading blank, skipping", name, h)
+                log.info("%s: +%dh is empty — hole, carrying on", name, h)
                 continue
             seen = True
+            blanks = 0
             # reproject the mercator-stitched canvas onto the common
             # EPSG:3059 grid (transparent overlay; client stacks it on
             # maps/bg_3059.png) and bake borders ON TOP — the UM cloud
