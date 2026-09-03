@@ -1,15 +1,16 @@
-"""meteo.pl has published nothing for 48 h. Are they down, or did they move?
+"""Why are leads 0, 3, 6 and 12 blank when their neighbours are full?
 
-The scraper judges a run published by fetching um:UM4_CLOUD at lead 6, 3 or
-12 and looking for any non-transparent pixel. All three have come back empty
-for four cycles. That is either an outage, a layer rename, or ICM leaving
-even more of the early leads blank than the mid-August change did.
+A sweep found those four empty in every published UM4_CLOUD run while
++1/+2/+4/+9/+18/+24/+36/+48 come back 92-99% covered. That pattern is not a
+model gap — it has no arithmetic to it — it looks like GeoWebCache holding
+blank tiles for those DIM_FORECAST values, cached while the run was still
+being written and never invalidated.
 
-So ask the server what it has, and sweep the leads instead of trusting
-three of them.
+If so, asking GeoServer directly (tiled=false, so the request goes past the
+cache) returns real data for the same lead. That is testable, and it decides
+whether those hours can be recovered or are simply missing upstream.
 """
 import datetime as dt
-import re
 import sys
 
 sys.path.insert(0, ".")
@@ -18,78 +19,39 @@ import numpy as np  # noqa: E402
 
 from wxfusion import scrape_maps as S  # noqa: E402
 from wxfusion.http import session  # noqa: E402
+from PIL import Image  # noqa: E402
+import io  # noqa: E402
 
 s = session()
-
-print("=== what layers does the GeoServer advertise? ===")
-for svc, url in (("WMS 1.1.1", f"{S.GWC}?service=WMS&version=1.1.1"
-                               "&request=GetCapabilities"),
-                 ("WMTS", "https://mapy.meteo.pl/geoserver/gwc/service/wmts"
-                          "?service=WMTS&request=GetCapabilities")):
-    try:
-        r = s.get(url, timeout=90)
-    except Exception as e:
-        print(f"  {svc}: {type(e).__name__}: {e}")
-        continue
-    print(f"  {svc}: HTTP {r.status_code} "
-          f"{r.headers.get('content-type','?')} {len(r.content):,} B")
-    if not r.ok:
-        print("   ", r.text[:200].replace("\n", " "))
-        continue
-    names = re.findall(r"<(?:ows:)?(?:Name|Title)>([^<]+)</", r.text)
-    um = sorted({n for n in names if re.search(r"UM|CLOUD|RAIN", n, re.I)})
-    print(f"    {len(names)} names, {len(um)} looking like UM:")
-    for n in um[:30]:
-        print("     ", n)
-
-print("\n=== is there ANY data, at any lead, in the recent runs? ===")
 now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0,
                                                microsecond=0, tzinfo=None)
-cand = now.replace(hour=0 if now.hour < 12 else 12)
-LEADS = (0, 1, 2, 3, 4, 6, 9, 12, 18, 24, 36, 48)
-for back in range(5):
-    run = cand - dt.timedelta(hours=12 * back)
-    hits = []
-    for pl in LEADS:
-        try:
-            p = S.fetch_um_frame("um:UM4_CLOUD", run, pl)
-        except Exception as e:
-            hits.append(f"+{pl}:{type(e).__name__}")
-            continue
-        if p is None:
-            hits.append(f"+{pl}:none")
-            continue
-        a = np.array(p)[..., 3]
-        hits.append(f"+{pl}:{100 * (a > 0).mean():.0f}%")
-    print(f"  run {run:%Y-%m-%dT%H}Z  " + "  ".join(hits))
-
-print("\n=== what does one tile request actually return? ===")
+run = now.replace(hour=0 if now.hour < 12 else 12) - dt.timedelta(hours=12)
+print(f"run {run:%Y-%m-%dT%H}Z, one tile of the grid\n")
 x0, x1, y0, y1 = S._tile_range(S.ZOOM)
-bb = S._tile_bbox_900913(S.ZOOM, x0, y0)
-for lead in (6, 24):
+bb = S._tile_bbox_900913(S.ZOOM, x0 + 1, y0 + 1)
+
+def ask(lead, tiled, direct=False):
     params = {"service": "WMS", "version": "1.1.1", "request": "GetMap",
               "layers": "um:UM4_CLOUD", "styles": "",
               "bbox": ",".join(f"{v:.9f}" for v in bb),
               "width": 256, "height": 256, "srs": "EPSG:900913",
-              "format": "image/png", "transparent": "true", "tiled": "true",
-              "TIME": cand.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+              "format": "image/png", "transparent": "true",
+              "TIME": run.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
               "DIM_FORECAST": lead}
+    if tiled:
+        params["tiled"] = "true"
+    url = ("https://mapy.meteo.pl/geoserver/um/wms" if direct else S.GWC)
     try:
-        r = s.get(S.GWC, params=params, timeout=60)
-        print(f"  lead +{lead}: HTTP {r.status_code} "
-              f"{r.headers.get('content-type','?')} {len(r.content):,} B")
-        if "xml" in r.headers.get("content-type", "") or r.content[:1] == b"<":
-            print("   ", re.sub(r"\s+", " ", r.text)[:400])
+        r = s.get(url, params=params, timeout=60)
     except Exception as e:
-        print(f"  lead +{lead}: {type(e).__name__}: {e}")
+        return f"{type(e).__name__}"
+    if not r.ok or "image" not in r.headers.get("content-type", ""):
+        return f"HTTP {r.status_code} {r.headers.get('content-type','?')}"
+    a = np.array(Image.open(io.BytesIO(r.content)).convert("RGBA"))[..., 3]
+    return f"{len(r.content):6,d} B  alpha {100 * (a > 0).mean():5.1f}%"
 
-print("\n=== does the site itself say anything? ===")
-for u in ("https://mapy.meteo.pl/", "https://www.meteo.pl/"):
-    try:
-        r = s.get(u, timeout=60)
-        body = re.sub(r"<[^>]+>", " ", r.text)
-        body = re.sub(r"\s+", " ", body).strip()
-        print(f"  {u} HTTP {r.status_code} {len(r.content):,} B")
-        print("   ", body[:300])
-    except Exception as e:
-        print(f"  {u}: {type(e).__name__}: {e}")
+print(f"{'lead':>5}  {'GWC tiled=true':>28}  {'GWC no tiled':>28}  "
+      f"{'GeoServer /um/wms':>28}")
+for lead in (0, 1, 3, 6, 9, 12, 15, 21):
+    print(f"{lead:>5}  {ask(lead, True):>28}  {ask(lead, False):>28}  "
+          f"{ask(lead, False, direct=True):>28}")

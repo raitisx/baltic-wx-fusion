@@ -377,18 +377,29 @@ def um_run(hours: list[int] | None = None) -> None:
         # So walk back through the 12-hourly cycles until one answers with
         # actual pixels.
         #
-        # Probe a lead that is reliably populated, NOT +1h. Since mid-Aug 2026
-        # ICM leaves the first ~2 forecast hours of UM4_CLOUD blank — the
-        # analysis and +1h come back fully transparent while +2h onward is full
-        # — so probing +1h made the scraper judge every published run "not
-        # published" and abandon it. Try a few mid leads and take the run if any
-        # has data.
+        # Probe leads that are reliably populated. This has now bitten twice,
+        # and the second time was self-inflicted: the set was (6, 3, 12), and
+        # a lead sweep on 03.09.2026 found those three blank in EVERY
+        # published run while their neighbours were full —
+        #
+        #   03.09 00Z  +0:0% +1:92% +2:93% +3:0% +4:97% +6:0% +9:94%
+        #              +12:0% +18:92% +24:96% +36:98% +48:99%
+        #
+        # so the scraper judged four healthy runs "not published" and the UM
+        # column sat on a three-day-old one. (The first time, mid-Aug 2026,
+        # ICM began leaving the analysis and +1h transparent, which is why
+        # the set had moved off +1h in the first place.)
+        #
+        # The lesson is to ask MORE leads, not to chase whichever one works
+        # this month: a run counts as published if any of them has data, so a
+        # wider set is strictly safer. These are spread across the forecast
+        # so no single upstream gap can take all of them out.
         run = None
         cand = now.replace(minute=0, second=0, microsecond=0,
                            hour=0 if now.hour < 12 else 12)
         for _ in range(4):
             published = False
-            for pl in (6, 3, 12):
+            for pl in (4, 9, 18, 2, 24, 36):
                 p = fetch_um_frame(layer, cand, pl)
                 if p is not None and np.array(p)[..., 3].any():
                     published = True
