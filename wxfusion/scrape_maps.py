@@ -520,12 +520,19 @@ def um_run(hours: list[int] | None = None) -> None:
             # tile server also answers transparent, so a blank AFTER data
             # means the run has ended.
             #
-            # But a blank after data is NOT proof of the horizon. A published
-            # run keeps filling in behind us: leads that read 0% at the top of
-            # the scrape were 92-100% covered twenty minutes later, same run,
-            # same tiles. So a lone blank is a lead we arrived at too early —
-            # step over it, note it, and come back at the end. Only a RUN of
+            # But a blank after data is NOT proof of the horizon. On
+            # 03.09.2026 the 00Z run stored 101 frames with +3, +6 and +12
+            # empty in the middle of them — measured blank on all nine tiles,
+            # unchanged over three rounds twelve minutes apart, while +4 next
+            # door held a steady 97%. Isolated holes are real and they are not
+            # the end of the forecast, so step over them; only a RUN of
             # empties is the horizon.
+            #
+            # Why those particular leads is still unknown. A single-tile
+            # sample twenty minutes earlier read them 92-100% full, which
+            # nothing since has reproduced, so the retry below is a cheap
+            # hedge against the blank being transient rather than a fix for a
+            # diagnosed cause. It costs one lead's worth of tiles apiece.
             probe = np.array(img)
             if probe.shape[-1] == 4 and not probe[..., 3].any():
                 if not seen:
@@ -550,12 +557,11 @@ def um_run(hours: list[int] | None = None) -> None:
             if len(done) % UM_FLUSH_EVERY == 0:
                 publish()
 
-        # Second pass over the holes. The scrape takes 8-15 min, which is
-        # about the lag measured between a lead reading blank and the same
-        # lead reading full, so by now the ones we were early for have
-        # landed. Whatever is still blank is genuinely absent upstream: this
-        # run only gets the two passes, and the next scheduled scrape is
-        # against a different run, so it will not fill these in.
+        # Second pass over the holes, once the scrape's own 8-15 min have
+        # elapsed. This run gets the two passes and no more: the next
+        # scheduled scrape is against a different run, so a hole left here
+        # stays a hole. Cheap enough to be worth trying even though the
+        # leads that prompted it stayed stubbornly blank.
         if holes:
             log.info("%s: retrying %d hole(s): %s", name, len(holes),
                      ", ".join(f"+{h}h" for h in holes))
