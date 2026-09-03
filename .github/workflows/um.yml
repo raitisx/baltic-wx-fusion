@@ -3,13 +3,13 @@ name: um-maps
 #
 # Its own workflow on purpose. meteo.pl's GeoWebCache generates uncached tiles
 # on demand and slowly — up to ~30 s each — so a full scrape of the ~100 lead
-# hours (nine tiles apiece) takes 8-30 min, plus a second pass over any leads
-# that answered blank the first time. Sharing the 45-min models.yml job meant
-# the slow scrape either got truncated (missing the far forecast hours) or
-# pushed later steps over the timeout. Alone, with room to breathe, it fetches
-# every hour. The generous timeout is headroom for a slow day upstream, not an
-# expected duration — and the scrape re-publishes its index as it goes, so
-# being killed at the limit costs the tail, not the whole run.
+# hours (nine tiles apiece) takes 8-15 min — 13 min for the 101-frame scrape on
+# 03.09.2026 — plus a short second pass over any leads that answered blank.
+# Sharing the 45-min models.yml job meant the slow scrape either got truncated
+# (missing the far forecast hours) or pushed later steps over the timeout.
+# Alone, with room to breathe, it fetches every hour. The scrape also
+# re-publishes its index as it goes, so a bad day upstream that does run into
+# the timeout costs the tail rather than the whole run.
 #
 # Twice a day, offset from everything else: 11:20 catches the 00Z run (ICM
 # publishes it mid/late morning) and 23:20 the 12Z run. Clear of models.yml
@@ -26,7 +26,7 @@ concurrency:
 jobs:
   um-maps:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

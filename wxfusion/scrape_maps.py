@@ -467,10 +467,12 @@ def um_run(hours: list[int] | None = None) -> None:
             """Point the viewer at what we have stored so far.
 
             Written repeatedly, not once at the end. A full scrape is ~100
-            leads at nine slow tiles each and has run right up against the
-            job timeout; when it was killed the frames were already in the
-            bucket but nothing indexed them, so a whole scrape's work went
-            unreachable. Same shape of bug as the radar quarters pass.
+            leads at nine slow tiles each, all against someone else's cache,
+            so its runtime is not ours to control; if a slow day upstream
+            ever pushes it past the job timeout, the frames would be sitting
+            in the bucket with nothing indexing them and the whole scrape
+            would be unreachable. Cheap insurance, and the same shape of bug
+            as the radar quarters pass.
             """
             if not done:
                 return
