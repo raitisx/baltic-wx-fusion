@@ -1,23 +1,24 @@
-"""Do the blank UM leads flap, or is one tile of the grid lying to us?
+"""Are the blank UM leads flapping, or is the tile stitch losing them?
 
-Two measurements of the same 00Z run, seven minutes apart, disagreed:
+Both answers turned out to be no. Three rounds four minutes apart against
+the 03.09.2026 00Z run, every tile of the 3x3 grid measured separately:
 
-    15:22  single middle tile   +3 100%   +6 99.6%  +12 92.6%
-    15:29  full 3x3 scrape      +3 empty  +6 empty  +12 empty
+    lead   35,18 36,18 37,18 35,19 36,19 37,19 35,20 36,20 37,20  stitched
+       3      0%    0%    0%    0%    0%    0%    0%    0%    0%     EMPTY
+       6      0%    0%    0%    0%    0%    0%    0%    0%    0%     EMPTY
+      12      0%    0%    0%    0%    0%    0%    0%    0%    0%     EMPTY
+       4     84%  100%  100%   95%  100%  100%  100%  100%   92%       97%
 
-Both went to the same GWC endpoint with the same TIME and DIM_FORECAST, and
-the scrape's emptiness test is over the whole stitched canvas — which
-CONTAINS that middle tile. So one of two things is happening:
+unchanged across all three rounds. So the leads are not unstable and the
+stitch is faithful — every tile agrees, including the middle one a single
+tile sample had read as 100% full twenty minutes earlier. That earlier
+reading has not been reproduced since and remains unexplained; the honest
+statement is that +3, +6 and +12 are blank at source and we do not know why
+those leads.
 
-  * GWC's answer for these leads is unstable, flipping blank/full over
-    minutes as it re-seeds; or
-  * the nine tiles do not all behave like the middle one, and something in
-    the stitch (a failed tile, a differing response per tile) loses the data.
-
-This prints, per lead, every tile of the grid separately and the stitched
-result, three times a few minutes apart. Flapping shows as a column that
-changes down the rounds; a stitch problem shows as tiles that disagree with
-each other within one round.
+Left here as the tool that settled it. To characterise the timescale, raise
+ROUNDS and GAP_S — the earlier full/blank disagreement spanned twenty-odd
+minutes, which four-minute rounds are too tight to catch.
 """
 import datetime as dt
 import sys
