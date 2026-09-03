@@ -1,92 +1,95 @@
-"""Are the PERMANENT UAS geozones also published in the AIP?
+"""meteo.pl has published nothing for 48 h. Are they down, or did they move?
 
-The ED-269 file carries permanent and temporary zones together. If the
-permanent ones are the AIP's own restricted/prohibited/danger areas, then
-they have published names, limits and an AIRAC cycle behind them, and the
-ED-269 record is a redistribution rather than a separate truth. Walk the
-eAIP the user linked: find ENR 5.1 (prohibited, restricted, danger) and
-anything naming UAS, and list what those sections actually hold.
+The scraper judges a run published by fetching um:UM4_CLOUD at lead 6, 3 or
+12 and looking for any non-transparent pixel. All three have come back empty
+for four cycles. That is either an outage, a layer rename, or ICM leaving
+even more of the early leads blank than the mid-August change did.
+
+So ask the server what it has, and sweep the leads instead of trusting
+three of them.
 """
+import datetime as dt
 import re
 import sys
-from urllib.parse import urljoin
 
 sys.path.insert(0, ".")
 
+import numpy as np  # noqa: E402
+
+from wxfusion import scrape_maps as S  # noqa: E402
 from wxfusion.http import session  # noqa: E402
 
 s = session()
-s.headers.update({"User-Agent": "Mozilla/5.0 (compatible; ttaero-meteo/1.0)"})
-ROOT = ("https://ais.lgs.lv/eAIPfiles/2026_005_09-JUL-2026/data/"
-        "2026-07-09/html/index.html")
 
-
-def get(u):
+print("=== what layers does the GeoServer advertise? ===")
+for svc, url in (("WMS 1.1.1", f"{S.GWC}?service=WMS&version=1.1.1"
+                               "&request=GetCapabilities"),
+                 ("WMTS", "https://mapy.meteo.pl/geoserver/gwc/service/wmts"
+                          "?service=WMTS&request=GetCapabilities")):
     try:
-        return s.get(u, timeout=60)
+        r = s.get(url, timeout=90)
     except Exception as e:
-        print(f"    {type(e).__name__}: {e}")
-        return None
-
-
-def text_of(html):
-    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
-    t = re.sub(r"<[^>]+>", " ", t)
-    return re.sub(r"[ \t\xa0]+", " ", t)
-
-
-print("=== eAIP index ===")
-r = get(ROOT)
-print(f"  HTTP {r.status_code if r else '-'}  {len(r.content) if r else 0:,} B")
-if not r or not r.ok:
-    raise SystemExit
-# The index is usually a frameset; follow the menu/toc frames too.
-frames = re.findall(r'(?:src|href)="([^"]+\.html?)"', r.text)
-pages = {urljoin(ROOT, f) for f in frames}
-print(f"  {len(pages)} linked pages in the index")
-
-# Collect the whole link graph one level deeper, looking for ENR 5 and UAS.
-seen, hits = set(), {}
-todo = list(pages)[:12]
-while todo:
-    u = todo.pop(0)
-    if u in seen:
+        print(f"  {svc}: {type(e).__name__}: {e}")
         continue
-    seen.add(u)
-    rr = get(u)
-    if rr is None or not rr.ok or "html" not in rr.headers.get("content-type", ""):
+    print(f"  {svc}: HTTP {r.status_code} "
+          f"{r.headers.get('content-type','?')} {len(r.content):,} B")
+    if not r.ok:
+        print("   ", r.text[:200].replace("\n", " "))
         continue
-    for href in re.findall(r'href="([^"]+\.html?)"', rr.text):
-        full = urljoin(u, href)
-        name = full.rsplit("/", 1)[-1]
-        if re.search(r"ENR-5\.[15]|UAS|RMZ|GEN-", name, re.I):
-            hits[name] = full
-        if full not in seen and len(seen) < 14:
-            todo.append(full)
+    names = re.findall(r"<(?:ows:)?(?:Name|Title)>([^<]+)</", r.text)
+    um = sorted({n for n in names if re.search(r"UM|CLOUD|RAIN", n, re.I)})
+    print(f"    {len(names)} names, {len(um)} looking like UM:")
+    for n in um[:30]:
+        print("     ", n)
 
-print("\n=== sections that could hold the zones ===")
-for name, full in sorted(hits.items()):
-    print("  ", name)
+print("\n=== is there ANY data, at any lead, in the recent runs? ===")
+now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0,
+                                               microsecond=0, tzinfo=None)
+cand = now.replace(hour=0 if now.hour < 12 else 12)
+LEADS = (0, 1, 2, 3, 4, 6, 9, 12, 18, 24, 36, 48)
+for back in range(5):
+    run = cand - dt.timedelta(hours=12 * back)
+    hits = []
+    for pl in LEADS:
+        try:
+            p = S.fetch_um_frame("um:UM4_CLOUD", run, pl)
+        except Exception as e:
+            hits.append(f"+{pl}:{type(e).__name__}")
+            continue
+        if p is None:
+            hits.append(f"+{pl}:none")
+            continue
+        a = np.array(p)[..., 3]
+        hits.append(f"+{pl}:{100 * (a > 0).mean():.0f}%")
+    print(f"  run {run:%Y-%m-%dT%H}Z  " + "  ".join(hits))
 
-want = {n: u for n, u in hits.items() if re.search(r"ENR-5\.1|UAS", n, re.I)}
-if not want:
-    # fall back to the conventional eAIP file naming
-    for guess in ("EV-ENR-5.1-en-GB.html", "EV-ENR-5.5-en-GB.html",
-                  "EV-ENR-1.1-en-GB.html"):
-        want[guess] = urljoin(ROOT, "eAIP/" + guess)
+print("\n=== what does one tile request actually return? ===")
+x0, x1, y0, y1 = S._tile_range(S.ZOOM)
+bb = S._tile_bbox_900913(S.ZOOM, x0, y0)
+for lead in (6, 24):
+    params = {"service": "WMS", "version": "1.1.1", "request": "GetMap",
+              "layers": "um:UM4_CLOUD", "styles": "",
+              "bbox": ",".join(f"{v:.9f}" for v in bb),
+              "width": 256, "height": 256, "srs": "EPSG:900913",
+              "format": "image/png", "transparent": "true", "tiled": "true",
+              "TIME": cand.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+              "DIM_FORECAST": lead}
+    try:
+        r = s.get(S.GWC, params=params, timeout=60)
+        print(f"  lead +{lead}: HTTP {r.status_code} "
+              f"{r.headers.get('content-type','?')} {len(r.content):,} B")
+        if "xml" in r.headers.get("content-type", "") or r.content[:1] == b"<":
+            print("   ", re.sub(r"\s+", " ", r.text)[:400])
+    except Exception as e:
+        print(f"  lead +{lead}: {type(e).__name__}: {e}")
 
-for name, full in sorted(want.items()):
-    print(f"\n=== {name}\n    {full}")
-    rr = get(full)
-    if rr is None or not rr.ok:
-        print(f"    HTTP {rr.status_code if rr else '-'}")
-        continue
-    body = text_of(rr.text)
-    print(f"    HTTP {rr.status_code}  {len(rr.content):,} B")
-    ids = re.findall(r"\bEV\s?[PRD]\s?-?\s?\d{1,3}\b", body)
-    print(f"    area designators found: {len(ids)}  {sorted(set(ids))[:20]}")
-    if re.search(r"UAS|unmanned|bezpilota", body, re.I):
-        for m in re.finditer(r"(.{0,180}(?:UAS|unmanned).{0,220})", body, re.I):
-            print("    ...", re.sub(r"\s+", " ", m.group(1)).strip()[:380])
-            break
-    print("    first 700 chars:", re.sub(r"\s+", " ", body).strip()[:700])
+print("\n=== does the site itself say anything? ===")
+for u in ("https://mapy.meteo.pl/", "https://www.meteo.pl/"):
+    try:
+        r = s.get(u, timeout=60)
+        body = re.sub(r"<[^>]+>", " ", r.text)
+        body = re.sub(r"\s+", " ", body).strip()
+        print(f"  {u} HTTP {r.status_code} {len(r.content):,} B")
+        print("   ", body[:300])
+    except Exception as e:
+        print(f"  {u}: {type(e).__name__}: {e}")
