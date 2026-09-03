@@ -47,6 +47,9 @@ BBOX = (53.8, 59.9, 20.0, 28.6)  # lat_min, lat_max, lon_min, lon_max
 # serves isolated blank leads mid-forecast (3, 6 and 12 as of 03.09.2026),
 # and treating the first as the horizon truncated the scrape to two frames.
 UM_HORIZON_BLANKS = 4
+# Re-publish the UM index every this many stored frames, so a scrape
+# killed by the job timeout still leaves its frames reachable.
+UM_FLUSH_EVERY = 12
 GWC = "https://mapy.meteo.pl/geoserver/gwc/service/wms"
 ZOOM = 6
 TILE_SLEEP = 0.3
@@ -428,44 +431,14 @@ def um_run(hours: list[int] | None = None) -> None:
 
         run_tag = run.strftime("%Y%m%dT%H")
         done = []
+        holes = []             # leads that answered blank mid-forecast
         from . import proj3059 as P
         sw, ne = _tilegrid_bounds_latlon()
-        seen = False           # stored any real frame in this run yet?
-        blanks = 0             # consecutive empty leads since the last frame
-        for h in hours:
-            img = fetch_um_frame(layer, run, h)
-            if img is None:
-                log.warning("%s: no tiles for +%dh", name, h)
-                continue
-            # A blank frame means two different things depending on where it
-            # is. ICM leaves the first forecast hours empty, so a blank BEFORE
-            # any data is a leading gap to skip. Past the model horizon the
-            # tile server also answers transparent, so a blank AFTER data
-            # means the run has ended.
-            #
-            # But a blank after data is NOT proof of the horizon: as of
-            # 03.09.2026 leads 3, 6 and 12 come back empty in every run while
-            # their neighbours are 92-99% covered, so the first of them ended
-            # the scrape at +3 and stored two frames out of a hundred. Only a
-            # RUN of empties is a horizon; isolated holes are stepped over.
-            probe = np.array(img)
-            if probe.shape[-1] == 4 and not probe[..., 3].any():
-                if not seen:
-                    log.info("%s: +%dh is empty — leading blank, skipping",
-                             name, h)
-                    continue
-                blanks += 1
-                if blanks >= UM_HORIZON_BLANKS:
-                    log.info("%s: +%dh empty, %d in a row — horizon reached",
-                             name, h, blanks)
-                    break
-                log.info("%s: +%dh is empty — hole, carrying on", name, h)
-                continue
-            seen = True
-            blanks = 0
-            # reproject the mercator-stitched canvas onto the common
-            # EPSG:3059 grid (transparent overlay; client stacks it on
-            # maps/bg_3059.png) and bake borders ON TOP — the UM cloud
+
+        def store(h, img):
+            """Reproject one lead onto the common grid and put it in R2."""
+            # EPSG:3059 (transparent overlay; the client stacks it on
+            # maps/bg_3059.png), with borders baked ON TOP — the UM cloud
             # layer is opaque, so background borders would be hidden.
             arr = P.resample_mercator_image(np.array(img), sw, ne)
             img = Image.fromarray(arr, "RGBA")
@@ -489,11 +462,23 @@ def um_run(hours: list[int] | None = None) -> None:
                           Body=buf.getvalue(), ContentType="image/png",
                           CacheControl="public, max-age=86400")
             done.append(valid.strftime("%Y-%m-%dT%H:00:00Z"))
-        # Persistent hour -> run index, same idea as maps/meps/archive.json.
-        # Frames are never deleted from the bucket, but without this only the
-        # newest run's hours were reachable, so yesterday's UM simply vanished
-        # from the viewer. An hour is only overwritten by a newer run.
-        if done:
+
+        def publish():
+            """Point the viewer at what we have stored so far.
+
+            Written repeatedly, not once at the end. A full scrape is ~100
+            leads at nine slow tiles each and has run right up against the
+            job timeout; when it was killed the frames were already in the
+            bucket but nothing indexed them, so a whole scrape's work went
+            unreachable. Same shape of bug as the radar quarters pass.
+            """
+            if not done:
+                return
+            # Persistent hour -> run index, same idea as maps/meps/archive.json.
+            # Frames are never deleted from the bucket, but without this only
+            # the newest run's hours were reachable, so yesterday's UM simply
+            # vanished from the viewer. An hour is only overwritten by a newer
+            # run.
             try:
                 arch = json.loads(s3.get_object(
                     Bucket=config.R2_BUCKET, Key=f"maps/{name}/archive.json"
@@ -504,14 +489,13 @@ def um_run(hours: list[int] | None = None) -> None:
                 vtag = iso[0:4] + iso[5:7] + iso[8:10] + "T" + iso[11:13]
                 if arch["hours"].get(vtag, "") <= run_tag:
                     arch["hours"][vtag] = run_tag
-            s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/{name}/archive.json",
+            s3.put_object(Bucket=config.R2_BUCKET,
+                          Key=f"maps/{name}/archive.json",
                           Body=json.dumps(arch).encode(),
                           ContentType="application/json",
                           CacheControl="public, max-age=300")
-            log.info("%s: archive index now %d hours", name, len(arch["hours"]))
-
-        if done:
-            s3.put_object(Bucket=config.R2_BUCKET, Key=f"maps/{name}/latest.json",
+            s3.put_object(Bucket=config.R2_BUCKET,
+                          Key=f"maps/{name}/latest.json",
                           Body=json.dumps({
                               "run": run_tag, "path": f"maps/{name}/{run_tag}",
                               "hours": done, "thresholds": None,
@@ -520,7 +504,74 @@ def um_run(hours: list[int] | None = None) -> None:
                               "generated_at": now.isoformat()}).encode(),
                           ContentType="application/json",
                           CacheControl="public, max-age=300")
-            log.info("%s: %d frames", name, len(done))
+
+        seen = False           # stored any real frame in this run yet?
+        blanks = 0             # consecutive empty leads since the last frame
+        for h in hours:
+            img = fetch_um_frame(layer, run, h)
+            if img is None:
+                log.warning("%s: no tiles for +%dh", name, h)
+                continue
+            # A blank frame means two different things depending on where it
+            # is. ICM leaves the first forecast hours empty, so a blank BEFORE
+            # any data is a leading gap to skip. Past the model horizon the
+            # tile server also answers transparent, so a blank AFTER data
+            # means the run has ended.
+            #
+            # But a blank after data is NOT proof of the horizon. A published
+            # run keeps filling in behind us: leads that read 0% at the top of
+            # the scrape were 92-100% covered twenty minutes later, same run,
+            # same tiles. So a lone blank is a lead we arrived at too early —
+            # step over it, note it, and come back at the end. Only a RUN of
+            # empties is the horizon.
+            probe = np.array(img)
+            if probe.shape[-1] == 4 and not probe[..., 3].any():
+                if not seen:
+                    log.info("%s: +%dh is empty — leading blank, skipping",
+                             name, h)
+                    continue
+                blanks += 1
+                if blanks >= UM_HORIZON_BLANKS:
+                    log.info("%s: +%dh empty, %d in a row — horizon reached",
+                             name, h, blanks)
+                    # The earlier empties in this run were the horizon too,
+                    # not holes — don't spend a retry on them.
+                    del holes[len(holes) - (blanks - 1):]
+                    break
+                log.info("%s: +%dh is empty — hole, will retry at the end",
+                         name, h)
+                holes.append(h)
+                continue
+            seen = True
+            blanks = 0
+            store(h, img)
+            if len(done) % UM_FLUSH_EVERY == 0:
+                publish()
+
+        # Second pass over the holes. The scrape takes 8-15 min, which is
+        # about the lag measured between a lead reading blank and the same
+        # lead reading full, so by now the ones we were early for have
+        # landed. Whatever is still blank is genuinely absent upstream: this
+        # run only gets the two passes, and the next scheduled scrape is
+        # against a different run, so it will not fill these in.
+        if holes:
+            log.info("%s: retrying %d hole(s): %s", name, len(holes),
+                     ", ".join(f"+{h}h" for h in holes))
+            filled = 0
+            for h in holes:
+                img = fetch_um_frame(layer, run, h)
+                if img is None:
+                    continue
+                probe = np.array(img)
+                if probe.shape[-1] == 4 and not probe[..., 3].any():
+                    continue
+                store(h, img)
+                filled += 1
+            log.info("%s: %d of %d hole(s) filled on the second pass",
+                     name, filled, len(holes))
+
+        publish()
+        log.info("%s: %d frames", name, len(done))
 
 
 # ---------------------------------------------------------------- radar
