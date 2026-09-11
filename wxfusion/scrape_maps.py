@@ -50,6 +50,14 @@ UM_HORIZON_BLANKS = 4
 # Re-publish the UM index every this many stored frames, so a scrape
 # killed by the job timeout still leaves its frames reachable.
 UM_FLUSH_EVERY = 12
+# How many 12-hourly cycles to walk back looking for a published run, and
+# when to start calling the one we found stale.
+UM_RUN_LOOKBACK = 12
+UM_RUN_STALE_H = 24.0
+# Leads to test a run with. A run counts as published if ANY of them has
+# data, so more is strictly safer than betting on whichever single lead
+# happens to work this month — ICM's blank leads move.
+UM_PUBLISH_LEADS = (4, 9, 18, 2, 24, 36)
 GWC = "https://mapy.meteo.pl/geoserver/gwc/service/wms"
 ZOOM = 6
 TILE_SLEEP = 0.3
@@ -190,6 +198,45 @@ def _tilegrid_bounds_latlon():
         t = math.pi * (1 - 2 * y / n)
         return math.degrees(math.atan(math.sinh(t)))
     return (y2lat(y1 + 1), x2lon(x0)), (y2lat(y0), x2lon(x1 + 1))
+
+
+def _um_tile(layer: str, run_midnight: dt.datetime, lead_h: int,
+             xi: int, yi: int) -> "np.ndarray | None":
+    """One tile of one lead. Returns its alpha channel, or None."""
+    params = {
+        "service": "WMS", "version": "1.1.1", "request": "GetMap",
+        "layers": layer, "styles": "",
+        "bbox": ",".join(f"{v:.9f}" for v in _tile_bbox_900913(ZOOM, xi, yi)),
+        "width": 256, "height": 256, "srs": "EPSG:900913",
+        "format": "image/png", "transparent": "true", "tiled": "true",
+        "TIME": run_midnight.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+        "DIM_FORECAST": lead_h,
+    }
+    try:
+        r = session().get(GWC, params=params, timeout=60)
+    except Exception:
+        return None
+    if r.status_code != 200 \
+            or not r.headers.get("content-type", "").startswith("image"):
+        return None
+    return np.array(Image.open(io.BytesIO(r.content)).convert("RGBA"))[..., 3]
+
+
+def _um_published(layer: str, run_midnight: dt.datetime) -> bool:
+    """Does this run hold any data? One tile per lead, not nine.
+
+    Picking the run means walking back up to UM_RUN_LOOKBACK cycles, and
+    stitching the whole grid for each candidate would be nine times the
+    requests against someone else's slow cache just to answer yes or no.
+    The middle tile sits well inside the domain — it reads 97-100% on leads
+    that have data — so it answers the question on its own.
+    """
+    x0, x1, y0, y1 = _tile_range(ZOOM)
+    for lead in UM_PUBLISH_LEADS:
+        a = _um_tile(layer, run_midnight, lead, x0 + 1, y0 + 1)
+        if a is not None and a.any():
+            return True
+    return False
 
 
 def fetch_um_frame(layer: str, run_midnight: dt.datetime, lead_h: int) -> Image.Image | None:
@@ -401,33 +448,49 @@ def um_run(hours: list[int] | None = None) -> None:
         # this month: a run counts as published if any of them has data, so a
         # wider set is strictly safer. These are spread across the forecast
         # so no single upstream gap can take all of them out.
+        # How far back to look. This was four cycles, and on 11.09.2026 that
+        # was one cycle too few: ICM had fallen behind, the newest run with
+        # any data was 55 h old, and the walk-back reached 43 h and gave up.
+        # Every run for five days ended in the stalled-scrape warning while
+        # the data sat one step past where we stopped.
+        #
+        # Their archive also has holes — 05.09 00Z and 04.09 12Z are blank
+        # between runs that are full — so "keep going until something
+        # answers" is the only reading that survives. Six days of it.
         run = None
         cand = now.replace(minute=0, second=0, microsecond=0,
                            hour=0 if now.hour < 12 else 12)
-        for _ in range(4):
-            published = False
-            for pl in (4, 9, 18, 2, 24, 36):
-                p = fetch_um_frame(layer, cand, pl)
-                if p is not None and np.array(p)[..., 3].any():
-                    published = True
-                    break
-            if published:
+        for _ in range(UM_RUN_LOOKBACK):
+            if _um_published(layer, cand):
                 run = cand
                 break
-            log.info("%s: run %s not published yet", name,
+            log.info("%s: run %s not published", name,
                      cand.strftime("%Y%m%dT%H"))
             cand -= dt.timedelta(hours=12)
         if run is None:
-            log.warning("%s: no published run found in the last 4 cycles", name)
+            hours = 12 * UM_RUN_LOOKBACK
+            log.warning("%s: no published run in the last %d cycles",
+                        name, UM_RUN_LOOKBACK)
             # Loud on purpose: the step is continue-on-error so the job stays
             # green, but a stalled scrape (meteo.pl changed something, or is
             # refusing us) must not pass unseen — surface it as a GitHub Actions
             # warning annotation on the run summary.
             print(f"::warning title=UM scrape stalled::{name}: no published "
-                  "meteo.pl run in the last 4 cycles (48 h) — the page is "
-                  "serving the last run that returned frames", flush=True)
+                  f"meteo.pl run in the last {UM_RUN_LOOKBACK} cycles "
+                  f"({hours} h) — the page is serving the last run that "
+                  "returned frames", flush=True)
             continue
-        log.info("%s: run %s", name, run.strftime("%Y%m%dT%H"))
+        age_h = (now - run).total_seconds() / 3600
+        log.info("%s: run %s (%.0f h old)", name,
+                 run.strftime("%Y%m%dT%H"), age_h)
+        if age_h > UM_RUN_STALE_H:
+            # Not a failure — a run this old still has usable leads out the
+            # far end — but the column will be showing a forecast made days
+            # ago, and that is worth seeing in the job summary rather than
+            # discovering from the page.
+            print(f"::warning title=UM run is stale::{name}: newest published "
+                  f"meteo.pl run is {age_h:.0f} h old "
+                  f"({run:%Y-%m-%d %H}Z)", flush=True)
 
         run_tag = run.strftime("%Y%m%dT%H")
         done = []
