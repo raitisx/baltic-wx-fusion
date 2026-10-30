@@ -1,0 +1,35 @@
+name: flyability-data
+# One-off data pull for the Limbaži flight-availability table. The dev
+# sandbox has no egress to weather APIs; this runs where it does and commits
+# the CSVs back to the working branch for the spreadsheet build to read.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to commit the CSVs to
+        default: claude/cowork-session-continuation-xapyc8
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch hourly history
+        run: python jobs/fetch_flyability_limbazi.py data/flyability
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/flyability
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "data: hourly Limbaži history for the flyability table"
+          git push origin HEAD:${{ inputs.branch }}
