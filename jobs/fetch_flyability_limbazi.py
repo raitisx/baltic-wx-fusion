@@ -65,15 +65,16 @@ def openmeteo():
 
 def metar_evra():
     """EVRA ceiling/gusts from the Iowa State ASOS archive."""
+    # sts/ets, not the old year1/month1 triples, and `missing`/`trace` only
+    # accept values from a fixed set — anything else is a 422.
     q = urllib.parse.urlencode([
         ("station", "EVRA"), ("data", "tmpf"), ("data", "dwpf"),
         ("data", "sknt"), ("data", "gust"), ("data", "p01i"),
         ("data", "skyc1"), ("data", "skyl1"), ("data", "skyc2"),
         ("data", "skyl2"), ("data", "skyc3"), ("data", "skyl3"),
-        ("year1", 2026), ("month1", 8), ("day1", 30),
-        ("year2", 2026), ("month2", 11), ("day2", 2),
+        ("sts", "2026-08-30T00:00:00Z"), ("ets", "2026-11-02T00:00:00Z"),
         ("tz", "Etc/UTC"), ("format", "onlycomma"), ("latlon", "no"),
-        ("missing", ""), ("trace", "0.001"), ("direct", "no"),
+        ("missing", "empty"), ("trace", "0.0001"), ("direct", "no"),
         ("report_type", 3), ("report_type", 4),
     ])
     url = ("https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?" + q)
